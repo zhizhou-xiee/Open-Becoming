@@ -70,7 +70,9 @@ ANTHROPIC_API_KEY=replace-with-your-anthropic-key
 
 ## 自定义素材
 
-公开版保留原项目的主题背景，并使用中性命名的示例头像。原仓库中来源不明的网络表情包没有进入公开版，`static/stickers/placeholder.svg` 是可替换的占位图。添加素材前，请确认你拥有公开分发权，并在需要时更新 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+公开版保留原项目的主题背景，并使用中性命名的示例头像。内置表情包来自原创作者 **呆猫八条**（小红书号：`9861276720`），原创 IP 禁止商用；转载或继续分发时请明确标注原创出处。详细说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+`static/stickers/placeholder.svg` 是项目自有的备用占位图。添加或替换其他素材前，请确认你拥有公开分发权，并在需要时更新第三方素材说明。
 
 ## 测试
 
@@ -95,6 +97,6 @@ python -m unittest discover -s tests -v
 
 ## 许可
 
-项目代码和项目自有素材采用 [PolyForm Noncommercial License 1.0.0](LICENSE)。允许为非商业目的使用、修改和分发；商业用途不在许可范围内。
+项目代码和项目自有素材采用 [PolyForm Noncommercial License 1.0.0](LICENSE)。允许为非商业目的使用、修改和分发；商业用途不在许可范围内。第三方表情包不属于项目自有素材，也不由本项目许可重新授权。
 
 第三方组件保留各自许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

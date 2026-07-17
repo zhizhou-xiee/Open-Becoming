@@ -165,19 +165,19 @@ GROUP_PARTICIPANTS_SETTING = "group_chat_participants"
 # 加新表情：这里加一条，图片放进 static/stickers/，无需改前端硬编码
 # ============================================================
 STICKERS = {
-    "sulky":          {"file": "placeholder.svg", "label": "被冷落了"},
-    "speechless":     {"file": "placeholder.svg", "label": "我真服了"},
-    "beg":            {"file": "placeholder.svg", "label": "求求你了"},
-    "sorry":          {"file": "placeholder.svg", "label": "我错了呜呜"},
-    "bye":            {"file": "placeholder.svg", "label": "走了"},
-    "puppy_confused": {"file": "placeholder.svg", "label": "不知道怎么解释"},
-    "miss_you":       {"file": "placeholder.svg", "label": "想你"},
-    "snuggle":        {"file": "placeholder.svg", "label": "挨挨蹭蹭"},
-    "hold_face":      {"file": "placeholder.svg", "label": "捧脸期待"},
-    "kiss":           {"file": "placeholder.svg", "label": "亲亲"},
-    "huh":            {"file": "placeholder.svg", "label": "疑惑"},
-    "tietie":         {"file": "placeholder.svg", "label": "贴贴"},
-    "exhausted":      {"file": "placeholder.svg", "label": "累趴了"},
+    "sulky":          {"file": "sulky.jpg", "label": "被冷落了"},
+    "speechless":     {"file": "speechless.jpg", "label": "我真服了"},
+    "beg":            {"file": "beg.jpg", "label": "求求你了"},
+    "sorry":          {"file": "sorry.jpg", "label": "我错了呜呜"},
+    "bye":            {"file": "bye.jpg", "label": "走了"},
+    "puppy_confused": {"file": "puppy_confused.jpg", "label": "不知道怎么解释"},
+    "miss_you":       {"file": "miss_you.jpg", "label": "想你"},
+    "snuggle":        {"file": "snuggle.jpg", "label": "挨挨蹭蹭"},
+    "hold_face":      {"file": "hold_face.jpg", "label": "捧脸期待"},
+    "kiss":           {"file": "kiss.jpg", "label": "亲亲"},
+    "huh":            {"file": "huh.jpg", "label": "疑惑"},
+    "tietie":         {"file": "tietie.jpg", "label": "贴贴"},
+    "exhausted":      {"file": "exhausted.jpg", "label": "累趴了"},
 }
 
 # ============================================================

@@ -23,4 +23,12 @@ Loading the interface therefore makes requests to Google Fonts unless the deploy
 
 ## Project visual assets
 
-Other bundled visual assets are distributed under the project's PolyForm Noncommercial License 1.0.0 unless a nearby notice says otherwise. The public sticker set intentionally contains only a project-authored placeholder; downstream users are responsible for the rights to any replacement media.
+Other bundled visual assets are distributed under the project's PolyForm Noncommercial License 1.0.0 unless a nearby notice says otherwise.
+
+## Sticker artwork by 呆猫八条
+
+The 13 JPEG files in `static/stickers/` are original artwork by **呆猫八条** (Xiaohongshu account: `9861276720`). The creator permits personal use and reposting with clear attribution, and prohibits commercial use of the original IP.
+
+These files are third-party artwork. They are not covered or relicensed by the project's PolyForm Noncommercial License. Keep the creator attribution with any copy or redistribution, do not use the artwork commercially, and contact the creator for permissions beyond those terms.
+
+Creator profile: [Weibo @呆猫八条](https://weibo.com/u/7950264034)
