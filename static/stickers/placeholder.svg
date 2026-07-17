@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Sticker placeholder</title>
+  <desc id="desc">A neutral cat face placeholder for custom stickers.</desc>
+  <rect width="256" height="256" rx="48" fill="#fff2e9"/>
+  <path d="M64 93 83 49l36 31h18l36-31 19 44v68c0 38-29 63-64 63s-64-25-64-63Z" fill="#cfdee3" stroke="#8e656f" stroke-width="8" stroke-linejoin="round"/>
+  <circle cx="103" cy="132" r="8" fill="#5c3f48"/>
+  <circle cx="153" cy="132" r="8" fill="#5c3f48"/>
+  <path d="M118 157q10 12 20 0M128 150v12" fill="none" stroke="#5c3f48" stroke-width="6" stroke-linecap="round"/>
+  <path d="M87 155H50m37 13H56m113-13h37m-37 13h31" fill="none" stroke="#8e656f" stroke-width="5" stroke-linecap="round"/>
+</svg>

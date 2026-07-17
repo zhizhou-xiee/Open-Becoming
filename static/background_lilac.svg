@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 941 1672" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#f9f3ee"/>
+      <stop offset="1" stop-color="#e8dfe9"/>
+    </linearGradient>
+    <pattern id="stars" width="150" height="150" patternUnits="userSpaceOnUse">
+      <path d="m35 20 5 13 14 5-14 5-5 13-5-13-14-5 14-5Z" fill="#837087" opacity=".12"/>
+      <circle cx="112" cy="106" r="5" fill="#837087" opacity=".12"/>
+    </pattern>
+  </defs>
+  <rect width="941" height="1672" fill="url(#bg)"/>
+  <rect width="941" height="1672" fill="url(#stars)"/>
+  <circle cx="840" cy="180" r="250" fill="#dacddd" opacity=".34"/>
+  <circle cx="40" cy="1500" r="310" fill="#e0d0c9" opacity=".26"/>
+</svg>

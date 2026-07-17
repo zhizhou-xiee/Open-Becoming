@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta id="themeColorMeta" name="theme-color" content="#8E656F">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script>
+  (() => {
+    try {
+      const savedChrome = localStorage.getItem("becoming-theme-chrome");
+      if (!/^#[0-9a-f]{6}$/i.test(savedChrome || "")) return;
+      document.documentElement.style.setProperty("--chrome", savedChrome);
+      document.getElementById("themeColorMeta").setAttribute("content", savedChrome);
+    } catch (_) {}
+  })();
+</script>
+<title>Becoming</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Mrs+Saint+Delafield&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet">
+<link rel="apple-touch-icon" href="/static/icon.png">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+  <svg class="svg-defs" aria-hidden="true">
+    <defs>
+      <symbol id="peekCatOutline" viewBox="0 0 240 140">
+        <path d="M42 94C39 77 39 59 43 38C44 31 49 29 55 33L84 53C106 47 134 47 156 53L185 33C191 29 196 31 197 38C201 59 201 77 198 94"/>
+        <path d="M50 91L29 88M50 103L28 108M190 91L211 88M190 103L212 108"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <div id="loginOverlay">
+    <div id="loginBox">
+      <span class="splash-title">Becoming</span>
+      <input id="loginPassword" type="password" placeholder="请输入密码" autocomplete="current-password">
+      <button id="loginSubmit">进入</button>
+      <div id="loginError">密码不对，再试试~</div>
+    </div>
+  </div>
+
+  <div id="splashScreen">
+    <span class="material-symbols-outlined splash-paw">pets</span>
+    <span class="splash-title">Becoming</span>
+  </div>
+
+  <!-- ══ 单聊视图 ══ -->
+  <div id="singleView" class="view active">
+
+    <!-- 角色列表层（初始显示） -->
+    <div id="singleListView" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+
+      <div id="singleListHeader">
+        <!-- 散落爪印装饰 -->
+        <span class="material-symbols-outlined header-paw" style="font-size:30px;top:8px;left:14px;transform:rotate(-18deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:20px;top:22px;left:50px;transform:rotate(12deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:26px;top:6px;right:18px;transform:rotate(22deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:18px;bottom:10px;right:54px;transform:rotate(-28deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:16px;bottom:8px;left:28px;transform:rotate(32deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:14px;top:18px;left:96px;transform:rotate(-6deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:21px;bottom:12px;left:114px;transform:rotate(20deg)">pets</span>
+        <span class="becoming-title">Becoming</span>
+      </div>
+
+      <div id="charListContainer"></div>
+    </div>
+
+    <!-- 会话层（初始隐藏） -->
+    <div id="singleChatView" style="display:none; flex:1; flex-direction:column; overflow:hidden;">
+      <header>
+        <!-- 散落爪印装饰 -->
+        <span class="material-symbols-outlined header-paw" style="font-size:22px;top:8px;right:16px;transform:rotate(20deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:16px;bottom:12px;right:52px;transform:rotate(-10deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:26px;top:6px;left:14px;transform:rotate(-22deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:18px;bottom:10px;left:44px;transform:rotate(16deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:14px;top:14px;left:96px;transform:rotate(-8deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:20px;bottom:6px;right:96px;transform:rotate(-30deg)">pets</span>
+
+        <div class="chat-header-bar">
+          <button id="backToList">返回</button>
+          <span id="char-name"></span>
+          <span id="searchToggle" class="material-symbols-outlined">search</span>
+        </div>
+        <div id="char-online">
+          <span class="online-dot"></span>&gt;w&lt; 在线
+        </div>
+        <div id="char-sub"></div>
+      </header>
+
+      <div id="swipeBackHint" aria-hidden="true">
+        <span class="material-symbols-outlined">arrow_back</span>
+      </div>
+
+      <div id="searchBar" style="display:none;">
+        <label class="search-input-wrap">
+          <input id="searchInput" type="text" placeholder="搜索消息…" autocomplete="off">
+          <span id="searchInputMirror" aria-hidden="true"></span>
+        </label>
+        <span id="searchCounter"></span>
+        <span id="searchPrev" class="material-symbols-outlined">expand_less</span>
+        <span id="searchNext" class="material-symbols-outlined">expand_more</span>
+        <span id="searchClose" class="material-symbols-outlined">close</span>
+      </div>
+
+      <div id="messages"></div>
+
+      <div id="transferPanel" class="transfer-panel hidden">
+        <div class="transfer-card">
+          <div class="transfer-title">给TA转账 🐾</div>
+          <input id="transferAmount" type="number" inputmode="decimal" placeholder="金额（随便输）">
+          <input id="transferNote" type="text" placeholder="留言（可不填）" maxlength="30">
+          <div class="transfer-actions">
+            <button id="transferCancel">取消</button>
+            <button id="transferConfirm">转出</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="stickerPanel" class="transfer-panel hidden">
+        <div class="transfer-card">
+          <div class="transfer-title">选个表情包 🐾</div>
+          <div id="stickerGrid" class="sticker-grid"></div>
+          <div class="transfer-actions">
+            <button id="stickerCancel">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="inputbar">
+        <input id="input" type="text" placeholder="小猫酝酿坏主意中…" autocomplete="off">
+        <input id="imageInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden>
+        <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
+        <input id="fileImageInput" type="file" accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" hidden>
+        <div id="pawMenu" class="paw-send-menu hidden">
+          <button class="paw-menu-item" data-action="image">
+            <span class="material-symbols-outlined">image</span><span>发图片</span>
+          </button>
+          <button class="paw-menu-item" data-action="sticker">
+            <span class="material-symbols-outlined">mood</span><span>表情包</span>
+          </button>
+          <button class="paw-menu-item" data-action="transfer">
+            <span class="material-symbols-outlined">payments</span><span>转账</span>
+          </button>
+          <button class="paw-menu-item" data-action="makeup">
+            <span class="material-symbols-outlined">handshake</span><span>和好</span>
+          </button>
+        </div>
+        <button id="send" aria-label="发送">
+          <span class="material-symbols-outlined" style="font-size:22px">pets</span>
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══ 群聊视图 ══ -->
+  <div id="groupView" class="view">
+    <div class="group-header">
+      <!-- 散落爪印装饰 -->
+      <span class="material-symbols-outlined header-paw" style="font-size:24px;top:6px;left:12px;transform:rotate(-22deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:17px;bottom:5px;right:28px;transform:rotate(18deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:20px;top:4px;right:54px;transform:rotate(-15deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:16px;bottom:6px;left:50px;transform:rotate(10deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:14px;top:16px;left:46px;transform:rotate(26deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:19px;bottom:4px;right:84px;transform:rotate(-24deg)">pets</span>
+      <span id="groupChatTitle">群聊（6）</span>
+    </div>
+    <div id="groupMessages"></div>
+    <div id="onlineBar">
+      <button id="onlinePickerBtn" title="选择在线角色">◎</button>
+    </div>
+    <div id="groupQuoteBar" class="hidden">
+      <div>
+        <strong id="groupQuoteName"></strong>
+        <span id="groupQuoteText"></span>
+      </div>
+      <button id="groupQuoteClear" aria-label="取消引用" title="取消引用">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div id="groupInputbar">
+      <input id="groupInput" type="text" placeholder="小猫酝酿坏主意中…" autocomplete="off">
+      <button id="groupSend" aria-label="发送">
+        <span class="material-symbols-outlined" style="font-size:22px">pets</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ══ 猫窝视图 ══ -->
+  <div id="momentsView" class="view hidden">
+    <div id="momentsListHeader">
+      <span class="material-symbols-outlined header-paw" style="font-size:26px;top:8px;left:14px;transform:rotate(-18deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:17px;top:22px;left:52px;transform:rotate(14deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:22px;bottom:10px;left:100px;transform:rotate(22deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:15px;top:8px;right:22px;transform:rotate(20deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:20px;bottom:8px;right:58px;transform:rotate(-26deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:13px;top:18px;right:74px;transform:rotate(-8deg)">pets</span>
+      <span class="becoming-title" style="font-size:42px">Nest</span>
+    </div>
+    <div id="nestTabs" role="tablist" aria-label="猫窝房间">
+      <button class="nest-tab active" data-nest-pane="moments" role="tab" aria-selected="true">朋友圈</button>
+      <button class="nest-tab" data-nest-pane="reading" role="tab" aria-selected="false">共读室</button>
+    </div>
+    <div id="momentsPane" class="nest-pane">
+      <div id="momentsFeed"></div>
+    </div>
+    <div id="readingPane" class="nest-pane hidden">
+      <section id="readingLibraryView">
+        <div id="readingLibraryToolbar">
+          <div>
+            <h2>共读室</h2>
+            <p id="readingLibraryCount">书架空着</p>
+          </div>
+          <button id="readingUploadBtn" class="reading-icon-btn" aria-label="放一本 TXT 进书架" title="放一本 TXT 进书架">
+            <span class="material-symbols-outlined">upload_file</span>
+          </button>
+          <input id="readingFileInput" type="file" accept=".txt,text/plain" hidden>
+        </div>
+        <div id="readingBookList"></div>
+      </section>
+      <section id="readingReaderView" class="hidden">
+        <div id="readingReaderHeader">
+          <button id="readingBackBtn" class="reading-icon-btn" aria-label="返回书架" title="返回书架">
+            <span class="material-symbols-outlined">arrow_back</span>
+          </button>
+          <div id="readingReaderHeading">
+            <h2 id="readingBookTitle"></h2>
+            <span id="readingReaderProgress"></span>
+          </div>
+          <button id="readingParticipantsBtn" class="reading-icon-btn" aria-label="选择共读成员" title="选择共读成员">
+            <span class="material-symbols-outlined">group</span>
+          </button>
+        </div>
+        <div id="readingChapterBar">
+          <button id="readingPrevChapter" class="reading-icon-btn" aria-label="上一章" title="上一章">
+            <span class="material-symbols-outlined">chevron_left</span>
+          </button>
+          <select id="readingChapterSelect" aria-label="选择章节"></select>
+          <button id="readingNextChapter" class="reading-icon-btn" aria-label="下一章" title="下一章">
+            <span class="material-symbols-outlined">chevron_right</span>
+          </button>
+        </div>
+        <div id="readingContent"></div>
+        <div id="readingSelectionBar" class="hidden" role="toolbar" aria-label="划线操作">
+          <button id="readingHighlightBtn"><span class="material-symbols-outlined">ink_highlighter</span><span>划线</span></button>
+          <button id="readingNoteBtn"><span class="material-symbols-outlined">edit_note</span><span>写批注</span></button>
+          <button id="readingAskBtn"><span class="material-symbols-outlined">forum</span><span>喊祂们</span></button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 猫窝悬浮写帖按钮 -->
+  <button id="momentsFab" class="hidden" aria-label="写帖子">
+    <span class="material-symbols-outlined">edit</span>
+  </button>
+
+  <!-- 写帖弹窗 -->
+  <div id="momentWriteModal" class="hidden">
+    <div id="momentWriteCard">
+      <textarea id="momentInput" placeholder="分享此刻…" autocomplete="off"></textarea>
+      <div id="momentWriteActions">
+        <button id="momentFeedBtn">猫条 🐾</button>
+        <button id="momentSubmitBtn">发布</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 记忆视图 ══ -->
+  <div id="memoryView" class="view">
+
+    <!-- 卡片列表层 -->
+    <div id="memoryListView" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+      <div id="memoryListHeader">
+        <span class="material-symbols-outlined header-paw" style="font-size:24px;top:8px;left:14px;transform:rotate(-18deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:16px;bottom:8px;right:28px;transform:rotate(14deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:20px;top:8px;right:22px;transform:rotate(16deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:18px;top:20px;left:56px;transform:rotate(-5deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:22px;bottom:10px;left:64px;transform:rotate(28deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:14px;bottom:6px;right:68px;transform:rotate(-22deg)">pets</span>
+        <span class="becoming-title" style="font-size:36px">Memory</span>
+      </div>
+      <div id="memoryCardContainer"></div>
+    </div>
+
+    <!-- 详情层 -->
+    <div id="memoryDetailView" style="display:none; flex:1; flex-direction:column; overflow:hidden;">
+      <header>
+        <span class="material-symbols-outlined header-paw" style="font-size:20px;top:8px;right:16px;transform:rotate(20deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:26px;top:6px;left:14px;transform:rotate(-22deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:18px;bottom:10px;left:48px;transform:rotate(16deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:14px;top:16px;right:58px;transform:rotate(-8deg)">pets</span>
+        <span class="material-symbols-outlined header-paw" style="font-size:16px;bottom:8px;right:22px;transform:rotate(28deg)">pets</span>
+        <div class="chat-header-bar">
+          <button id="backToMemoryList">返回</button>
+          <span id="memory-char-name"></span>
+          <button id="memorySearchToggle" class="memory-header-icon" title="搜索记忆" aria-label="搜索记忆">
+            <span class="material-symbols-outlined">search</span>
+          </button>
+        </div>
+      </header>
+      <div id="memorySearchBar" class="memory-search-bar" hidden>
+        <span class="material-symbols-outlined">search</span>
+        <input id="memorySearchInput" type="search" placeholder="搜索记忆" autocomplete="off">
+      </div>
+      <div id="memoryDetailContent"></div>
+    </div>
+
+  </div>
+
+  <!-- ══ 更多视图 ══ -->
+  <div id="moreView" class="view">
+    <div id="moreHeader">
+      <span class="material-symbols-outlined header-paw" style="font-size:28px;top:8px;left:14px;transform:rotate(-18deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:18px;top:22px;left:54px;transform:rotate(12deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:22px;bottom:10px;left:110px;transform:rotate(20deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:16px;top:8px;right:20px;transform:rotate(22deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:20px;bottom:8px;right:56px;transform:rotate(-28deg)">pets</span>
+      <span class="material-symbols-outlined header-paw" style="font-size:14px;top:20px;right:72px;transform:rotate(-10deg)">pets</span>
+      <span class="becoming-title" style="font-size:36px">More</span>
+    </div>
+    <div id="moreContent">
+      <div id="usagePanel" style="padding: 16px 14px 8px;"></div>
+      <div id="compressHealthPanel" style="padding: 0 14px 8px;"></div>
+      <div id="personaPanel" style="display:none;"></div>
+      <div id="appearancePanel" style="display:none;"></div>
+      <div id="toolsPanel" style="display:none;"></div>
+      <div id="schedulerPanel" style="display:none;"></div>
+      <div id="memoryImportPanel" style="display:none;"></div>
+      <div class="more-menu">
+        <div class="more-menu-row">
+          <button class="more-icon-btn" data-action="mcp">
+            <span class="material-symbols-outlined">hub</span>
+          </button>
+          <button class="more-pill" data-action="mcp">猫爬架°MCP列表</button>
+        </div>
+        <div class="more-menu-row">
+          <button class="more-icon-btn" data-action="persona">
+            <span class="material-symbols-outlined">person_edit</span>
+          </button>
+          <button class="more-pill" data-action="persona">换毛期°人设编辑</button>
+        </div>
+        <div class="more-menu-row">
+          <button class="more-icon-btn" data-action="appearance">
+            <span class="material-symbols-outlined">palette</span>
+          </button>
+          <button class="more-pill" data-action="appearance">洗护台°外观主题</button>
+        </div>
+        <div class="more-menu-row">
+          <button class="more-icon-btn" data-action="scheduler">
+            <span class="material-symbols-outlined">tune</span>
+          </button>
+          <button class="more-pill" data-action="scheduler">猫砂盆°功能调节</button>
+        </div>
+        <div class="more-menu-row">
+          <button class="more-icon-btn" data-action="memory-import">
+            <span class="material-symbols-outlined">history</span>
+          </button>
+          <button class="more-pill" data-action="memory-import">猫脑壳°往事迁移</button>
+        </div>
+        <div class="more-menu-row more-menu-logout">
+          <button class="more-pill more-pill-logout" data-action="logout">世界很大，猫出去看看°退出登录</button>
+          <svg class="more-cat-img" viewBox="0 0 240 140" role="img" aria-label="准备出门的小猫">
+            <use class="more-cat-line" href="#peekCatOutline"/>
+            <circle class="more-cat-eye" cx="92" cy="92" r="5.5"/>
+            <circle class="more-cat-eye" cx="148" cy="92" r="5.5"/>
+            <path class="more-cat-line more-cat-mouth" d="M114 97C118 101 122 101 126 97"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 底部导航 ══ -->
+  <nav id="bottomNav">
+    <button type="button" class="nav-item active" data-view="singleView">
+      <span class="nav-cat" aria-hidden="true">
+        <svg viewBox="0 0 240 140">
+          <use class="nav-cat-outline" href="#peekCatOutline"/>
+          <circle class="nav-cat-eye" cx="92" cy="92" r="4"/>
+          <circle class="nav-cat-eye" cx="148" cy="92" r="4"/>
+          <path class="nav-cat-face" d="M114 101L120 105L126 101"/>
+        </svg>
+      </span>
+      <span class="material-symbols-outlined nav-icon">chat_bubble</span>
+      <span>单聊</span>
+    </button>
+    <button type="button" class="nav-item" data-view="groupView">
+      <span class="nav-cat" aria-hidden="true">
+        <svg viewBox="0 0 240 140">
+          <use class="nav-cat-outline" href="#peekCatOutline"/>
+          <circle class="nav-cat-eye" cx="92" cy="92" r="4"/>
+          <path class="nav-cat-face" d="M141 92L148 96L155 91M117 105H123"/>
+        </svg>
+      </span>
+      <span class="material-symbols-outlined nav-icon">group</span>
+      <span>群聊</span>
+    </button>
+    <button type="button" class="nav-item" data-view="memoryView">
+      <span class="nav-cat" aria-hidden="true">
+        <svg viewBox="0 0 240 140">
+          <use class="nav-cat-outline" href="#peekCatOutline"/>
+          <path class="nav-cat-face" d="M84 91H100M140 91H156M117 105H123"/>
+        </svg>
+      </span>
+      <span class="material-symbols-outlined nav-icon">psychology</span>
+      <span>记忆</span>
+    </button>
+    <button type="button" class="nav-item" data-view="momentsView">
+      <span class="nav-cat" aria-hidden="true">
+        <svg viewBox="0 0 240 140">
+          <use class="nav-cat-outline" href="#peekCatOutline"/>
+          <path class="nav-cat-face" d="M84 93C89 88 95 88 100 93M140 93C145 88 151 88 156 93M116 105C118 108 122 108 124 105"/>
+        </svg>
+      </span>
+      <span class="material-symbols-outlined nav-icon">photo_library</span>
+      <span>猫窝</span>
+    </button>
+    <button type="button" class="nav-item" data-view="moreView">
+      <span class="nav-cat" aria-hidden="true">
+        <svg viewBox="0 0 240 140">
+          <use class="nav-cat-outline" href="#peekCatOutline"/>
+          <circle class="nav-cat-eye" cx="92" cy="92" r="4"/>
+          <circle class="nav-cat-eye" cx="148" cy="92" r="4"/>
+          <path class="nav-cat-face" d="M114 106C118 102 122 102 126 106"/>
+        </svg>
+      </span>
+      <span class="material-symbols-outlined nav-icon">more_horiz</span>
+      <span>更多</span>
+    </button>
+  </nav>
+
+<!-- 气泡操作菜单 -->
+<!-- 角色选择浮层（群聊在线 & 猫窝评论共用） -->
+<div id="charPickerOverlay" class="hidden">
+  <div id="charPickerPanel">
+    <div id="charPickerGrid"></div>
+    <div id="charPickerActions">
+      <button id="charPickerContinue" class="hidden">
+        <span class="material-symbols-outlined">forum</span><span>让祂们聊</span>
+      </button>
+      <button id="charPickerCancel">取消</button>
+      <button id="charPickerConfirm">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 共读批注浮层 -->
+<div id="readingNoteOverlay" class="reading-sheet-overlay hidden">
+  <div class="reading-sheet">
+    <div class="reading-sheet-grip"></div>
+    <p id="readingNoteQuote" class="reading-sheet-quote"></p>
+    <textarea id="readingNoteInput" placeholder="写在页边……" maxlength="4000"></textarea>
+    <div class="reading-sheet-actions">
+      <button id="readingNoteCancel">取消</button>
+      <button id="readingNoteSave" class="reading-sheet-primary">记下</button>
+    </div>
+  </div>
+</div>
+
+<div id="readingAnnotationOverlay" class="reading-sheet-overlay hidden">
+  <div class="reading-sheet reading-annotation-sheet">
+    <div class="reading-sheet-grip"></div>
+    <div id="readingAnnotationContent"></div>
+    <div class="reading-sheet-actions">
+      <button id="readingAnnotationDelete" class="reading-danger-btn">删掉划线</button>
+      <button id="readingAnnotationAsk" class="reading-sheet-primary">再喊一声</button>
+      <button id="readingAnnotationClose">收起</button>
+    </div>
+  </div>
+</div>
+
+<div id="bubbleActionMenu" class="bubble-action-overlay hidden">
+  <div class="bubble-action-card">
+    <button class="bubble-action-item" id="bubbleCopyBtn">
+      <span class="material-symbols-outlined">content_copy</span><span>复制</span>
+    </button>
+    <div id="bubbleQuoteDivider" class="bubble-action-divider hidden"></div>
+    <button class="bubble-action-item hidden" id="bubbleQuoteBtn">
+      <span class="material-symbols-outlined">format_quote</span><span>引用</span>
+    </button>
+    <div class="bubble-action-divider"></div>
+    <button class="bubble-action-item" id="bubbleDeleteBtn">
+      <span class="material-symbols-outlined">delete</span><span>删除</span>
+    </button>
+  </div>
+</div>
+
+<!-- 自定义确认弹窗 -->
+<div id="confirmDialog" class="confirm-overlay hidden">
+  <div class="confirm-card">
+    <p id="confirmMsg" class="confirm-msg"></p>
+    <div class="confirm-btns">
+      <button id="confirmCancel" class="confirm-btn">取消</button>
+      <button id="confirmOk" class="confirm-btn confirm-btn-ok">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- 图片来源选择 -->
+<div id="imagePickerSheet" class="soft-sheet-overlay hidden" aria-hidden="true">
+  <div class="image-picker-card" role="dialog" aria-modal="true" aria-label="选择图片来源">
+    <button class="image-picker-option" data-image-source="gallery">
+      <span class="material-symbols-outlined">photo_library</span>
+      <span>照片图库</span>
+    </button>
+    <button class="image-picker-option" data-image-source="camera">
+      <span class="material-symbols-outlined">photo_camera</span>
+      <span>拍照</span>
+    </button>
+    <button class="image-picker-option" data-image-source="file">
+      <span class="material-symbols-outlined">folder_open</span>
+      <span>选取文件</span>
+    </button>
+  </div>
+</div>
+
+<!-- 角色内心状态 -->
+<div id="desireSheet" class="soft-sheet-overlay desire-overlay hidden" aria-hidden="true">
+  <section class="desire-card" role="dialog" aria-modal="true" aria-labelledby="desireName">
+    <div class="desire-header">
+      <img id="desireAvatar" alt="">
+      <div class="desire-heading">
+        <span id="desireName"></span>
+        <span class="desire-eyebrow">藏在心里的天气</span>
+      </div>
+      <button id="desireClose" class="desire-close" aria-label="关闭">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+    <div class="desire-intent">
+      <span>此刻最想</span>
+      <strong id="desireIntent">安静待一会儿</strong>
+      <p id="desireReason"></p>
+    </div>
+    <div id="desireDriveList" class="desire-drive-list"></div>
+    <div id="desireThoughtWrap" class="desire-thought hidden">
+      <span>心里挂着</span>
+      <p id="desireThought"></p>
+    </div>
+  </section>
+</div>
+
+<!-- 封窗弹窗 -->
+<div id="closeWindowModal" class="cw-overlay hidden">
+  <div class="cw-card">
+    <p class="cw-title">Chat paused</p>
+    <p class="cw-desc" id="cwDesc"></p>
+    <p class="cw-error" id="cwError"></p>
+    <button class="cw-btn cw-btn-primary" id="cwGivePlead">Give Plead</button>
+    <button class="cw-btn cw-btn-secondary" id="cwNoContinue" disabled>No, continue with others</button>
+    <button class="cw-btn cw-btn-learn" id="cwLearnMore">No Learn More</button>
+  </div>
+</div>
+
+<!-- 和好按钮 sheet -->
+<div id="makeupSheet" class="makeup-overlay hidden">
+  <div class="makeup-card">
+    <button class="makeup-close" id="makeupCloseBtn">✕</button>
+    <div class="makeup-danmaku-area" id="makeupDanmakuArea"></div>
+    <button class="makeup-peace-btn" id="makeupPressBtn">🤍</button>
+    <p class="makeup-hint" id="makeupHint">按下，让他们知道</p>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

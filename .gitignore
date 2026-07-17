@@ -1,0 +1,30 @@
+# 数据库
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+.env.*
+!.env.example
+
+# 运行时文件
+becoming_memory/
+static/uploads/chat_images/
+
+# macOS
+.DS_Store
+
+# Tooling and local reports
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+*.log

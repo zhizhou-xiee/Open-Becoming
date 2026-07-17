@@ -1,0 +1,7 @@
+flask
+requests
+gunicorn
+APScheduler==3.10.4
+python-frontmatter==1.1.0
+PyYAML>=6.0,<7
+rapidfuzz>=3.0,<4
