@@ -84,7 +84,7 @@ body::before {
   background-color: var(--bg);
   background-image:
     linear-gradient(rgba(var(--cream-rgb), 0.76), rgba(var(--cream-rgb), 0.82)),
-    var(--list-background-image, url("/static/background_pink.svg"));
+    var(--list-background-image, url("/static/char_list_watercolor.png"));
   background-size: cover;
   background-position: center center;
 }
@@ -3380,7 +3380,7 @@ header {
   content: '';
   position: absolute;
   inset: 0;
-  background-image: var(--chat-background-image, url("/static/background_pink.svg"));
+  background-image: var(--chat-background-image, url("/static/chat_bg.png"));
   background-size: cover;
   background-position: center top;
   pointer-events: none;

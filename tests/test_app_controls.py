@@ -121,8 +121,8 @@ class AppControlsTests(unittest.TestCase):
         self.assertEqual(selected["colors"]["ai_bubble"], "#C6D8CF")
         self.assertEqual(selected["colors"]["dusky"], "#75805F")
         self.assertEqual(selected["colors"]["chrome"], "#75805F")
-        self.assertEqual(appearance["chat_background"]["default_url"], "/static/background_matcha.svg")
-        self.assertEqual(appearance["chat_background"]["url"], "/static/background_matcha.svg")
+        self.assertEqual(appearance["chat_background"]["default_url"], "/static/theme_matcha.png")
+        self.assertEqual(appearance["chat_background"]["url"], "/static/theme_matcha.png")
         self.assertEqual(
             [theme["name"] for theme in appearance["themes"]],
             ["恋人", "抹茶", "雾港", "丁香"],

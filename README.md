@@ -70,7 +70,7 @@ ANTHROPIC_API_KEY=replace-with-your-anthropic-key
 
 ## 自定义素材
 
-公开版保留中性命名的示例头像。原仓库中来源不明的网络表情包没有进入公开版，`static/stickers/placeholder.svg` 是可替换的占位图。添加素材前，请确认你拥有公开分发权，并在需要时更新 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+公开版保留原项目的主题背景，并使用中性命名的示例头像。原仓库中来源不明的网络表情包没有进入公开版，`static/stickers/placeholder.svg` 是可替换的占位图。添加素材前，请确认你拥有公开分发权，并在需要时更新 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 测试
 

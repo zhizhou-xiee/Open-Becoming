@@ -266,7 +266,7 @@ DEFAULT_AVATAR_URLS = {
     "user": USER_AVATAR,
     **{cid: char["avatar"] for cid, char in CHARACTERS.items()},
 }
-DEFAULT_CHAT_BACKGROUND = "/static/background_pink.svg"
+DEFAULT_CHAT_BACKGROUND = "/static/chat_bg.png"
 DEFAULT_THEME_ID = "pink-lover"
 THEME_SETTING_KEY = "appearance_theme"
 THEME_DEFINITIONS = {
@@ -283,8 +283,8 @@ THEME_DEFINITIONS = {
             "bg": "#FFFAF7",
             "card": "#FFF7F2",
         },
-        "chat_background": "/static/background_pink.svg",
-        "list_background": "/static/background_pink.svg",
+        "chat_background": "/static/chat_bg.png",
+        "list_background": "/static/char_list_watercolor.png",
     },
     "dreamscape": {
         "name": "抹茶",
@@ -299,8 +299,8 @@ THEME_DEFINITIONS = {
             "bg": "#F4F1E7",
             "card": "#FBF8F0",
         },
-        "chat_background": "/static/background_matcha.svg",
-        "list_background": "/static/background_matcha.svg",
+        "chat_background": "/static/theme_matcha.png",
+        "list_background": "/static/theme_matcha.png",
     },
     "sea-salt": {
         "name": "雾港",
@@ -315,8 +315,8 @@ THEME_DEFINITIONS = {
             "bg": "#F2F1EF",
             "card": "#FAF8F4",
         },
-        "chat_background": "/static/background_fog.svg",
-        "list_background": "/static/background_fog.svg",
+        "chat_background": "/static/theme_fog_harbor.png",
+        "list_background": "/static/theme_fog_harbor.png",
     },
     "fantasy": {
         "name": "丁香",
@@ -331,8 +331,8 @@ THEME_DEFINITIONS = {
             "bg": "#F5F0EE",
             "card": "#FCF8F5",
         },
-        "chat_background": "/static/background_lilac.svg",
-        "list_background": "/static/background_lilac.svg",
+        "chat_background": "/static/theme_lilac.png",
+        "list_background": "/static/theme_lilac.png",
     },
 }
 APPEARANCE_ASSET_KEYS = {f"avatar_{cid}" for cid in DEFAULT_AVATAR_URLS}
