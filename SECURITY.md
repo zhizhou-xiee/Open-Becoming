@@ -13,6 +13,7 @@
 ## 部署者责任
 
 - 始终设置强 `APP_PASSWORD` 与稳定的 `FLASK_SECRET_KEY`。
+- 只通过服务器环境变量或平台 Secret 配置模型 API key；不要把 key 写进 `static/`、Dockerfile、构建参数或前端公开变量。
 - 使用 HTTPS，并限制应用和数据库的网络访问。
 - 把 SQLite 数据库、记忆、上传目录和备份当作敏感数据。
 - 只连接可信 MCP 服务，并定期轮换外部服务凭据。

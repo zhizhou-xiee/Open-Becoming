@@ -1,0 +1,19 @@
+services:
+  open-becoming:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: "8000"
+      DB_PATH: /data/becoming.db
+      BECOMING_MEMORY_DIR: /data/memory
+      UPLOAD_ROOT: /data/uploads
+      WEB_CONCURRENCY: "1"
+    ports:
+      - "${BECOMING_HOST_PORT:-8000}:8000"
+    volumes:
+      - open-becoming-data:/data
+
+volumes:
+  open-becoming-data:

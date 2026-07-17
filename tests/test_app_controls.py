@@ -58,6 +58,20 @@ class AppControlsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["limits"]["char2"], 42.5)
 
+    def test_provider_api_keys_never_reach_character_config(self):
+        with patch.object(
+            app_module, "OPENROUTER_API_KEY", "server-only-openrouter"
+        ), patch.object(
+            app_module, "ANTHROPIC_API_KEY", "server-only-anthropic"
+        ):
+            response = self.client.get("/api/character-config")
+
+        rendered = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("server-only-openrouter", rendered)
+        self.assertNotIn("server-only-anthropic", rendered)
+        self.assertNotIn("api_key", rendered.lower())
+
     def test_login_stays_closed_without_a_configured_password(self):
         unauthenticated = app_module.app.test_client()
         with patch.object(app_module, "APP_PASSWORD", ""):

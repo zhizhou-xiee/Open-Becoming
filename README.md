@@ -72,7 +72,7 @@ ANTHROPIC_API_KEY=replace-with-your-anthropic-key
 
 ## 部署
 
-项目提供通用 WSGI 入口、Gunicorn 配置、Procfile 与 Dockerfile，不依赖 Railway。Docker、VPS 和主流 PaaS 的持久化目录与后台任务注意事项见 [部署指南](docs/DEPLOYMENT.md)。
+项目提供通用 WSGI 入口、Gunicorn 配置、Procfile、Dockerfile 与 Docker Compose，不依赖 Railway。还不确定是否适合自己、API key 应放哪里，或想按本机、Windows、NAS、VPS、PaaS 等路径一步步部署，请从 [适宜人群与部署教程](docs/DEPLOYMENT.md) 开始。
 
 ## 移动端扩展
 
