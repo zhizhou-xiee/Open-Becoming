@@ -526,12 +526,11 @@
     amountEl.textContent = "🐾 " + (data.amount ?? "");
     bubble.appendChild(icon);
     bubble.appendChild(amountEl);
-    if (data.note) {
-      const noteEl = document.createElement("div");
-      noteEl.className = "transfer-note-text";
-      noteEl.textContent = data.note;
-      bubble.appendChild(noteEl);
-    }
+    const noteEl = document.createElement("div");
+    noteEl.className = "transfer-note-text";
+    noteEl.textContent = data.note || "\u00a0";
+    noteEl.title = data.note || "";
+    bubble.appendChild(noteEl);
     block.appendChild(bubble);
     if (who === "user") {
       const avatarImg = document.createElement("img");
@@ -2340,8 +2339,7 @@
   async function fetchMemoryOverview() {
     const res = await fetch("/api/memory");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    return data.characters || [];
+    return await res.json();
   }
 
   async function fetchUsage() {
@@ -2488,15 +2486,26 @@
   }
 
   let memoryListRenderVersion = 0;
-  async function renderMemoryList(characters) {
+  async function renderMemoryList(characters, backend = null) {
     const container = document.getElementById("memoryCardContainer");
     const renderVersion = ++memoryListRenderVersion;
     const fragment = document.createDocumentFragment();
+    const hasAdmin = backend?.capabilities?.includes("admin") !== false;
+    if (backend && (!backend.enabled || !hasAdmin)) {
+      const notice = document.createElement("div");
+      notice.className = "memory-backend-notice";
+      notice.innerHTML = backend.enabled
+        ? '<span class="material-symbols-outlined">cloud_sync</span><div><strong>正在使用外置记忆库</strong><small>聊天中的读取与写入照常进行；查看和编辑请到外置记忆库中完成。</small></div>'
+        : '<span class="material-symbols-outlined">memory_off</span><div><strong>长期记忆目前已关闭</strong><small>聊天摘要仍保存在本机数据库，需要时可在服务器配置中重新开启。</small></div>';
+      fragment.appendChild(notice);
+    }
     characters.forEach(s => {
       const card = document.createElement("div");
-      card.className = "memory-card";
-      card.tabIndex = 0;
-      card.setAttribute("role", "button");
+      card.className = "memory-card" + (hasAdmin ? "" : " memory-card-external");
+      if (hasAdmin) {
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+      }
 
       const top = document.createElement("div");
       top.className = "memory-card-top";
@@ -2509,7 +2518,9 @@
       const name = document.createElement("strong");
       name.textContent = s.name;
       const count = document.createElement("span");
-      count.textContent = s.count ? `${s.count} 段记忆` : "还没有留下记忆";
+      count.textContent = s.count == null
+        ? (backend?.enabled ? "由外置记忆库管理" : "长期记忆已关闭")
+        : (s.count ? `${s.count} 段记忆` : "还没有留下记忆");
       identity.appendChild(name);
       identity.appendChild(count);
       top.appendChild(avatar);
@@ -2517,7 +2528,11 @@
 
       const preview = document.createElement("div");
       preview.className = "memory-card-preview";
-      preview.textContent = truncateText(s.latest?.content, 92) || "这里暂时安安静静。";
+      preview.textContent = s.count == null
+        ? (backend?.enabled
+          ? "这部分内容不会从外置记忆库拉回管理页。"
+          : "开启记忆后，这里会重新长出内容。")
+        : (truncateText(s.latest?.content, 92) || "这里暂时安安静静。");
       card.appendChild(top);
       card.appendChild(preview);
       if (s.latest?.created) {
@@ -2527,11 +2542,13 @@
         card.appendChild(date);
       }
 
-      const open = () => loadCharacterMemories(s.character_id, s.name);
-      card.addEventListener("click", open);
-      card.addEventListener("keydown", e => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
-      });
+      if (hasAdmin) {
+        const open = () => loadCharacterMemories(s.character_id, s.name);
+        card.addEventListener("click", open);
+        card.addEventListener("keydown", e => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+        });
+      }
       fragment.appendChild(card);
     });
     await decodeImagesBeforeSwap(fragment);
@@ -2730,8 +2747,8 @@
 
   async function loadMemoryView() {
     try {
-      const characters = await fetchMemoryOverview();
-      await renderMemoryList(characters);
+      const data = await fetchMemoryOverview();
+      await renderMemoryList(data.characters || [], data.backend || null);
     } catch (e) {
       console.warn("loadMemoryView failed", e);
     }
@@ -2792,6 +2809,7 @@
     if (_personaPanelOpen) closePersonaPanel();
     if (_schedulerPanelOpen) closeSchedulerPanel();
     if (_memoryImportPanelOpen) closeMemoryImportPanel();
+    if (_gestureHelpPanelOpen) closeGestureHelpPanel();
     const panel = document.getElementById("toolsPanel");
     panel.innerHTML = "";
     panel.style.display = "flex";
@@ -3120,6 +3138,7 @@
     if (_personaPanelOpen) closePersonaPanel();
     if (_toolsPanelOpen) closeToolsPanel();
     if (_memoryImportPanelOpen) closeMemoryImportPanel();
+    if (_gestureHelpPanelOpen) closeGestureHelpPanel();
     const panel = document.getElementById("schedulerPanel");
     panel.innerHTML = "";
     panel.style.display = "flex";
@@ -3579,6 +3598,7 @@
     if (_toolsPanelOpen) closeToolsPanel();
     if (_schedulerPanelOpen) closeSchedulerPanel();
     if (_memoryImportPanelOpen) closeMemoryImportPanel();
+    if (_gestureHelpPanelOpen) closeGestureHelpPanel();
     const panel = document.getElementById("appearancePanel");
     panel.style.display = "flex";
     _appearancePanelOpen = true;
@@ -3601,6 +3621,7 @@
     if (_toolsPanelOpen) closeToolsPanel();
     if (_schedulerPanelOpen) closeSchedulerPanel();
     if (_memoryImportPanelOpen) closeMemoryImportPanel();
+    if (_gestureHelpPanelOpen) closeGestureHelpPanel();
     const panel = document.getElementById("personaPanel");
     const placeholder = panel.nextElementSibling;
     panel.innerHTML = "";
@@ -3727,6 +3748,7 @@
     if (_personaPanelOpen) closePersonaPanel();
     if (_toolsPanelOpen) closeToolsPanel();
     if (_schedulerPanelOpen) closeSchedulerPanel();
+    if (_gestureHelpPanelOpen) closeGestureHelpPanel();
     const panel = document.getElementById("memoryImportPanel");
     panel.innerHTML = "";
     panel.style.display = "flex";
@@ -3810,6 +3832,47 @@
     document.getElementById("moreContent").scrollTop = 0;
   }
 
+  // ── 手势说明 ──
+  let _gestureHelpPanelOpen = false;
+
+  function openGestureHelpPanel() {
+    if (_appearancePanelOpen) closeAppearancePanel();
+    if (_personaPanelOpen) closePersonaPanel();
+    if (_toolsPanelOpen) closeToolsPanel();
+    if (_schedulerPanelOpen) closeSchedulerPanel();
+    if (_memoryImportPanelOpen) closeMemoryImportPanel();
+    const panel = document.getElementById("gestureHelpPanel");
+    panel.innerHTML = `
+      <button type="button" class="persona-close-btn" id="gestureHelpClose">收起</button>
+      <section class="gesture-help-card" aria-labelledby="gestureHelpTitle">
+        <div class="gesture-help-title" id="gestureHelpTitle">
+          <span class="material-symbols-outlined">swipe</span><strong>藏起来的猫爪手势</strong>
+        </div>
+        <div class="gesture-help-list">
+          <div class="gesture-help-item"><span class="material-symbols-outlined">swipe_right</span><div><strong>从屏幕左边缘向右滑</strong><small>单聊里返回角色列表。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">touch_app</span><div><strong>长按发送爪</strong><small>打开图片、表情包、转账和补记入口。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">chat</span><div><strong>长按单聊消息</strong><small>删除这一条及它之后的本轮消息。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">format_quote</span><div><strong>长按群聊消息</strong><small>复制、引用，或删除这一条及后续群聊。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">edit</span><div><strong>长按聊天标题或角色名</strong><small>给角色或群聊改一个昵称。</small></div></div>
+        </div>
+      </section>`;
+    panel.style.display = "flex";
+    panel.style.flexDirection = "column";
+    panel.style.padding = "12px 16px 16px";
+    panel.style.gap = "12px";
+    panel.querySelector("#gestureHelpClose").onclick = closeGestureHelpPanel;
+    _gestureHelpPanelOpen = true;
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function closeGestureHelpPanel() {
+    const panel = document.getElementById("gestureHelpPanel");
+    panel.style.display = "none";
+    panel.innerHTML = "";
+    _gestureHelpPanelOpen = false;
+    document.getElementById("moreContent").scrollTop = 0;
+  }
+
   // personaToggle replaced by paw-menu
   function showToast(msg) {
     let el = document.getElementById("toastEl");
@@ -3845,6 +3908,9 @@
     } else if (action === "memory-import") {
       if (_memoryImportPanelOpen) closeMemoryImportPanel();
       else openMemoryImportPanel();
+    } else if (action === "gesture-help") {
+      if (_gestureHelpPanelOpen) closeGestureHelpPanel();
+      else openGestureHelpPanel();
     }
   });
 

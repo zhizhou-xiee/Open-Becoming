@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from memory_backend import MemoryBackend
+
 
 _TEMP_DIR = tempfile.TemporaryDirectory()
 os.environ["DB_PATH"] = os.path.join(_TEMP_DIR.name, "becoming-test.db")
@@ -78,6 +80,46 @@ class AppControlsTests(unittest.TestCase):
         self.assertEqual(payload["music"]["extension_point"], "custom_mcp")
         self.assertTrue(payload["phone"]["read_only"])
         self.assertNotIn("secret", response.get_data(as_text=True).lower())
+
+    def test_memory_overview_reports_backend_capabilities(self):
+        response = self.client.get("/api/memory")
+        self.assertEqual(response.status_code, 200)
+        backend = response.get_json()["backend"]
+        self.assertEqual(backend["name"], "embedded")
+        self.assertIn("legacy_import", backend["capabilities"])
+
+    def test_minimal_external_memory_disables_only_admin_api(self):
+        class MinimalMemory:
+            def recall(self, _owner_id):
+                return ""
+
+            def save(self, _content, _owner_id, **_metadata):
+                return "external-id"
+
+        with patch.object(
+            app_module, "MEMORY_SERVICE", MemoryBackend(MinimalMemory(), name="test-external")
+        ):
+            overview = self.client.get("/api/memory")
+            detail = self.client.get("/api/memory/char1")
+            migration = self.client.post("/api/memory/import-legacy", json={})
+
+        self.assertEqual(overview.status_code, 200)
+        self.assertIsNone(overview.get_json()["characters"][0]["count"])
+        self.assertEqual(detail.status_code, 501)
+        self.assertEqual(migration.status_code, 501)
+
+    def test_chat_upload_route_uses_configurable_storage(self):
+        with tempfile.TemporaryDirectory() as upload_dir:
+            filename = "chat-test.png"
+            with open(os.path.join(upload_dir, filename), "wb") as image_file:
+                image_file.write(b"test-image-bytes")
+            with patch.object(app_module, "UPLOAD_ROOT", upload_dir):
+                response = self.client.get(f"/api/uploads/{filename}")
+                payload = response.get_data()
+                response.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload, b"test-image-bytes")
 
     def test_mobile_push_requires_an_explicit_proactive_source(self):
         fake_push = Mock(enabled=True)

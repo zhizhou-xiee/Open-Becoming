@@ -1,6 +1,6 @@
 """
 Open-Becoming - 多模型聊天前端
-第 6 版（多角色）：支持多个角色，每个角色有独立的模型、人设、往生道 domain 和记忆隔间。
+第 6 版（多角色）：支持多个角色，每个角色有独立的模型、人设和长期记忆隔间。
 
 架构：
 - CHARACTERS dict 是单一事实源：character_id → {name, model, domain, persona, user_label}
@@ -33,10 +33,12 @@ from mobile_extensions import (
     public_mobile_manifest,
 )
 from memory_core import (
-    EmbeddedMemoryService,
     GeminiEmbeddingStore,
     LegacyImportError,
     MemoryMetadataAnalyzer,
+)
+from memory_backend import (
+    load_memory_backend,
 )
 
 from desire_engine import (
@@ -72,6 +74,7 @@ app.permanent_session_lifetime = timedelta(days=90)
 # ── 定时任务调度器 ──────────────────────────────────────────
 SLOT_HOURS  = {"morning": 9, "noon": 12, "evening": 21}
 SCHEDULER_TIMEZONE = os.environ.get("SCHEDULER_TIMEZONE", "UTC")
+SCHEDULER_ENABLED = os.environ.get("SCHEDULER_ENABLED", "true").lower() == "true"
 scheduler = BackgroundScheduler(timezone=SCHEDULER_TIMEZONE)
 
 @app.before_request
@@ -115,7 +118,10 @@ COMPRESS_THRESHOLD = 40
 KEEP_RECENT = 20
 
 DB_PATH = os.environ.get("DB_PATH", "becoming.db")
-UPLOAD_ROOT = os.path.join(app.static_folder or "static", "uploads", "chat_images")
+UPLOAD_ROOT = os.path.abspath(os.environ.get(
+    "UPLOAD_ROOT",
+    os.path.join(app.static_folder or "static", "uploads", "chat_images"),
+))
 ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
@@ -353,7 +359,11 @@ MEMORY_DIR = os.environ.get(
     "BECOMING_MEMORY_DIR",
     os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "becoming_memory"),
 )
-MEMORY_SERVICE = EmbeddedMemoryService(MEMORY_DIR, CHARACTERS.keys())
+MEMORY_SERVICE = load_memory_backend(
+    os.environ.get("MEMORY_BACKEND", "embedded"),
+    memory_dir=MEMORY_DIR,
+    owner_ids=CHARACTERS.keys(),
+)
 MEMORY_ANALYZER = MemoryMetadataAnalyzer.from_env()
 MEMORY_EMBEDDINGS = GeminiEmbeddingStore.from_env(MEMORY_DIR)
 _MEMORY_ENRICHMENT_EXECUTOR = ThreadPoolExecutor(
@@ -1388,7 +1398,7 @@ def _group_quote_payload(session_id, reply_to_id, reply_to_text=None):
 
 
 def maybe_group_summary(session_id):
-    """群聊记忆：自上次游标以来累积 >= 阈值条消息时，生成摘要写入参与角色的往生道 domain。
+    """群聊记忆：自上次游标以来累积 >= 阈值条消息时，生成摘要写入参与角色的长期记忆。
     只写记忆，不删不压 DB 消息。游标仅在摘要成功后推进，失败下轮自动重试。"""
     cursor_key = f"group_summary_cursor_{session_id}"
     last_id = int(_read_setting(cursor_key, "0") or 0)
@@ -1435,7 +1445,7 @@ def maybe_group_summary(session_id):
         return
 
     for cid in participants:
-        push_summary_to_ombre(
+        save_long_term_memory(
             f"群聊记忆：{reply.strip()}",
             cid,
             source="group_summary",
@@ -1527,7 +1537,7 @@ ANTHROPIC_TOOLS = [
     {
         "name": "save_memory",
         "description": (
-            "把你想记住的内容存入往生道（你的长期记忆）。"
+            "把你想记住的内容存入长期记忆。"
             "只在真正值得记住的时候调用——比如User说了重要的事、你们约定了什么、"
             "你有了新的感受或领悟。不要每轮都存。"
         ),
@@ -1619,7 +1629,7 @@ OR_TOOLS = [
         "function": {
             "name": "save_memory",
             "description": (
-                "把你想记住的内容存入往生道（你的长期记忆）。"
+                "把你想记住的内容存入长期记忆。"
                 "只在真正值得记住的时候调用——比如User说了重要的事、你们约定了什么、"
                 "你有了新的感受或领悟。不要每轮都存。"
             ),
@@ -1935,7 +1945,7 @@ def call_or_with_tools(model, messages, max_tokens=2048, session_id=None, charac
             else:
                 memory_to_save = content
                 tools_called.append("save_memory")
-                result_text = "记忆已存入往生道。"
+                result_text = "记忆已存入长期记忆。"
 
         elif name == "send_transfer":
             raw_amount = args.get("amount")
@@ -2157,7 +2167,7 @@ def call_anthropic_with_tools(model, system_blocks, messages, max_tokens=2048, c
         tool_results = []
         for tb in tool_use_blocks:
             if tb.get("name") == "save_memory":
-                result_text = "记忆已存入往生道。"
+                result_text = "记忆已存入长期记忆。"
             elif tb.get("name") == "send_transfer":
                 result_text = "转账已送达User。"
             elif tb.get("name") == "send_sticker":
@@ -2404,7 +2414,7 @@ def maybe_compress(char, session_id):
         app.logger.warning(f"[compress] summary truncated (finish_reason={finish_reason}, char={character_id})")
         final_summary += "\n\n（摘要未完整生成）"
     set_summary(session_id, character_id, final_summary)
-    push_summary_to_ombre(
+    save_long_term_memory(
         final_summary,
         char["domain"],
         source="conversation_summary",
@@ -2433,12 +2443,30 @@ def maybe_compress(char, session_id):
 
 
 # ============================================================
-# 往生道：读记忆 / 写摘要
+# 长期记忆：读取 / 写入
 # ============================================================
 _PROMPT_CONTEXT_TTL = 55 * 60
 _PROMPT_CONTEXT_LOCK = threading.Lock()
 _BREATH_MEMORY_CACHE = {}
 _SESSION_TIME_CACHE = {}
+
+
+def _memory_supports(capability: str) -> bool:
+    """Support the facade and direct service objects used by extensions/tests."""
+    if getattr(MEMORY_SERVICE, "enabled", True) is False:
+        return False
+    supports = getattr(MEMORY_SERVICE, "supports", None)
+    if callable(supports):
+        return bool(supports(capability))
+    required = {
+        "read": ("recall",),
+        "write": ("save",),
+        "admin": ("list_memories", "get_memory", "update_memory", "delete_memory"),
+        "enrichment": ("get_memory", "apply_enrichment", "list_needing_enrichment"),
+        "decay": ("run_decay_cycle",),
+        "legacy_import": ("import_legacy",),
+    }
+    return all(callable(getattr(MEMORY_SERVICE, name, None)) for name in required[capability])
 
 
 def _invalidate_breath_memory(domain: str) -> None:
@@ -2469,6 +2497,8 @@ def _session_time_context(character_id: str, session_id: str) -> str:
 
 
 def fetch_breath_memory(domain: str) -> str:
+    if not _memory_supports("read"):
+        return ""
     now_ts = time.time()
     with _PROMPT_CONTEXT_LOCK:
         cached = _BREATH_MEMORY_CACHE.get(domain)
@@ -2480,13 +2510,15 @@ def fetch_breath_memory(domain: str) -> str:
             _BREATH_MEMORY_CACHE[domain] = (now_ts, value)
         return value
     except Exception as e:
-        app.logger.warning(f"embedded memory recall failed ({domain}): {e}")
+        app.logger.warning(f"long-term memory recall failed ({domain}): {e}")
         return ""
 
 
 def _run_memory_enrichment(bucket_id: str, domain: str, content: str) -> None:
     key = (domain, bucket_id)
     try:
+        if not _memory_supports("enrichment"):
+            return
         current = MEMORY_SERVICE.get_memory(domain, bucket_id)
         if not current:
             return
@@ -2548,6 +2580,8 @@ def _run_memory_enrichment(bucket_id: str, domain: str, content: str) -> None:
 
 
 def _queue_memory_enrichment(bucket_id: str, domain: str, content: str) -> bool:
+    if not bucket_id or not _memory_supports("enrichment"):
+        return False
     current = MEMORY_SERVICE.get_memory(domain, bucket_id)
     if not current:
         return False
@@ -2578,6 +2612,8 @@ def _queue_memory_enrichment(bucket_id: str, domain: str, content: str) -> bool:
 
 
 def retry_pending_memory_enrichment(limit_per_character: int = 30) -> int:
+    if not _memory_supports("enrichment"):
+        return 0
     queued = 0
     for character_id in CHARACTERS:
         for memory in MEMORY_SERVICE.list_needing_enrichment(
@@ -2592,13 +2628,15 @@ def retry_pending_memory_enrichment(limit_per_character: int = 30) -> int:
     return queued
 
 
-def push_summary_to_ombre(
+def save_long_term_memory(
     summary_text: str,
     domain: str,
     *,
     source: str = "self_saved",
     source_key: str | None = None,
 ) -> None:
+    if not _memory_supports("write"):
+        return
     try:
         bucket_id, _created = MEMORY_SERVICE.save(
             summary_text,
@@ -2611,7 +2649,11 @@ def push_summary_to_ombre(
         _invalidate_breath_memory(domain)
         _queue_memory_enrichment(bucket_id, domain, summary_text)
     except Exception as e:
-        app.logger.error(f"embedded memory write failed ({domain}): {e}")
+        app.logger.error(f"long-term memory write failed ({domain}): {e}")
+
+
+# Compatibility for extensions written against pre-open-source builds.
+push_summary_to_ombre = save_long_term_memory
 
 
 # ============================================================
@@ -2632,10 +2674,10 @@ def ask_character(char, session_id, user_message, image_payload=None):
         if not ANTHROPIC_API_KEY:
             return f"(还没配置 ANTHROPIC_API_KEY，{char['name']}暂时说不出话)", None, None, [], None
 
-        # 时间和往生道在缓存窗口内固定；新记忆写入时主动失效。
+        # 时间和长期记忆在缓存窗口内固定；新记忆写入时主动失效。
         context_parts = [time_context]
         if memory:
-            context_parts.append(f"【往生道记忆浮现，供你回忆与User有关的事】\n{memory}")
+            context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
         if summary:
             context_parts.append(f"【你和User此前的前情提要，供你回忆】\n{summary}")
 
@@ -2665,10 +2707,10 @@ def ask_character(char, session_id, user_message, image_payload=None):
         usage_metrics = log_usage(character_id, "anthropic", char["model"], usage)
         if memory_to_save:
             try:
-                push_summary_to_ombre(memory_to_save, char["domain"], source="self_saved")
-                app.logger.info(f"[{character_id}] 自主存入往生道: {memory_to_save[:50]}")
+                save_long_term_memory(memory_to_save, char["domain"], source="self_saved")
+                app.logger.info(f"[{character_id}] 自主存入长期记忆: {memory_to_save[:50]}")
             except Exception as e:
-                app.logger.warning(f"[{character_id}] 往生道写入失败: {e}")
+                app.logger.warning(f"[{character_id}] 长期记忆写入失败: {e}")
         if reply is None:
             return f"(Anthropic API 暂时没能回话，{char['name']}等等再说)", transfer_to_send, sticker_to_send, tools_called, usage_metrics
         return reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics
@@ -2680,7 +2722,7 @@ def ask_character(char, session_id, user_message, image_payload=None):
         stable_system_content = char["persona"] + "\n\n" + TRANSFER_GUARD_TEXT
         context_parts = [time_context]
         if memory:
-            context_parts.append(f"【往生道记忆浮现，供你回忆与User有关的事】\n{memory}")
+            context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
         if summary:
             context_parts.append(f"【你和User此前的前情提要，供你回忆】\n{summary}")
 
@@ -2711,10 +2753,10 @@ def ask_character(char, session_id, user_message, image_payload=None):
             usage_metrics = log_usage(character_id, "openrouter", char["model"], usage)
             if memory_to_save:
                 try:
-                    push_summary_to_ombre(memory_to_save, char["domain"], source="self_saved")
-                    app.logger.info(f"[{character_id}] 自主存入往生道: {memory_to_save[:50]}")
+                    save_long_term_memory(memory_to_save, char["domain"], source="self_saved")
+                    app.logger.info(f"[{character_id}] 自主存入长期记忆: {memory_to_save[:50]}")
                 except Exception as e:
-                    app.logger.warning(f"[{character_id}] 往生道写入失败: {e}")
+                    app.logger.warning(f"[{character_id}] 长期记忆写入失败: {e}")
             if reply is None:
                 return f"(OpenRouter 暂时没能回话，{char['name']}等等再说)", None, None, [], usage_metrics
             return reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics
@@ -2732,7 +2774,7 @@ def ask_character(char, session_id, user_message, image_payload=None):
 # ============================================================
 # 群聊专用引擎（无历史、无记忆、无压缩）
 # ============================================================
-# 群聊专用引擎（无历史、无压缩；保留往生道记忆浮现）
+# 群聊专用引擎（无历史、无压缩；保留长期记忆浮现）
 def ask_character_group(
     char,
     combined_prompt,
@@ -2741,7 +2783,7 @@ def ask_character_group(
     openrouter_max_tokens=1024,
     retry_openrouter_empty=False,
 ):
-    """群聊发言：人设 + 往生道记忆浮现 + combined_prompt，不带对话历史，不压缩。"""
+    """群聊发言：人设 + 长期记忆浮现 + combined_prompt，不带对话历史，不压缩。"""
     provider = char.get("provider", "openrouter")
     character_id = char["domain"]
 
@@ -2752,7 +2794,7 @@ def ask_character_group(
             return f"(还没配置 ANTHROPIC_API_KEY，{char['name']}暂时说不出话)", None, []
         context_parts = []
         if memory:
-            context_parts.append(f"【往生道记忆浮现，供你回忆与User有关的事】\n{memory}")
+            context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
         if context_parts:
             system_blocks = [
                 {"type": "text", "text": char["persona"],
@@ -2776,10 +2818,10 @@ def ask_character_group(
         usage_metrics = log_usage(character_id, "anthropic", char["model"], usage, purpose="group_chat")
         if memory_to_save:
             try:
-                push_summary_to_ombre(memory_to_save, char["domain"], source="group_self_saved")
-                app.logger.info(f"[{character_id}] 群聊自主存入往生道: {memory_to_save[:50]}")
+                save_long_term_memory(memory_to_save, char["domain"], source="group_self_saved")
+                app.logger.info(f"[{character_id}] 群聊自主存入长期记忆: {memory_to_save[:50]}")
             except Exception as e:
-                app.logger.warning(f"[{character_id}] 群聊往生道写入失败: {e}")
+                app.logger.warning(f"[{character_id}] 群聊长期记忆写入失败: {e}")
         if reply is None:
             return f"(Anthropic API 暂时没能回话，{char['name']}等等再说)", usage_metrics, tools_called
         return reply, usage_metrics, tools_called
@@ -2793,7 +2835,7 @@ def ask_character_group(
         if memory:
             messages.append({
                 "role": "system",
-                "content": f"【往生道记忆浮现，供你回忆与User有关的事】\n{memory}",
+                "content": f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}",
             })
         messages.append({"role": "user", "content": combined_prompt})
         memory_to_save = None
@@ -2835,10 +2877,10 @@ def ask_character_group(
         usage_metrics = log_usage(character_id, "openrouter", char["model"], usage, purpose="group_chat")
         if memory_to_save:
             try:
-                push_summary_to_ombre(memory_to_save, char["domain"], source="group_self_saved")
-                app.logger.info(f"[{character_id}] 群聊自主存入往生道: {memory_to_save[:50]}")
+                save_long_term_memory(memory_to_save, char["domain"], source="group_self_saved")
+                app.logger.info(f"[{character_id}] 群聊自主存入长期记忆: {memory_to_save[:50]}")
             except Exception as e:
-                app.logger.warning(f"[{character_id}] 群聊往生道写入失败: {e}")
+                app.logger.warning(f"[{character_id}] 群聊长期记忆写入失败: {e}")
         if not (reply or "").strip():
             return f"(OpenRouter 暂时没能回话，{char['name']}等等再说)", usage_metrics, tools_called
         return reply, usage_metrics, tools_called
@@ -3112,6 +3154,12 @@ def send_sticker_route():
     return jsonify({"ok": True, "id": mid})
 
 
+@app.route("/api/uploads/<path:filename>", methods=["GET"])
+def uploaded_chat_image(filename):
+    """Serve chat uploads from local or mounted persistent storage."""
+    return send_from_directory(UPLOAD_ROOT, filename)
+
+
 @app.route("/api/image", methods=["POST"])
 def send_image_route():
     character_id = request.form.get("character_id")
@@ -3138,7 +3186,7 @@ def send_image_route():
     image.stream.seek(0)
     image.save(os.path.join(UPLOAD_ROOT, filename))
 
-    url = f"/static/uploads/chat_images/{filename}"
+    url = f"/api/uploads/{filename}"
     image_data = {
         "url": url,
         "name": display_name,
@@ -3944,27 +3992,45 @@ def api_summaries():
 
 @app.route("/api/memory", methods=["GET"])
 def api_memory_overview():
+    backend_info = (
+        MEMORY_SERVICE.describe()
+        if callable(getattr(MEMORY_SERVICE, "describe", None))
+        else {
+            "name": type(MEMORY_SERVICE).__name__,
+            "enabled": True,
+            "capabilities": [
+                name for name in ("read", "write", "admin", "enrichment", "decay", "legacy_import")
+                if _memory_supports(name)
+            ],
+        }
+    )
     characters = []
     for character_id, char in CHARACTERS.items():
-        memories = MEMORY_SERVICE.list_memories(character_id, limit=500)
+        memories = (
+            MEMORY_SERVICE.list_memories(character_id, limit=500)
+            if _memory_supports("admin") else None
+        )
         characters.append({
             "character_id": character_id,
             "name": char["name"],
             "avatar": char.get("avatar", ""),
-            "count": len(memories),
+            "count": len(memories) if memories is not None else None,
             "latest": memories[0] if memories else None,
         })
     return jsonify({
+        "backend": backend_info,
         "characters": characters,
         "enrichment": {
-            "metadata_configured": MEMORY_ANALYZER.enabled,
-            "embedding_configured": MEMORY_EMBEDDINGS.enabled,
+            "metadata_configured": _memory_supports("enrichment") and MEMORY_ANALYZER.enabled,
+            "embedding_configured": _memory_supports("enrichment") and MEMORY_EMBEDDINGS.enabled,
         },
     })
 
 
 @app.route("/api/memory/re-enrich", methods=["POST"])
 def api_re_enrich_memories():
+    if not _memory_supports("enrichment"):
+        return jsonify({"error": "当前记忆后端不支持内置打标"}), 501
     data = request.get_json(silent=True) or {}
     try:
         limit = max(1, min(int(data.get("limit_per_character", 30)), 100))
@@ -3983,6 +4049,8 @@ def api_re_enrich_memories():
 def api_character_memories(character_id):
     if character_id not in CHARACTERS:
         return jsonify({"error": "未知角色"}), 404
+    if not _memory_supports("admin"):
+        return jsonify({"error": "当前记忆后端不提供内置管理列表"}), 501
     query = request.args.get("q", "")
     try:
         limit = int(request.args.get("limit", "100"))
@@ -4006,6 +4074,8 @@ def api_character_memories(character_id):
 def api_character_memory_detail(character_id, bucket_id):
     if character_id not in CHARACTERS:
         return jsonify({"error": "未知角色"}), 404
+    if not _memory_supports("admin"):
+        return jsonify({"error": "当前记忆后端不提供内置编辑功能"}), 501
     if request.method == "DELETE":
         deleted = MEMORY_SERVICE.delete_memory(character_id, bucket_id)
         if not deleted:
@@ -4033,6 +4103,8 @@ def api_character_memory_detail(character_id, bucket_id):
 
 @app.route("/api/memory/import-legacy", methods=["POST"])
 def api_import_legacy_memory():
+    if not _memory_supports("legacy_import"):
+        return jsonify({"error": "当前记忆后端不支持旧 Ombre 迁移"}), 501
     data = request.get_json(silent=True) or {}
     try:
         result = MEMORY_SERVICE.import_legacy(data.get("url", ""), data.get("password", ""))
@@ -4629,7 +4701,7 @@ def _generate_moment_core(cid=None):
     conn.execute("INSERT INTO moments (author_id, content) VALUES (?, ?)", (cid, reply.strip()))
     conn.commit()
     conn.close()
-    push_summary_to_ombre(
+    save_long_term_memory(
         f"我在猫窝发了一条动态：{reply.strip()[:80]}", cid, source="moment"
     )
     return {"ok": True, "author_id": cid, "content": reply.strip()}, None
@@ -4668,7 +4740,7 @@ def comment_moment(moment_id):
         conn.commit()
         results.append({"author_id": "user", "content": user_comment})
         if moment["author_id"] in CHARACTERS:
-            push_summary_to_ombre(
+            save_long_term_memory(
                 f"User评论了我发的猫窝动态「{moment['content'][:50]}」：{user_comment[:80]}",
                 moment["author_id"],
                 source="moment_comment",
@@ -4706,7 +4778,7 @@ def comment_moment(moment_id):
             conn.commit()
             results.append({"author_id": cid, "content": reply.strip()})
             if moment["author_id"] == "user":
-                push_summary_to_ombre(
+                save_long_term_memory(
                     f"User在猫窝发了动态「{moment['content'][:50]}」，我评论说：{reply.strip()[:80]}",
                     cid,
                     source="moment_comment",
@@ -4908,7 +4980,7 @@ def do_desire_heartbeat():
 # ============================================================
 def register_scheduler_jobs():
     for job in scheduler.get_jobs():
-        if job.id.startswith("sched_"):
+        if job.id.startswith("sched_") or job.id in {"memory_decay", "memory_enrichment"}:
             scheduler.remove_job(job.id)
 
     moments_slots = [s.strip() for s in _read_setting("sched_moments_slots", "").split(",") if s.strip() in SLOT_HOURS]
@@ -4928,29 +5000,43 @@ def register_scheduler_jobs():
         max_instances=1,
         misfire_grace_time=120,
     )
-    scheduler.add_job(
-        MEMORY_SERVICE.run_decay_cycle,
-        "interval",
-        hours=24,
-        id="memory_decay",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=600,
-    )
-    scheduler.add_job(
-        retry_pending_memory_enrichment,
-        "interval",
-        minutes=30,
-        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=20),
-        id="memory_enrichment",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=600,
-    )
+    if _memory_supports("decay"):
+        scheduler.add_job(
+            MEMORY_SERVICE.run_decay_cycle,
+            "interval",
+            hours=24,
+            id="memory_decay",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=600,
+        )
+    if _memory_supports("enrichment"):
+        scheduler.add_job(
+            retry_pending_memory_enrichment,
+            "interval",
+            minutes=30,
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=20),
+            id="memory_enrichment",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=600,
+        )
 
     app.logger.info(f"[sched] registered: moments={moments_slots} desire={DESIRE_TICK_MINUTES}m")
+
+
+def start_background_services():
+    """Start the in-process scheduler once when this process owns background work."""
+    if not SCHEDULER_ENABLED:
+        app.logger.info("[sched] disabled by SCHEDULER_ENABLED=false")
+        return False
+    if scheduler.running:
+        return True
+    register_scheduler_jobs()
+    scheduler.start()
+    return True
 
 
 @app.route("/api/unread", methods=["GET"])
@@ -4992,13 +5078,15 @@ def set_scheduler_config():
     return jsonify({"ok": True})
 
 
+os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
+os.makedirs(UPLOAD_ROOT, exist_ok=True)
 init_db()
 _refresh_appearance_urls()
 for _character_id in CHARACTERS:
     _existing_summary = get_summary("default", _character_id)
     if _existing_summary:
         try:
-            push_summary_to_ombre(
+            save_long_term_memory(
                 _existing_summary,
                 _character_id,
                 source="conversation_summary",
@@ -5008,8 +5096,7 @@ for _character_id in CHARACTERS:
             app.logger.warning(
                 f"memory summary seed failed ({_character_id}): {_memory_seed_error}"
             )
-scheduler.start()
-register_scheduler_jobs()
+start_background_services()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
