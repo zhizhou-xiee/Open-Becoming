@@ -1770,8 +1770,6 @@ def strip_fake_action_text(reply, character_id=""):
     char = CHARACTERS.get(character_id, {})
     character_name = str(char.get("name") or "").strip()
     speaker_names = [character_name]
-    if character_name.startswith("谢") and len(character_name) > 1:
-        speaker_names.append(character_name[1:])
     speaker_names = [name for name in speaker_names if name]
     if speaker_names:
         names_pattern = "|".join(

@@ -80,6 +80,17 @@ class MobileExtensionTests(unittest.TestCase):
         self.assertTrue(manifest["push"]["configured"])
         self.assertEqual(manifest["music"]["extension_point"], "custom_mcp")
         self.assertTrue(manifest["phone"]["read_only"])
+        self.assertEqual(
+            manifest["voice"]["directions"],
+            ["speech_to_text", "text_to_speech"],
+        )
+        self.assertIn("mobile_companion", manifest["voice"]["extension_points"])
+        self.assertFalse(manifest["voice"]["stores_audio"])
+        self.assertTrue(manifest["voice"]["requires_user_gesture"])
+        self.assertEqual(
+            manifest["voice"]["tools"],
+            ["voice_get_capabilities", "voice_transcribe", "voice_synthesize"],
+        )
         rendered = json.dumps(manifest)
         self.assertNotIn("secret", rendered.lower())
         self.assertNotIn("webhook_url", rendered.lower())

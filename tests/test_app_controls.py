@@ -79,6 +79,9 @@ class AppControlsTests(unittest.TestCase):
         self.assertTrue(payload["push"]["configured"])
         self.assertEqual(payload["music"]["extension_point"], "custom_mcp")
         self.assertTrue(payload["phone"]["read_only"])
+        self.assertIn("mobile_companion", payload["voice"]["extension_points"])
+        self.assertFalse(payload["voice"]["built_in"])
+        self.assertFalse(payload["voice"]["stores_audio"])
         self.assertNotIn("secret", response.get_data(as_text=True).lower())
 
     def test_memory_overview_reports_backend_capabilities(self):

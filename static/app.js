@@ -177,7 +177,6 @@
     if (!parts.length || characterId === "user") return parts;
     const fullName = characterName || GROUP_CHAR_NAMES[characterId] || "";
     const names = [fullName];
-    if (fullName.startsWith("谢") && fullName.length > 1) names.push(fullName.slice(1));
     const escapedNames = [...new Set(names.filter(Boolean))]
       .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     if (!escapedNames.length) return parts;

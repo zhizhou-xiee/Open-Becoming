@@ -1,6 +1,6 @@
 # 移动端扩展接口
 
-Open-Becoming 不内置任何厂商推送 SDK，也不会默认读取手机数据。项目提供三个默认关闭的扩展接口，供 Android/iOS 伴侣应用、自动化工具或自托管服务实现。
+Open-Becoming 不内置任何厂商推送 SDK，也不会默认读取手机数据或申请麦克风权限。项目提供四个默认关闭的扩展接口，供 Android/iOS 伴侣应用、自动化工具或自托管服务实现。
 
 ## 1. 消息推送：签名 webhook
 
@@ -77,8 +77,68 @@ HMAC_SHA256(secret, timestamp + "." + raw_request_body)
 4. 记录可供用户查看和撤销的访问日志，并提供一键断开 MCP 的方式。
 5. 密码、验证码、支付信息、健康数据和精确位置默认拒绝。
 
+## 4. 语音：伴侣端或 MCP
+
+语音能力同时预留给原生伴侣端和自定义 MCP，稳定工具名为：
+
+- `voice_get_capabilities`：返回支持的语言、音色、输入时长、格式和是否能够离线处理。
+- `voice_transcribe`：把用户明确录制的一段音频转成文字。
+- `voice_synthesize`：把一条角色回复合成为可播放音频。
+
+建议使用不透明的 `audio_ref` 传递音频，不把 base64 音频、永久文件路径或真实录音地址塞进模型上下文。`audio_ref` 可以是伴侣端本地 ID，也可以是桥接服务生成的短期签名引用。
+
+转写请求示例：
+
+```json
+{
+  "audio_ref": "local-recording:8f31",
+  "mime_type": "audio/mp4",
+  "language": "zh-CN",
+  "max_seconds": 60,
+  "reason": "User 点击并按住语音输入按钮"
+}
+```
+
+推荐返回：
+
+```json
+{
+  "transcript": "今晚一起读下一章吧",
+  "language": "zh-CN",
+  "confidence": 0.96,
+  "duration_ms": 2840
+}
+```
+
+合成请求示例：
+
+```json
+{
+  "text": "好呀，我在共读室等你。",
+  "character_id": "char1",
+  "voice_id": "user-selected-voice",
+  "format": "audio/mp4",
+  "reason": "User 点击了播放语音"
+}
+```
+
+推荐返回：
+
+```json
+{
+  "audio_ref": "temporary-audio:42",
+  "mime_type": "audio/mp4",
+  "duration_ms": 3100,
+  "expires_at": "2026-07-17T10:00:00Z"
+}
+```
+
+伴侣端建议流程是“按住录音 → 本地或桥接服务转写 → 让用户确认文字 → 交给现有文字聊天接口”；回复侧则是“收到文字回复 → 用户点击播放 → 合成并播放”。默认不要自动开启麦克风、后台常驻录音或收到消息就自动外放。
+
+桥接端还应限制录音长度和 MIME 类型、删除临时音频、避免把音色克隆默认开放，并在新增麦克风、语音识别或蓝牙权限时重新向用户说明用途。项目只公布能力边界，不内置真实语音供应商、音色、账号或录音存储。
+
 ## 能力发现
 
 登录后请求 `GET /api/mobile/extensions` 可得到不含 URL、密钥或 token 的公开能力清单。它用于让后续移动端客户端判断主程序支持的协议版本；其中 `built_in: false` 表示仍需外部伴侣服务实现。
 
-这三个接口是稳定的扩展边界，不代表仓库已经获得 Android/iOS 系统权限。任何原生客户端仍需遵守对应平台的权限、后台运行和商店审核规则。
+这四个接口是稳定的扩展边界，不代表仓库已经获得 Android/iOS 系统权限。任何原生客户端仍需遵守对应平台的权限、后台运行和商店审核规则。

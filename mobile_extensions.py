@@ -2,8 +2,8 @@
 
 The core application intentionally ships without native Android/iOS code.  This
 module keeps the integration boundary small: proactive messages can be sent to
-a signed webhook, while music sync and phone search are implemented by an
-operator-controlled MCP service.
+a signed webhook, while music sync, voice, and phone search are implemented by
+an operator-controlled companion or MCP service.
 """
 
 from __future__ import annotations
@@ -29,6 +29,11 @@ MUSIC_MCP_TOOLS = (
     "music_control",
 )
 PHONE_MCP_TOOLS = ("phone_search",)
+VOICE_MCP_TOOLS = (
+    "voice_get_capabilities",
+    "voice_transcribe",
+    "voice_synthesize",
+)
 
 
 class MobilePushError(RuntimeError):
@@ -164,5 +169,14 @@ def public_mobile_manifest(push_enabled: bool = False) -> dict:
             "built_in": False,
             "read_only": True,
             "tools": list(PHONE_MCP_TOOLS),
+        },
+        "voice": {
+            "extension_points": ["mobile_companion", "custom_mcp"],
+            "built_in": False,
+            "audio_transport": "opaque-reference-v1",
+            "stores_audio": False,
+            "requires_user_gesture": True,
+            "directions": ["speech_to_text", "text_to_speech"],
+            "tools": list(VOICE_MCP_TOOLS),
         },
     }
