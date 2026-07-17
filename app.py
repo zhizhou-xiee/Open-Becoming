@@ -27,6 +27,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from werkzeug.utils import secure_filename
 
 from mcp_client import MCPClient, MCPError, validate_mcp_url
+from mobile_extensions import (
+    MobilePushClient,
+    MobilePushError,
+    public_mobile_manifest,
+)
 from memory_core import (
     EmbeddedMemoryService,
     GeminiEmbeddingStore,
@@ -49,6 +54,12 @@ from desire_engine import (
 )
 
 app = Flask(__name__)
+
+try:
+    MOBILE_PUSH = MobilePushClient.from_env()
+except ValueError as _mobile_push_config_error:
+    app.logger.warning(f"mobile push disabled: {_mobile_push_config_error}")
+    MOBILE_PUSH = MobilePushClient()
 
 # ============================================================
 # 配置
@@ -2963,6 +2974,11 @@ def save_setting():
     return jsonify({"ok": True})
 
 
+@app.route("/api/mobile/extensions", methods=["GET"])
+def get_mobile_extensions():
+    return jsonify(public_mobile_manifest(MOBILE_PUSH.enabled))
+
+
 @app.route("/api/appearance", methods=["GET", "POST"])
 def get_appearance():
     if request.method == "POST":
@@ -3357,8 +3373,31 @@ def home():
     return send_from_directory("static", "index.html")
 
 
+def _dispatch_mobile_push(char, reply, reply_id, source):
+    if not MOBILE_PUSH.enabled:
+        return False
+    try:
+        return MOBILE_PUSH.send_message(
+            character_id=char["domain"],
+            character_name=char["name"],
+            text=reply,
+            message_id=reply_id,
+            source=source,
+        )
+    except MobilePushError as exc:
+        app.logger.warning(f"mobile push failed ({char['domain']}): {exc}")
+        return False
+
+
 def _finalize_character_reply(
-    char, session_id, reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics=None
+    char,
+    session_id,
+    reply,
+    transfer_to_send,
+    sticker_to_send,
+    tools_called,
+    usage_metrics=None,
+    push_source=None,
 ):
     character_id = char["domain"]
     reply = strip_fake_action_text(reply, character_id)
@@ -3396,6 +3435,8 @@ def _finalize_character_reply(
     window_closed = {"reason": cw_entry[len("close_window:"):]} if cw_entry else None
     tools_for_frontend = _tools_for_display(tools_called)
     save_message_details(reply_id, tools_for_frontend)
+    if push_source:
+        _dispatch_mobile_push(char, reply, reply_id, push_source)
     return {
         "reply": reply,
         "replies": replies,
@@ -4824,7 +4865,14 @@ def do_desire_heartbeat():
                 return
 
             _finalize_character_reply(
-                char, "default", reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics
+                char,
+                "default",
+                reply,
+                transfer_to_send,
+                sticker_to_send,
+                tools_called,
+                usage_metrics,
+                push_source="desire",
             )
             completed_at = _utc_timestamp()
             latest_state = load_desire_state(char_id, completed_at)

@@ -2,7 +2,7 @@ import io
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 _TEMP_DIR = tempfile.TemporaryDirectory()
@@ -67,6 +67,50 @@ class AppControlsTests(unittest.TestCase):
             "char1", "char2", "char3", "char4", "char5", "char6",
         ])
         self.assertEqual(app_module.USER_ID, "user")
+
+    def test_mobile_extension_manifest_is_secret_free(self):
+        fake_push = Mock(enabled=True)
+        with patch.object(app_module, "MOBILE_PUSH", fake_push):
+            response = self.client.get("/api/mobile/extensions")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["push"]["configured"])
+        self.assertEqual(payload["music"]["extension_point"], "custom_mcp")
+        self.assertTrue(payload["phone"]["read_only"])
+        self.assertNotIn("secret", response.get_data(as_text=True).lower())
+
+    def test_mobile_push_requires_an_explicit_proactive_source(self):
+        fake_push = Mock(enabled=True)
+        fake_push.send_message.return_value = True
+        with patch.object(app_module, "MOBILE_PUSH", fake_push), patch.object(
+            app_module, "maybe_compress"
+        ):
+            app_module._finalize_character_reply(
+                app_module.CHARACTERS["char1"],
+                "default",
+                "普通聊天回复",
+                None,
+                None,
+                [],
+            )
+            fake_push.send_message.assert_not_called()
+            result = app_module._finalize_character_reply(
+                app_module.CHARACTERS["char1"],
+                "default",
+                "主动来找你啦",
+                None,
+                None,
+                [],
+                push_source="desire",
+            )
+
+        fake_push.send_message.assert_called_once_with(
+            character_id="char1",
+            character_name="Char 1",
+            text="主动来找你啦",
+            message_id=result["reply_id"],
+            source="desire",
+        )
 
     def test_appearance_assets_upload_serve_and_reset(self):
         png = b"\x89PNG\r\n\x1a\nbecoming-appearance-test"
