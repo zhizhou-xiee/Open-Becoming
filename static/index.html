@@ -143,7 +143,11 @@
         </button>
       </div>
       <div id="inputbar">
+        <button id="voiceRecord" class="voice-record-btn hidden" type="button" aria-label="按下录音" title="收语音">
+          <span class="material-symbols-outlined">mic</span>
+        </button>
         <input id="input" type="text" placeholder="小猫酝酿坏主意中…" autocomplete="off">
+        <input id="voiceFileInput" type="file" accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg,.opus" hidden>
         <input id="imageInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden>
         <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
         <input id="fileImageInput" type="file" accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" hidden>
@@ -412,6 +416,7 @@
       <div id="schedulerPanel" style="display:none;"></div>
       <div id="memoryImportPanel" style="display:none;"></div>
       <div id="gestureHelpPanel" style="display:none;"></div>
+      <div id="voicePanel" style="display:none;"></div>
       <div class="more-menu">
         <div class="more-menu-row">
           <button class="more-icon-btn" data-action="mcp">
@@ -448,6 +453,12 @@
             <span class="material-symbols-outlined">swipe</span>
           </button>
           <button class="more-pill" data-action="gesture-help">猫爪印°手势说明</button>
+        </div>
+        <div class="more-menu-row">
+          <button class="more-icon-btn" data-action="voice">
+            <span class="material-symbols-outlined">graphic_eq</span>
+          </button>
+          <button class="more-pill" data-action="voice">说说喵°语音收发</button>
         </div>
         <div class="more-menu-row more-menu-logout">
           <button class="more-pill more-pill-logout" data-action="logout">世界很大，猫出去看看°退出登录</button>

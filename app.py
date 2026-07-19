@@ -23,6 +23,7 @@ import random as _random
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from flask import Flask, Response, request, jsonify, send_file, send_from_directory, session, stream_with_context
 from apscheduler.schedulers.background import BackgroundScheduler
 from PIL import Image, UnidentifiedImageError
@@ -41,6 +42,15 @@ from memory_core import (
 )
 from memory_backend import (
     load_memory_backend,
+)
+from voice_service import (
+    ALLOWED_AUDIO_MIMES,
+    STT_PROVIDERS,
+    TTS_PROVIDERS,
+    VoiceServiceError,
+    synthesize_speech,
+    transcribe_speech,
+    validate_voice_endpoint,
 )
 
 from desire_engine import (
@@ -174,6 +184,11 @@ ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 MAX_TEXT_BYTES = 5 * 1024 * 1024
+VOICE_SETTING_KEY = "voice_config_v1"
+VOICE_MAX_AUDIO_BYTES = 8 * 1024 * 1024
+VOICE_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+VOICE_TTS_FORMATS = {"mp3", "opus", "aac", "flac", "wav"}
+VOICE_USAGE_LOCK = threading.Lock()
 MAX_MUSIC_BYTES = 180 * 1024 * 1024
 ALLOWED_MUSIC_EXTENSIONS = {"mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "mp4"}
 ALLOWED_ARTWORK_MIMES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
@@ -263,6 +278,7 @@ TRANSFER_GUARD_TEXT = (
     "【系统约束】转账/发红包只有真实调用 send_transfer 工具才算数，"
     "表情包只有真实调用 send_sticker 工具才算数，"
     "和好按钮只有真实调用 press_hug 工具才算数。"
+    "语音只有真实调用 send_voice 工具且后端成功生成才算数。"
     "历史消息里圆括号包裹、以“系统”开头的记录是系统自动生成的旁白，不是任何人说出的话，"
     "绝对不要在你的回复里复述、模仿或编造任何形式的动作记录格式。"
     "如果你这一轮没有真的调用对应工具，就不要用任何文字宣称你转了账或发了表情包——"
@@ -865,6 +881,32 @@ def init_db():
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS voice_assets (
+            message_id         INTEGER PRIMARY KEY,
+            character_id       TEXT NOT NULL,
+            transcript         TEXT NOT NULL,
+            mime_type          TEXT NOT NULL,
+            content            BLOB NOT NULL,
+            size_bytes         INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_usd REAL NOT NULL DEFAULT 0,
+            created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS voice_usage (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type         TEXT NOT NULL,
+            character_id       TEXT NOT NULL DEFAULT '',
+            character_count    INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_usd REAL NOT NULL DEFAULT 0,
+            created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_voice_usage_created "
+        "ON voice_usage(created_at, event_type)"
+    )
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS custom_mcp_connections (
             id                 INTEGER PRIMARY KEY AUTOINCREMENT,
             name               TEXT NOT NULL,
@@ -1268,6 +1310,341 @@ def _write_setting(key, value):
     )
     conn.commit()
     conn.close()
+
+
+def _voice_default_config():
+    return {
+        "enabled": False,
+        "tts": {
+            "provider": "openai_compatible",
+            "endpoint": "https://api.openai.com/v1/audio/speech",
+            "model": "gpt-4o-mini-tts",
+            "response_format": "mp3",
+            "token": "",
+            "voices": {cid: "alloy" for cid in CHARACTERS},
+        },
+        "stt": {
+            "enabled": False,
+            "provider": "openai_compatible",
+            "endpoint": "https://api.openai.com/v1/audio/transcriptions",
+            "model": "gpt-4o-mini-transcribe",
+            "token": "",
+            "reuse_tts_credentials": True,
+            "max_upload_mb": 20,
+        },
+        "limits": {
+            "max_chars": 180,
+            "daily_count": 20,
+            "cost_per_1k_chars_usd": 0.0,
+            "daily_cost_usd": 1.0,
+        },
+    }
+
+
+def _voice_config():
+    defaults = _voice_default_config()
+    try:
+        saved = json.loads(_read_setting(VOICE_SETTING_KEY, "{}") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        saved = {}
+    if not isinstance(saved, dict):
+        return defaults
+    defaults["enabled"] = bool(saved.get("enabled", defaults["enabled"]))
+    for section in ("tts", "stt", "limits"):
+        incoming = saved.get(section)
+        if isinstance(incoming, dict):
+            defaults[section].update(incoming)
+    voices = defaults["tts"].get("voices")
+    if not isinstance(voices, dict):
+        voices = {}
+    defaults["tts"]["voices"] = {
+        cid: str(voices.get(cid) or "").strip()[:200] for cid in CHARACTERS
+    }
+    return defaults
+
+
+def _voice_public_config(config=None):
+    config = copy.deepcopy(config or _voice_config())
+    tts_token = str(config["tts"].pop("token", "") or "")
+    stt_token = str(config["stt"].pop("token", "") or "")
+    reuse = bool(config["stt"].get("reuse_tts_credentials", True))
+    config["tts"]["token_configured"] = bool(tts_token)
+    config["stt"]["token_configured"] = bool(stt_token)
+    config["stt"]["effective_token_configured"] = bool(
+        tts_token if reuse else stt_token
+    )
+    config["usage_today"] = _voice_usage_today()
+    config["characters"] = [
+        {"id": cid, "name": char["name"]} for cid, char in CHARACTERS.items()
+    ]
+    return config
+
+
+def _voice_number(value, *, minimum, maximum, integer=False, label="数值"):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label}必须是数字") from exc
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{label}需在 {minimum}–{maximum} 之间")
+    return int(parsed) if integer else round(parsed, 6)
+
+
+def _updated_voice_config(data):
+    if not isinstance(data, dict):
+        raise ValueError("语音配置格式不正确")
+    config = _voice_config()
+    config["enabled"] = bool(data.get("enabled", config["enabled"]))
+
+    incoming_tts = data.get("tts") or {}
+    if not isinstance(incoming_tts, dict):
+        raise ValueError("TTS 配置格式不正确")
+    provider = str(incoming_tts.get("provider", config["tts"]["provider"]) or "").strip()
+    if provider not in TTS_PROVIDERS:
+        raise ValueError("不支持的 TTS 类型")
+    endpoint = validate_voice_endpoint(
+        incoming_tts.get("endpoint", config["tts"]["endpoint"])
+    )
+    model = str(incoming_tts.get("model", config["tts"]["model"]) or "").strip()[:200]
+    if not model:
+        raise ValueError("请填写 TTS 模型")
+    response_format = str(
+        incoming_tts.get("response_format", config["tts"]["response_format"]) or "mp3"
+    ).lower().strip()
+    if response_format not in VOICE_TTS_FORMATS:
+        raise ValueError("不支持的 TTS 音频格式")
+    voices = incoming_tts.get("voices", config["tts"]["voices"])
+    if not isinstance(voices, dict):
+        raise ValueError("voice_id 配置格式不正确")
+    config["tts"].update({
+        "provider": provider,
+        "endpoint": endpoint,
+        "model": model,
+        "response_format": response_format,
+        "voices": {
+            cid: str(voices.get(cid, config["tts"]["voices"].get(cid, "")) or "").strip()[:200]
+            for cid in CHARACTERS
+        },
+    })
+    tts_token = str(incoming_tts.get("token") or "").strip()
+    if tts_token:
+        if len(tts_token) > 8000:
+            raise ValueError("TTS Token 太长")
+        config["tts"]["token"] = tts_token
+    elif incoming_tts.get("clear_token"):
+        config["tts"]["token"] = ""
+
+    incoming_stt = data.get("stt") or {}
+    if not isinstance(incoming_stt, dict):
+        raise ValueError("STT 配置格式不正确")
+    stt_provider = str(
+        incoming_stt.get("provider", config["stt"]["provider"]) or ""
+    ).strip()
+    if stt_provider not in STT_PROVIDERS:
+        raise ValueError("不支持的 STT 类型")
+    stt_endpoint = validate_voice_endpoint(
+        incoming_stt.get("endpoint", config["stt"]["endpoint"])
+    )
+    stt_model = str(incoming_stt.get("model", config["stt"]["model"]) or "").strip()[:200]
+    if not stt_model:
+        raise ValueError("请填写 STT 模型")
+    config["stt"].update({
+        "enabled": bool(incoming_stt.get("enabled", config["stt"]["enabled"])),
+        "provider": stt_provider,
+        "endpoint": stt_endpoint,
+        "model": stt_model,
+        "reuse_tts_credentials": bool(incoming_stt.get(
+            "reuse_tts_credentials", config["stt"].get("reuse_tts_credentials", True)
+        )),
+        "max_upload_mb": _voice_number(
+            incoming_stt.get("max_upload_mb", config["stt"].get("max_upload_mb", 20)),
+            minimum=1, maximum=20, integer=True, label="录音大小上限",
+        ),
+    })
+    stt_token = str(incoming_stt.get("token") or "").strip()
+    if stt_token:
+        if len(stt_token) > 8000:
+            raise ValueError("STT Token 太长")
+        config["stt"]["token"] = stt_token
+    elif incoming_stt.get("clear_token"):
+        config["stt"]["token"] = ""
+
+    incoming_limits = data.get("limits") or {}
+    if not isinstance(incoming_limits, dict):
+        raise ValueError("语音限额格式不正确")
+    config["limits"] = {
+        "max_chars": _voice_number(
+            incoming_limits.get("max_chars", config["limits"]["max_chars"]),
+            minimum=20, maximum=4000, integer=True, label="单条字数上限",
+        ),
+        "daily_count": _voice_number(
+            incoming_limits.get("daily_count", config["limits"]["daily_count"]),
+            minimum=1, maximum=1000, integer=True, label="每日次数上限",
+        ),
+        "cost_per_1k_chars_usd": _voice_number(
+            incoming_limits.get(
+                "cost_per_1k_chars_usd", config["limits"]["cost_per_1k_chars_usd"]
+            ),
+            minimum=0, maximum=100, label="每千字费用",
+        ),
+        "daily_cost_usd": _voice_number(
+            incoming_limits.get("daily_cost_usd", config["limits"]["daily_cost_usd"]),
+            minimum=0, maximum=1000, label="每日费用上限",
+        ),
+    }
+    return config
+
+
+def _voice_usage_today():
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT COUNT(*),COALESCE(SUM(character_count),0),"
+        "COALESCE(SUM(estimated_cost_usd),0) FROM voice_usage "
+        "WHERE event_type IN ('tts','preview') AND date(created_at)=date('now')"
+    ).fetchone()
+    conn.close()
+    return {
+        "count": int(row[0] or 0),
+        "characters": int(row[1] or 0),
+        "estimated_cost_usd": round(float(row[2] or 0), 6),
+    }
+
+
+def _voice_preflight(config, character_id, text):
+    text = str(text or "").strip()
+    if not config.get("enabled"):
+        raise VoiceServiceError("语音总开关还没有打开")
+    if character_id not in CHARACTERS:
+        raise VoiceServiceError("未知角色")
+    voice_id = str(config["tts"]["voices"].get(character_id) or "").strip()
+    if not voice_id:
+        raise VoiceServiceError(f"还没有给 {CHARACTERS[character_id]['name']} 填 voice_id")
+    if not text:
+        raise VoiceServiceError("语音内容是空的")
+    max_chars = int(config["limits"]["max_chars"])
+    if len(text) > max_chars:
+        raise VoiceServiceError(f"语音最多 {max_chars} 字，这次有 {len(text)} 字")
+    usage = _voice_usage_today()
+    if usage["count"] >= int(config["limits"]["daily_count"]):
+        raise VoiceServiceError("今天的语音次数已经到上限啦")
+    rate = float(config["limits"]["cost_per_1k_chars_usd"] or 0)
+    estimated_cost = len(text) / 1000 * rate
+    daily_cost = float(config["limits"]["daily_cost_usd"] or 0)
+    if rate > 0 and daily_cost > 0 and usage["estimated_cost_usd"] + estimated_cost > daily_cost:
+        raise VoiceServiceError("今天的语音费用估算已经到上限啦")
+    return text, voice_id, estimated_cost
+
+
+def _voice_tool_available(character_id):
+    try:
+        config = _voice_config()
+        return bool(
+            config.get("enabled")
+            and str(config["tts"]["voices"].get(character_id) or "").strip()
+            and _voice_preflight(config, character_id, "喵")[0]
+        )
+    except (VoiceServiceError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _synthesize_with_quota(character_id, text, event_type="tts"):
+    with VOICE_USAGE_LOCK:
+        config = _voice_config()
+        text, voice_id, estimated_cost = _voice_preflight(config, character_id, text)
+        audio = synthesize_speech(
+            provider=config["tts"]["provider"],
+            endpoint=config["tts"]["endpoint"],
+            token=config["tts"].get("token", ""),
+            model=config["tts"]["model"],
+            voice_id=voice_id,
+            text=text,
+            response_format=config["tts"]["response_format"],
+            max_audio_bytes=VOICE_MAX_AUDIO_BYTES,
+        )
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "INSERT INTO voice_usage(event_type,character_id,character_count,estimated_cost_usd) "
+            "VALUES(?,?,?,?)",
+            (event_type, character_id, len(text), estimated_cost),
+        )
+        conn.commit()
+        conn.close()
+    return text, audio, estimated_cost
+
+
+def _save_voice_message(session_id, character_id, text, audio, estimated_cost):
+    payload = json.dumps({
+        "text": text,
+        "mime": audio.mime_type,
+        "from": "char",
+    }, ensure_ascii=False)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute(
+        "INSERT INTO messages(session_id,character_id,role,content) VALUES(?,?,?,?)",
+        (session_id, character_id, "model", "__VOICE__" + payload),
+    )
+    message_id = cursor.lastrowid
+    conn.execute(
+        "INSERT INTO voice_assets(message_id,character_id,transcript,mime_type,content,size_bytes,estimated_cost_usd) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (message_id, character_id, text, audio.mime_type, audio.content, len(audio.content), estimated_cost),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "id": message_id,
+        "message_id": message_id,
+        "character_id": character_id,
+        "text": text,
+        "mime": audio.mime_type,
+        "url": f"/api/voice/audio/{message_id}",
+        "ai_generated": True,
+    }
+
+
+def _voice_request_from_tools(tools_called):
+    for tool in tools_called or []:
+        if isinstance(tool, dict) and tool.get("name") == "send_voice":
+            arguments = tool.get("arguments") or {}
+            return str(arguments.get("text") or "").strip(), tool
+    return "", None
+
+
+def _maybe_create_voice_message(session_id, character_id, tools_called):
+    text, trace = _voice_request_from_tools(tools_called)
+    if not text or not trace:
+        return None
+    try:
+        text, audio, estimated_cost = _synthesize_with_quota(character_id, text)
+        voice = _save_voice_message(
+            session_id, character_id, text, audio, estimated_cost
+        )
+        trace["output"] = "语音已生成"
+        trace["status"] = "ok"
+        return voice
+    except (VoiceServiceError, ValueError) as exc:
+        trace["output"] = str(exc)[:300]
+        trace["status"] = "error"
+        app.logger.warning(f"voice synthesis failed ({character_id}): {exc}")
+        return None
+
+
+def _voice_message_content(voice):
+    return "__VOICE__" + json.dumps({
+        "text": voice["text"],
+        "mime": voice["mime"],
+        "from": "char",
+    }, ensure_ascii=False)
+
+
+def _voice_text_from_content(content):
+    if not isinstance(content, str) or not content.startswith("__VOICE__"):
+        return None
+    try:
+        payload = json.loads(content[len("__VOICE__"):])
+    except (TypeError, json.JSONDecodeError):
+        return "（语音消息）"
+    return str(payload.get("text") or "").strip() or "（语音消息）"
 
 
 _READING_HEADING_RE = re.compile(
@@ -1941,6 +2318,9 @@ def load_active_messages(session_id, character_id):
             except Exception:
                 clean_content = "（系统图片记录）"
             or_role = "user"
+        elif content.startswith("__VOICE__"):
+            transcript = _voice_text_from_content(content)
+            clean_content = f"（你发给User的AI语音文字稿：{transcript}）"
         else:
             clean_content = content.replace("\n||\n", "\n").replace("||", "") if or_role == "assistant" else content
         msgs.append({"id": mid, "role": or_role, "content": clean_content, "drowsy": drowsy_flag})
@@ -1980,6 +2360,9 @@ def load_group_history(session_id, limit=20):
     conn.close()
     lines = []
     for character_id, role, content in reversed(rows):
+        voice_text = _voice_text_from_content(content)
+        if voice_text is not None:
+            content = f"（AI语音）{voice_text}"
         if role == "user":
             speaker = "User"
         else:
@@ -2013,8 +2396,9 @@ def _group_quote_payload(session_id, reply_to_id, reply_to_text=None, character_
     conn.close()
     if not row:
         raise ValueError("引用的消息已经不在聊天里了")
+    stored_content = _voice_text_from_content(row[3]) or row[3]
     selected_text = str(reply_to_text or "").strip()[:2000]
-    if selected_text and selected_text not in row[3]:
+    if selected_text and selected_text not in stored_content:
         raise ValueError("引用文字和原消息没有对上")
     character_name = (
         "User" if row[2] == "user" or row[1] == USER_ID
@@ -2025,7 +2409,7 @@ def _group_quote_payload(session_id, reply_to_id, reply_to_text=None, character_
         "character_id": row[1],
         "character_name": character_name,
         "role": row[2],
-        "content": selected_text or row[3],
+        "content": selected_text or stored_content,
     }
 
 
@@ -2049,6 +2433,9 @@ def maybe_group_summary(session_id):
     for _mid, character_id, role, content in rows:
         if content.startswith("__TRANSFER__") or content.startswith("__STICKER__"):
             continue
+        voice_text = _voice_text_from_content(content)
+        if voice_text is not None:
+            content = f"（AI语音）{voice_text}"
         if role == "user":
             speaker = "User"
         else:
@@ -2358,8 +2745,36 @@ OR_TOOLS = [
     },
 ]
 
+VOICE_ANTHROPIC_TOOL = {
+    "name": "send_voice",
+    "description": (
+        "给User发一条AI生成语音。只有当一句话用声音表达明显更自然、更有情绪时才调用，"
+        "不要每轮都发，也不要把长篇回复变成朗诵。text 必须是你真正想说出口的短句；"
+        "这段文字会作为语音稿写入聊天历史与记忆。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "要说出口的简短语音稿，不要包含舞台提示或系统记录。",
+            }
+        },
+        "required": ["text"],
+    },
+}
+
+VOICE_OR_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "send_voice",
+        "description": VOICE_ANTHROPIC_TOOL["description"],
+        "parameters": VOICE_ANTHROPIC_TOOL["input_schema"],
+    },
+}
+
 _LEAK_INVOKE_RE = re.compile(
-    r'<invoke\s+name="(?P<tool>save_memory|send_transfer|send_sticker|press_hug)">(?P<body>.*?)</invoke>',
+    r'<invoke\s+name="(?P<tool>save_memory|send_transfer|send_sticker|press_hug|send_voice)">(?P<body>.*?)</invoke>',
     re.DOTALL,
 )
 _LEAK_PARAM_RE = re.compile(
@@ -2468,6 +2883,7 @@ def _new_tool_chain_state():
         "memory_to_save": None,
         "transfer_to_send": None,
         "sticker_to_send": None,
+        "voice_to_send": None,
         "tools_called": [],
         "mcp_signatures": set(),
         "call_count": 0,
@@ -2539,6 +2955,26 @@ def _execute_chat_tool(name, args, character_id, state):
         tools_called.append("send_sticker")
         return "表情包已送达User。"
 
+    if name == "send_voice":
+        text = str(args.get("text") or "").strip()
+        if state["voice_to_send"] is not None:
+            return "已有语音待发，本次忽略。"
+        try:
+            config = _voice_config()
+            text, _voice_id, _estimated_cost = _voice_preflight(
+                config, character_id, text
+            )
+        except (VoiceServiceError, ValueError, KeyError) as exc:
+            return f"语音没有排队：{exc}"
+        state["voice_to_send"] = {"text": text}
+        tools_called.append({
+            "name": "send_voice",
+            "arguments": {"text": text},
+            "output": "语音已排队，等待生成",
+            "status": "ok",
+        })
+        return "语音已排队；请继续给User一条自然的文字回复，不要声称已经成功生成。"
+
     if name == "press_hug":
         if "press_hug" in tools_called:
             return "和好按钮已经按过了，弹幕还在飘。"
@@ -2595,6 +3031,8 @@ def call_or_with_tools(model, messages, max_tokens=2048, session_id=None, charac
         active_tools.append(OR_TOOLS[3])
     if get_tool_enabled("close_window"):
         active_tools.append(OR_TOOLS[4])
+    if character_id and _voice_tool_available(character_id):
+        active_tools.append(copy.deepcopy(VOICE_OR_TOOL))
     active_tools.extend(_custom_mcp_tools("openrouter", character_id))
     if not active_tools:
         reply, usage, _ = call_or(
@@ -2735,6 +3173,8 @@ def call_anthropic_with_tools(model, system_blocks, messages, max_tokens=2048, c
         "anthropic-beta":    "prompt-caching-2024-07-31",
     }
     active_tools = [copy.deepcopy(t) for t in ANTHROPIC_TOOLS if get_tool_enabled(t["name"])]
+    if character_id and _voice_tool_available(character_id):
+        active_tools.append(copy.deepcopy(VOICE_ANTHROPIC_TOOL))
     active_tools.extend(_custom_mcp_tools("anthropic", character_id))
     if not active_tools:
         reply, usage = call_anthropic(model, system_blocks, messages, max_tokens)
@@ -3889,7 +4329,8 @@ def save_limits():
 def get_settings():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT key, value FROM settings WHERE key NOT LIKE 'custom_mcp_%'"
+        "SELECT key, value FROM settings "
+        "WHERE key NOT LIKE 'custom_mcp_%' AND key NOT LIKE 'voice_%'"
     ).fetchall()
     conn.close()
     return jsonify(dict(rows))
@@ -3899,7 +4340,7 @@ def get_settings():
 def save_setting():
     data = request.get_json() or {}
     key = str(data.get("key") or "")
-    if not key or key.startswith("custom_mcp_"):
+    if not key or key.startswith("custom_mcp_") or key.startswith("voice_"):
         return jsonify({"error": "这个设置只能通过专用接口修改"}), 400
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
@@ -3910,6 +4351,106 @@ def save_setting():
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+@app.route("/api/voice/config", methods=["GET", "POST"])
+def voice_config_route():
+    if request.method == "GET":
+        return jsonify(_voice_public_config())
+    try:
+        config = _updated_voice_config(request.get_json(silent=True) or {})
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    _write_setting(VOICE_SETTING_KEY, json.dumps(config, ensure_ascii=False))
+    return jsonify({"ok": True, "config": _voice_public_config(config)})
+
+
+@app.route("/api/voice/preview", methods=["POST"])
+def preview_voice():
+    body = request.get_json(silent=True) or {}
+    character_id = str(body.get("character_id") or "")
+    text = str(body.get("text") or "").strip()
+    try:
+        _text, audio, _estimated_cost = _synthesize_with_quota(
+            character_id, text, event_type="preview"
+        )
+    except (VoiceServiceError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    response = app.response_class(audio.content, mimetype=audio.mime_type)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/api/voice/audio/<int:message_id>", methods=["GET"])
+def get_voice_audio(message_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT mime_type,content FROM voice_assets WHERE message_id=?",
+        (message_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "语音不存在"}), 404
+    response = send_file(
+        BytesIO(row[1]), mimetype=row[0], download_name=f"voice-{message_id}"
+    )
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route("/api/voice/transcribe", methods=["POST"])
+def transcribe_voice():
+    config = _voice_config()
+    if not config.get("enabled") or not config["stt"].get("enabled"):
+        return jsonify({"error": "收语音开关还没有打开"}), 400
+    upload = request.files.get("audio")
+    if not upload or not upload.filename:
+        return jsonify({"error": "没有收到录音"}), 400
+    audio_bytes = upload.read()
+    max_bytes = min(
+        int(config["stt"].get("max_upload_mb", 20)) * 1024 * 1024,
+        VOICE_MAX_UPLOAD_BYTES,
+    )
+    if not audio_bytes:
+        return jsonify({"error": "录音是空的"}), 400
+    if len(audio_bytes) > max_bytes:
+        return jsonify({"error": f"录音不能超过 {max_bytes // 1024 // 1024}MB"}), 413
+    filename = secure_filename(upload.filename) or "recording.webm"
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    mime_type = (upload.mimetype or "application/octet-stream").split(";", 1)[0].lower()
+    if mime_type not in ALLOWED_AUDIO_MIMES and extension not in {
+        "aac", "flac", "m4a", "mp3", "mp4", "mpeg", "oga", "ogg", "opus", "wav", "webm"
+    }:
+        return jsonify({"error": "不支持这种录音格式"}), 400
+    stt = config["stt"]
+    token = (
+        config["tts"].get("token", "")
+        if stt.get("reuse_tts_credentials", True)
+        else stt.get("token", "")
+    )
+    try:
+        text = transcribe_speech(
+            provider=stt["provider"],
+            endpoint=stt["endpoint"],
+            token=token,
+            model=stt["model"],
+            filename=filename,
+            mime_type=mime_type,
+            content=audio_bytes,
+        )
+    except (VoiceServiceError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO voice_usage(event_type,character_id,character_count,estimated_cost_usd) "
+        "VALUES('stt','user',?,0)",
+        (len(text),),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "text": text})
 
 
 @app.route("/api/mobile/extensions", methods=["GET"])
@@ -4382,6 +4923,9 @@ def _finalize_character_reply(
             "from": "char",
         }, ensure_ascii=False)
         save_message(session_id, character_id, "model", "__STICKER__" + sk_payload)
+    voice = _maybe_create_voice_message(
+        session_id, character_id, tools_called
+    )
     maybe_compress(char, session_id)
 
     if "||" in reply:
@@ -4405,6 +4949,7 @@ def _finalize_character_reply(
         "replies": replies,
         "transfer": transfer_to_send,
         "sticker": sticker_to_send,
+        "voice": voice,
         "reply_id": reply_id,
         "tools_called": tools_for_frontend,
         "window_closed": window_closed,
@@ -4638,6 +5183,12 @@ def delete_messages_from(message_id):
         (session_id, character_id, message_id),
     )
     c.execute(
+        "DELETE FROM voice_assets WHERE message_id IN ("
+        "SELECT id FROM messages WHERE session_id=? AND character_id=? AND id>=?"
+        ")",
+        (session_id, character_id, message_id),
+    )
+    c.execute(
         "DELETE FROM messages WHERE session_id=? AND character_id=? AND id>=?",
         (session_id, character_id, message_id)
     )
@@ -4668,6 +5219,9 @@ def delete_group_messages_from(message_id):
     )
     conn.execute(
         f"DELETE FROM message_metrics WHERE message_id IN ({placeholders})", ids
+    )
+    conn.execute(
+        f"DELETE FROM voice_assets WHERE message_id IN ({placeholders})", ids
     )
     conn.execute(
         "DELETE FROM messages WHERE session_id=? AND id>=?",
@@ -4747,6 +5301,7 @@ def get_messages():
             tools_called = []
         quote = None
         if reply_to_id is not None and quote_content is not None:
+            quote_content = _voice_text_from_content(quote_content) or quote_content
             quote = {
                 "message_id": reply_to_id,
                 "character_id": quote_cid,
@@ -4757,6 +5312,22 @@ def get_messages():
                 "role": quote_role,
                 "content": reply_to_text or quote_content,
             }
+        voice = None
+        voice_text = _voice_text_from_content(content)
+        if voice_text is not None:
+            try:
+                voice_payload = json.loads(content[len("__VOICE__"):])
+            except (TypeError, json.JSONDecodeError):
+                voice_payload = {}
+            voice = {
+                "id": mid,
+                "message_id": mid,
+                "character_id": cid,
+                "text": voice_text,
+                "mime": str(voice_payload.get("mime") or "audio/mpeg"),
+                "url": f"/api/voice/audio/{mid}",
+                "ai_generated": True,
+            }
         result.append({
             "id": mid, "session_id": sid, "character_id": cid,
             "role": role, "content": content, "compressed": compressed,
@@ -4764,6 +5335,7 @@ def get_messages():
             "tools_called": tools_called,
             "reasoning_summary": reasoning_summary,
             "quote": quote,
+            "voice": voice,
         })
     return jsonify({"messages": result, "has_more": len(rows) == limit})
 
@@ -4885,6 +5457,9 @@ def group_chat():
         reply   = strip_fake_action_text(reply, char["domain"]) or "(...)"
         msg_id  = save_message(session_id, char["domain"], "model", reply)
         save_message_metrics(msg_id, char["domain"], usage_metrics)
+        voice = _maybe_create_voice_message(
+            session_id, char["domain"], tools_called
+        )
         save_message_details(msg_id, tools_called)
         accumulated.append(f"{char['name']}：{reply}")
 
@@ -4906,6 +5481,16 @@ def group_chat():
             "metrics":        usage_metrics,
             "tools_called":   tools_called or [],
         })
+        if voice:
+            messages_out.append({
+                "id": voice["id"],
+                "session_id": session_id,
+                "character_id": char["domain"],
+                "character_name": char["name"],
+                "role": "model",
+                "content": _voice_message_content(voice),
+                "voice": voice,
+            })
         results.append({
             "character_id": char["domain"],
             "name":         char["name"],
@@ -4913,6 +5498,7 @@ def group_chat():
             "replies":      bubbles,
             "metrics":      usage_metrics,
             "tools_called": tools_called or [],
+            "voice": voice,
         })
 
     try:
@@ -4993,6 +5579,9 @@ def continue_group_chat():
         reply = strip_fake_action_text(reply, char["domain"]) or "(...)"
         msg_id = save_message(session_id, char["domain"], "model", reply)
         save_message_metrics(msg_id, char["domain"], usage_metrics)
+        voice = _maybe_create_voice_message(
+            session_id, char["domain"], tools_called
+        )
         save_message_details(msg_id, tools_called)
         accumulated.append(f"{char['name']}：{reply}")
         message = {
@@ -5006,12 +5595,23 @@ def continue_group_chat():
             "tools_called": tools_called or [],
         }
         messages_out.append(message)
+        if voice:
+            messages_out.append({
+                "id": voice["id"],
+                "session_id": session_id,
+                "character_id": char["domain"],
+                "character_name": char["name"],
+                "role": "model",
+                "content": _voice_message_content(voice),
+                "voice": voice,
+            })
         results.append({
             "character_id": char["domain"],
             "name": char["name"],
             "reply": reply,
             "metrics": usage_metrics,
             "tools_called": tools_called or [],
+            "voice": voice,
         })
 
     try:

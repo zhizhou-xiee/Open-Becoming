@@ -2,9 +2,9 @@
 
 The core application intentionally ships without native Android/iOS code.  This
 module keeps the integration boundary small: proactive messages can be sent to
-a signed webhook, while native-player sync, voice, and phone search are
-implemented by an operator-controlled companion or MCP service.  The web app's
-together-listening room is a separate built-in capability.
+a signed webhook, while native-player sync and phone search are implemented by
+an operator-controlled companion or MCP service.  The web app's together-
+listening room and optional HTTP voice bridge are built-in capabilities.
 """
 
 from __future__ import annotations
@@ -174,12 +174,16 @@ def public_mobile_manifest(push_enabled: bool = False) -> dict:
             "tools": list(PHONE_MCP_TOOLS),
         },
         "voice": {
-            "extension_points": ["mobile_companion", "custom_mcp"],
-            "built_in": False,
-            "audio_transport": "opaque-reference-v1",
-            "stores_audio": False,
+            "extension_points": ["web_http", "mobile_companion", "custom_mcp"],
+            "built_in": True,
+            "default_enabled": False,
+            "providers": ["openai_compatible", "custom_http"],
+            "audio_transport": "authenticated-http-v1",
+            "stores_audio": True,
+            "storage": "sqlite_voice_assets",
+            "credential_storage": "server_only",
             "requires_user_gesture": True,
             "directions": ["speech_to_text", "text_to_speech"],
-            "tools": list(VOICE_MCP_TOOLS),
+            "tools": ["send_voice", *VOICE_MCP_TOOLS],
         },
     }

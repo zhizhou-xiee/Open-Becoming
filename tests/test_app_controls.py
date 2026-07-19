@@ -47,6 +47,116 @@ class AppControlsTests(unittest.TestCase):
         app_module.LIMITS.update(self.original_limits)
         app_module._write_setting(app_module.THEME_SETTING_KEY, app_module.DEFAULT_THEME_ID)
         app_module._write_setting(app_module.WEATHER_EFFECT_SETTING_KEY, "off")
+        conn = app_module.sqlite3.connect(app_module.DB_PATH)
+        conn.execute("DELETE FROM settings WHERE key=?", (app_module.VOICE_SETTING_KEY,))
+        conn.execute("DELETE FROM voice_assets")
+        conn.execute("DELETE FROM voice_usage")
+        conn.commit()
+        conn.close()
+
+    def _voice_payload(self, *, enabled=True, daily_count=20):
+        return {
+            "enabled": enabled,
+            "tts": {
+                "provider": "openai_compatible",
+                "endpoint": "https://voice.example/v1/audio/speech",
+                "model": "tts-test",
+                "response_format": "mp3",
+                "token": "tts-server-secret",
+                "voices": {cid: f"voice-{cid}" for cid in app_module.CHARACTERS},
+            },
+            "stt": {
+                "enabled": True,
+                "provider": "openai_compatible",
+                "endpoint": "https://voice.example/v1/audio/transcriptions",
+                "model": "stt-test",
+                "token": "stt-server-secret",
+                "reuse_tts_credentials": False,
+                "max_upload_mb": 5,
+            },
+            "limits": {
+                "max_chars": 120,
+                "daily_count": daily_count,
+                "cost_per_1k_chars_usd": 0.2,
+                "daily_cost_usd": 1,
+            },
+        }
+
+    def test_voice_config_tokens_are_server_only(self):
+        response = self.client.post("/api/voice/config", json=self._voice_payload())
+        self.assertEqual(response.status_code, 200)
+        rendered = response.get_data(as_text=True)
+        self.assertNotIn("tts-server-secret", rendered)
+        self.assertNotIn("stt-server-secret", rendered)
+        self.assertTrue(response.get_json()["config"]["tts"]["token_configured"])
+
+        public = self.client.get("/api/voice/config").get_data(as_text=True)
+        generic = self.client.get("/api/settings").get_data(as_text=True)
+        self.assertNotIn("tts-server-secret", public)
+        self.assertNotIn("stt-server-secret", public)
+        self.assertNotIn("tts-server-secret", generic)
+        self.assertNotIn(app_module.VOICE_SETTING_KEY, generic)
+
+    def test_voice_preview_enforces_daily_count(self):
+        self.client.post("/api/voice/config", json=self._voice_payload(daily_count=1))
+        audio = Mock(content=b"ID3-test-audio", mime_type="audio/mpeg")
+        with patch.object(app_module, "synthesize_speech", return_value=audio) as synthesize:
+            first = self.client.post("/api/voice/preview", json={
+                "character_id": "char1", "text": "试听一句",
+            })
+            second = self.client.post("/api/voice/preview", json={
+                "character_id": "char1", "text": "再试听一句",
+            })
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.mimetype, "audio/mpeg")
+        self.assertEqual(second.status_code, 400)
+        self.assertIn("次数", second.get_json()["error"])
+        self.assertEqual(synthesize.call_count, 1)
+
+    def test_send_voice_tool_saves_audio_and_history_transcript(self):
+        self.client.post("/api/voice/config", json=self._voice_payload())
+        state = app_module._new_tool_chain_state()
+        result = app_module._execute_chat_tool(
+            "send_voice", {"text": "我用声音说一句。"}, "char1", state
+        )
+        self.assertIn("排队", result)
+        self.assertEqual(state["tools_called"][0]["name"], "send_voice")
+
+        audio = Mock(content=b"voice-bytes", mime_type="audio/mpeg")
+        with patch.object(app_module, "synthesize_speech", return_value=audio), patch.object(
+            app_module, "maybe_compress"
+        ):
+            response = app_module._finalize_character_reply(
+                app_module.CHARACTERS["char1"],
+                "voice-test",
+                "先给你一条文字。",
+                None,
+                None,
+                state["tools_called"],
+            )
+        voice = response["voice"]
+        self.assertIsNotNone(voice)
+        self.assertEqual(voice["text"], "我用声音说一句。")
+        audio_response = self.client.get(voice["url"])
+        self.assertEqual(audio_response.status_code, 200)
+        self.assertEqual(audio_response.data, b"voice-bytes")
+        history = app_module.load_active_messages("voice-test", "char1")
+        self.assertTrue(any("我用声音说一句" in item["content"] for item in history))
+
+    def test_stt_upload_uses_server_token_and_returns_only_text(self):
+        self.client.post("/api/voice/config", json=self._voice_payload())
+        with patch.object(
+            app_module, "transcribe_speech", return_value="这是录音转出的文字"
+        ) as transcribe:
+            response = self.client.post(
+                "/api/voice/transcribe",
+                data={"audio": (io.BytesIO(b"m4a-bytes"), "iphone.m4a")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["text"], "这是录音转出的文字")
+        self.assertEqual(transcribe.call_args.kwargs["token"], "stt-server-secret")
+        self.assertNotIn("server-secret", response.get_data(as_text=True))
 
     def test_model_and_limits_are_editable(self):
         response = self.client.post("/api/character-config/char2", json={
@@ -142,8 +252,10 @@ class AppControlsTests(unittest.TestCase):
         self.assertTrue(payload["music"]["web_room_built_in"])
         self.assertTrue(payload["phone"]["read_only"])
         self.assertIn("mobile_companion", payload["voice"]["extension_points"])
-        self.assertFalse(payload["voice"]["built_in"])
-        self.assertFalse(payload["voice"]["stores_audio"])
+        self.assertTrue(payload["voice"]["built_in"])
+        self.assertFalse(payload["voice"]["default_enabled"])
+        self.assertTrue(payload["voice"]["stores_audio"])
+        self.assertEqual(payload["voice"]["credential_storage"], "server_only")
         self.assertNotIn("secret", response.get_data(as_text=True).lower())
 
     def test_memory_overview_reports_backend_capabilities(self):

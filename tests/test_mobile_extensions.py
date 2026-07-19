@@ -86,11 +86,14 @@ class MobileExtensionTests(unittest.TestCase):
             ["speech_to_text", "text_to_speech"],
         )
         self.assertIn("mobile_companion", manifest["voice"]["extension_points"])
-        self.assertFalse(manifest["voice"]["stores_audio"])
+        self.assertTrue(manifest["voice"]["built_in"])
+        self.assertFalse(manifest["voice"]["default_enabled"])
+        self.assertTrue(manifest["voice"]["stores_audio"])
+        self.assertEqual(manifest["voice"]["credential_storage"], "server_only")
         self.assertTrue(manifest["voice"]["requires_user_gesture"])
         self.assertEqual(
             manifest["voice"]["tools"],
-            ["voice_get_capabilities", "voice_transcribe", "voice_synthesize"],
+            ["send_voice", "voice_get_capabilities", "voice_transcribe", "voice_synthesize"],
         )
         rendered = json.dumps(manifest)
         self.assertNotIn("secret", rendered.lower())

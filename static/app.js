@@ -123,6 +123,7 @@
       hideLoginOverlay();
       await loadAppearance();
       await loadGroupConfig();
+      await loadVoiceFeatureState();
       initCharList();
       startSplashDismiss(0);
     } else {
@@ -146,7 +147,10 @@
   const messagesEl = document.getElementById("messages");
   const inputEl    = document.getElementById("input");
   const sendBtn    = document.getElementById("send");
+  const voiceRecordBtn = document.getElementById("voiceRecord");
+  const voiceFileInput = document.getElementById("voiceFileInput");
   const charSubEl  = document.getElementById("char-sub");
+  let voiceConfigState = null;
 
   const CHAR_META = {
     char1: { label: "角色槽 1" },
@@ -661,6 +665,7 @@
         save_memory: '🧠 存记忆',
         send_transfer: '💸 转账',
         send_sticker: '🎨 表情',
+        send_voice: '🎙️ AI 语音',
         press_hug: '🤍 和好按钮',
         close_window: '🚪 封窗',
       };
@@ -747,7 +752,111 @@
     bubble.appendChild(content);
   }
 
+  function parseVoiceContent(content, messageId = null) {
+    if (!content || !content.startsWith("__VOICE__")) return null;
+    try {
+      const data = JSON.parse(content.slice(9));
+      return {
+        ...data,
+        id: messageId,
+        message_id: messageId,
+        url: data.url || (messageId ? `/api/voice/audio/${messageId}` : ""),
+        ai_generated: true,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildVoiceBubble(data, messageId = null) {
+    const bubble = document.createElement("div");
+    bubble.className = "bubble ai voice-bubble";
+    bubble.dataset.bubbleText = data.text || "语音消息";
+    if (messageId) bubble.dataset.messageId = messageId;
+
+    const main = document.createElement("div");
+    main.className = "voice-bubble-main";
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "voice-play-btn";
+    play.setAttribute("aria-label", "播放AI语音");
+    play.innerHTML = '<span class="material-symbols-outlined">play_arrow</span>';
+    const wave = document.createElement("span");
+    wave.className = "voice-wave";
+    [9, 17, 12, 23, 15, 20, 10, 18, 13].forEach((height, index) => {
+      const bar = document.createElement("i");
+      bar.style.setProperty("--wave-h", `${height}px`);
+      bar.style.setProperty("--wave-i", index);
+      wave.appendChild(bar);
+    });
+    const label = document.createElement("span");
+    label.className = "voice-ai-label";
+    label.textContent = "AI 语音";
+    main.append(play, wave, label);
+    bubble.appendChild(main);
+
+    const details = document.createElement("details");
+    details.className = "voice-transcript-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "查看文字稿";
+    const transcript = document.createElement("p");
+    transcript.className = "voice-transcript";
+    transcript.textContent = data.text || "（没有文字稿）";
+    details.append(summary, transcript);
+    bubble.appendChild(details);
+
+    const audio = new Audio(data.url || `/api/voice/audio/${messageId}`);
+    audio.preload = "none";
+    const reset = () => {
+      bubble.classList.remove("playing");
+      play.querySelector("span").textContent = "play_arrow";
+    };
+    audio.addEventListener("ended", reset);
+    audio.addEventListener("pause", reset);
+    audio.addEventListener("error", () => {
+      reset();
+      showToast("语音暂时播放不了，再试一下");
+    });
+    play.addEventListener("click", event => {
+      event.stopPropagation();
+      if (audio.paused) {
+        document.querySelectorAll(".voice-bubble.playing .voice-play-btn").forEach(btn => {
+          if (btn !== play) btn.click();
+        });
+        audio.play().then(() => {
+          bubble.classList.add("playing");
+          play.querySelector("span").textContent = "pause";
+        }).catch(() => showToast("浏览器没有允许播放这条语音"));
+      } else {
+        audio.pause();
+      }
+    });
+    return bubble;
+  }
+
+  function buildSingleVoiceBlock(data, time, messageId) {
+    const block = document.createElement("div");
+    block.className = "single-msg-block from-ai";
+    const avatarImg = document.createElement("img");
+    avatarImg.src = charAvatars[currentChar] || "";
+    avatarImg.style.cssText = "width:32px;height:32px;border-radius:50%;object-fit:cover;margin-bottom:4px;";
+    avatarImg.onerror = function() { this.style.display = "none"; };
+    decorateDesireAvatar(avatarImg, currentChar);
+    block.appendChild(avatarImg);
+    block.appendChild(buildVoiceBubble(data, messageId));
+    const timeStr = formatMsgTime(time);
+    if (timeStr) {
+      const timeDiv = document.createElement("div");
+      timeDiv.className = "msg-time";
+      timeDiv.textContent = timeStr;
+      block.appendChild(timeDiv);
+    }
+    return block;
+  }
+
   function buildSingleBlock(text, who, time, messageId, toolsCalled, metrics, quote = null) {
+    const voice = parseVoiceContent(text, messageId);
+    if (voice) return buildSingleVoiceBlock(voice, time, messageId);
     if (text && text.startsWith("__TRANSFER__")) {
       try {
         const data = JSON.parse(text.slice(12));
@@ -815,6 +924,20 @@
     const time = new Date();
     histories[currentChar].push({ id: messageId, text: content, who, time, quote });
     messagesEl.appendChild(buildSingleBlock(content, who, time, messageId, null, null, quote));
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function addVoiceBubble(voice) {
+    if (!voice) return;
+    const time = new Date();
+    const content = "__VOICE__" + JSON.stringify({
+      text: voice.text,
+      mime: voice.mime,
+      from: "char",
+      url: voice.url,
+    });
+    histories[currentChar].push({ id: voice.id, text: content, who: "ai", time });
+    messagesEl.appendChild(buildSingleVoiceBlock(voice, time, voice.id));
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -906,6 +1029,10 @@
     if (text && text.startsWith("__TRANSFER__")) return "[转账]";
     if (text && text.startsWith("__STICKER__")) return "[表情]";
     if (text && text.startsWith("__IMAGE__")) return "[图片]";
+    if (text && text.startsWith("__VOICE__")) {
+      const voice = parseVoiceContent(text);
+      return voice ? `[语音] ${voice.text}` : "[语音]";
+    }
     return text;
   }
 
@@ -1096,6 +1223,10 @@
     if (data.sticker) {
       await new Promise(r => setTimeout(r, 400));
       addStickerBubble({ ...data.sticker, from: "char" }, "ai");
+    }
+    if (data.voice) {
+      await new Promise(r => setTimeout(r, 350));
+      addVoiceBubble(data.voice);
     }
     if (data.window_closed) {
       await new Promise(r => setTimeout(r, 300));
@@ -1930,6 +2061,142 @@
     }, 350);
   });
 
+  async function loadVoiceFeatureState() {
+    try {
+      const response = await fetch("/api/voice/config", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      voiceConfigState = await response.json();
+    } catch (_) {
+      voiceConfigState = null;
+    }
+    const canReceive = !!(
+      voiceConfigState?.enabled && voiceConfigState?.stt?.enabled
+    );
+    voiceRecordBtn.classList.toggle("hidden", !canReceive);
+    return voiceConfigState;
+  }
+
+  let activeVoiceRecorder = null;
+  let activeVoiceStream = null;
+  let voiceRecordTimer = null;
+  let voiceChunks = [];
+
+  function stopVoiceTracks() {
+    if (voiceRecordTimer) clearTimeout(voiceRecordTimer);
+    voiceRecordTimer = null;
+    activeVoiceStream?.getTracks?.().forEach(track => track.stop());
+    activeVoiceStream = null;
+  }
+
+  function setVoiceRecording(active) {
+    voiceRecordBtn.classList.toggle("recording", active);
+    voiceRecordBtn.querySelector("span").textContent = active ? "stop" : "mic";
+    voiceRecordBtn.setAttribute("aria-label", active ? "停止并发送录音" : "按下录音");
+    voiceRecordBtn.title = active ? "停止并发送" : "收语音";
+  }
+
+  async function sendVoiceRecording(file) {
+    if (!file || !file.size) return;
+    const maxMb = Number(voiceConfigState?.stt?.max_upload_mb || 20);
+    if (file.size > maxMb * 1024 * 1024) {
+      showToast(`录音不能超过 ${maxMb}MB`);
+      return;
+    }
+    const form = new FormData();
+    form.append("audio", file, file.name || "recording.webm");
+    voiceRecordBtn.disabled = true;
+    inputEl.placeholder = "小猫正在听写录音…";
+    try {
+      const response = await fetch("/api/voice/transcribe", {
+        method: "POST",
+        body: form,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "没有听清这段录音");
+      inputEl.value = data.text || "";
+      if (!inputEl.value.trim()) throw new Error("没有识别出文字");
+      showToast("已经听写成文字，帮你发出去啦");
+      await send();
+    } catch (error) {
+      showToast(error.message || "录音没有发送成功");
+    } finally {
+      voiceRecordBtn.disabled = false;
+      inputEl.placeholder = "小猫酝酿坏主意中…";
+      voiceFileInput.value = "";
+    }
+  }
+
+  function recordingExtension(mimeType) {
+    const mime = String(mimeType || "").toLowerCase();
+    if (mime.includes("mp4") || mime.includes("m4a")) return "m4a";
+    if (mime.includes("ogg")) return "ogg";
+    if (mime.includes("wav")) return "wav";
+    return "webm";
+  }
+
+  async function startVoiceRecording() {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      voiceFileInput.click();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const candidates = [
+        "audio/mp4;codecs=mp4a.40.2",
+        "audio/mp4",
+        "audio/webm;codecs=opus",
+        "audio/webm",
+      ];
+      const mimeType = candidates.find(type => MediaRecorder.isTypeSupported?.(type)) || "";
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      activeVoiceStream = stream;
+      activeVoiceRecorder = recorder;
+      voiceChunks = [];
+      recorder.addEventListener("dataavailable", event => {
+        if (event.data?.size) voiceChunks.push(event.data);
+      });
+      recorder.addEventListener("stop", () => {
+        const finalType = recorder.mimeType || mimeType || "audio/webm";
+        const blob = new Blob(voiceChunks, { type: finalType });
+        const file = new File(
+          [blob],
+          `iphone-recording.${recordingExtension(finalType)}`,
+          { type: finalType },
+        );
+        activeVoiceRecorder = null;
+        voiceChunks = [];
+        setVoiceRecording(false);
+        stopVoiceTracks();
+        sendVoiceRecording(file);
+      });
+      recorder.addEventListener("error", () => {
+        activeVoiceRecorder = null;
+        setVoiceRecording(false);
+        stopVoiceTracks();
+        showToast("录音被浏览器中断了");
+      });
+      recorder.start(500);
+      setVoiceRecording(true);
+      voiceRecordTimer = setTimeout(() => {
+        if (activeVoiceRecorder?.state === "recording") activeVoiceRecorder.stop();
+      }, 60_000);
+      showToast("正在录音，再点一下就发送");
+    } catch (_) {
+      stopVoiceTracks();
+      setVoiceRecording(false);
+      showToast("没有拿到麦克风权限，可以改选录音文件");
+      voiceFileInput.click();
+    }
+  }
+
+  voiceRecordBtn.addEventListener("click", () => {
+    if (activeVoiceRecorder?.state === "recording") activeVoiceRecorder.stop();
+    else startVoiceRecording();
+  });
+  voiceFileInput.addEventListener("change", event => {
+    sendVoiceRecording(event.target.files?.[0]);
+  });
+
   // ════════════════════════════════════════════
   // 群聊
   // ════════════════════════════════════════════
@@ -2174,6 +2441,28 @@
     if (messageId != null) block.dataset.messageId = String(messageId);
     block.dataset.characterId = character_id;
     block.dataset.characterName = character_name || GROUP_CHAR_NAMES[character_id] || character_id;
+    const voice = parseVoiceContent(content, messageId);
+    if (voice && role !== "user") {
+      const avatarImg = document.createElement("img");
+      avatarImg.src = charAvatars[character_id] || "";
+      avatarImg.style.cssText = "width:32px;height:32px;border-radius:50%;object-fit:cover;margin-bottom:4px;";
+      avatarImg.onerror = function() { this.style.display = "none"; };
+      decorateDesireAvatar(avatarImg, character_id);
+      block.appendChild(avatarImg);
+      const nameEl = document.createElement("div");
+      nameEl.className = "group-sender-name";
+      nameEl.textContent = character_name || GROUP_CHAR_NAMES[character_id] || character_id;
+      block.appendChild(nameEl);
+      block.appendChild(buildVoiceBubble(voice, messageId));
+      const timeStr = formatMsgTime(time);
+      if (timeStr) {
+        const timeDiv = document.createElement("div");
+        timeDiv.className = "msg-time";
+        timeDiv.textContent = timeStr;
+        block.appendChild(timeDiv);
+      }
+      return block;
+    }
     if (role !== "user") {
       const avatarImg = document.createElement("img");
       avatarImg.src = charAvatars[character_id] || "";
@@ -2208,6 +2497,10 @@
   }
 
   async function renderGroupMsgAnimated(character_id, character_name, role, content, time, toolsCalled, metrics, messageId = null, quote = null) {
+    if (parseVoiceContent(content, messageId)) {
+      renderGroupMsg(character_id, character_name, role, content, time, toolsCalled, metrics, messageId, quote);
+      return;
+    }
     if (role === "user") {
       renderGroupMsg(character_id, character_name, role, content, time, toolsCalled, metrics, messageId, quote);
       return;
@@ -3066,6 +3359,7 @@
   let _toolsPanelOpen = false;
 
   async function openToolsPanel() {
+    if (_voicePanelOpen) closeVoicePanel();
     if (_appearancePanelOpen) closeAppearancePanel();
     if (_personaPanelOpen) closePersonaPanel();
     if (_schedulerPanelOpen) closeSchedulerPanel();
@@ -3395,6 +3689,7 @@
   let _schedulerPanelOpen = false;
 
   async function openSchedulerPanel() {
+    if (_voicePanelOpen) closeVoicePanel();
     if (_appearancePanelOpen) closeAppearancePanel();
     if (_personaPanelOpen) closePersonaPanel();
     if (_toolsPanelOpen) closeToolsPanel();
@@ -4029,6 +4324,7 @@
   }
 
   async function openAppearancePanel() {
+    if (_voicePanelOpen) closeVoicePanel();
     if (_personaPanelOpen) closePersonaPanel();
     if (_toolsPanelOpen) closeToolsPanel();
     if (_schedulerPanelOpen) closeSchedulerPanel();
@@ -4052,6 +4348,7 @@
   let _personaPanelOpen = false;
 
   async function openPersonaPanel() {
+    if (_voicePanelOpen) closeVoicePanel();
     if (_appearancePanelOpen) closeAppearancePanel();
     if (_toolsPanelOpen) closeToolsPanel();
     if (_schedulerPanelOpen) closeSchedulerPanel();
@@ -4179,6 +4476,7 @@
   let _memoryImportPanelOpen = false;
 
   function openMemoryImportPanel() {
+    if (_voicePanelOpen) closeVoicePanel();
     if (_appearancePanelOpen) closeAppearancePanel();
     if (_personaPanelOpen) closePersonaPanel();
     if (_toolsPanelOpen) closeToolsPanel();
@@ -4271,6 +4569,7 @@
   let _gestureHelpPanelOpen = false;
 
   function openGestureHelpPanel() {
+    if (_voicePanelOpen) closeVoicePanel();
     if (_appearancePanelOpen) closeAppearancePanel();
     if (_personaPanelOpen) closePersonaPanel();
     if (_toolsPanelOpen) closeToolsPanel();
@@ -4305,6 +4604,346 @@
     panel.style.display = "none";
     panel.innerHTML = "";
     _gestureHelpPanelOpen = false;
+    document.getElementById("moreContent").scrollTop = 0;
+  }
+
+  let _voicePanelOpen = false;
+
+  function voiceField(label, input) {
+    const wrap = document.createElement("label");
+    wrap.className = "voice-settings-field";
+    const title = document.createElement("span");
+    title.textContent = label;
+    wrap.append(title, input);
+    return wrap;
+  }
+
+  function voiceInput(id, type = "text") {
+    const input = document.createElement("input");
+    input.id = id;
+    input.type = type;
+    input.autocomplete = "off";
+    return input;
+  }
+
+  function voiceProviderSelect(id) {
+    const select = document.createElement("select");
+    select.id = id;
+    [
+      ["openai_compatible", "OpenAI-compatible"],
+      ["custom_http", "自定义 HTTP"],
+    ].forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    });
+    return select;
+  }
+
+  function voiceSwitch(label, id, checked = false) {
+    const row = document.createElement("label");
+    row.className = "voice-switch-row";
+    const text = document.createElement("span");
+    text.textContent = label;
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = id;
+    input.checked = checked;
+    row.append(text, input);
+    return row;
+  }
+
+  async function saveVoiceSettings({ announce = true } = {}) {
+    const panel = document.getElementById("voicePanel");
+    const voices = {};
+    panel.querySelectorAll("[data-voice-character]").forEach(input => {
+      voices[input.dataset.voiceCharacter] = input.value.trim();
+    });
+    const payload = {
+      enabled: document.getElementById("voiceEnabled").checked,
+      tts: {
+        provider: document.getElementById("voiceTtsProvider").value,
+        endpoint: document.getElementById("voiceTtsEndpoint").value.trim(),
+        token: document.getElementById("voiceTtsToken").value.trim(),
+        clear_token: document.getElementById("voiceTtsClear").checked,
+        model: document.getElementById("voiceTtsModel").value.trim(),
+        response_format: document.getElementById("voiceTtsFormat").value,
+        voices,
+      },
+      stt: {
+        enabled: document.getElementById("voiceSttEnabled").checked,
+        provider: document.getElementById("voiceSttProvider").value,
+        endpoint: document.getElementById("voiceSttEndpoint").value.trim(),
+        token: document.getElementById("voiceSttToken").value.trim(),
+        clear_token: document.getElementById("voiceSttClear").checked,
+        model: document.getElementById("voiceSttModel").value.trim(),
+        reuse_tts_credentials: document.getElementById("voiceSttReuse").checked,
+        max_upload_mb: Number(document.getElementById("voiceSttMaxMb").value),
+      },
+      limits: {
+        max_chars: Number(document.getElementById("voiceMaxChars").value),
+        daily_count: Number(document.getElementById("voiceDailyCount").value),
+        cost_per_1k_chars_usd: Number(document.getElementById("voiceRate").value),
+        daily_cost_usd: Number(document.getElementById("voiceDailyCost").value),
+      },
+    };
+    const response = await fetch("/api/voice/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "语音配置没有保存成功");
+    voiceConfigState = data.config;
+    document.getElementById("voiceTtsToken").value = "";
+    document.getElementById("voiceSttToken").value = "";
+    document.getElementById("voiceTtsClear").checked = false;
+    document.getElementById("voiceSttClear").checked = false;
+    document.getElementById("voiceTtsToken").placeholder = data.config.tts.token_configured
+      ? "已保存在后端，留空不改" : "可留空（自托管服务可不需要）";
+    document.getElementById("voiceSttToken").placeholder = data.config.stt.token_configured
+      ? "已保存在后端，留空不改" : "可留空";
+    await loadVoiceFeatureState();
+    if (announce) showToast("语音收发配置保存好啦");
+    return data.config;
+  }
+
+  async function openVoicePanel() {
+    if (_appearancePanelOpen) closeAppearancePanel();
+    if (_personaPanelOpen) closePersonaPanel();
+    if (_toolsPanelOpen) closeToolsPanel();
+    if (_schedulerPanelOpen) closeSchedulerPanel();
+    if (_memoryImportPanelOpen) closeMemoryImportPanel();
+    if (_gestureHelpPanelOpen) closeGestureHelpPanel();
+
+    const panel = document.getElementById("voicePanel");
+    panel.innerHTML = "";
+    panel.style.display = "flex";
+    panel.style.flexDirection = "column";
+    panel.style.padding = "12px 16px 16px";
+    panel.style.gap = "12px";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "persona-close-btn";
+    close.textContent = "收起 ×";
+    close.onclick = closeVoicePanel;
+    panel.appendChild(close);
+
+    let config;
+    try {
+      config = await loadVoiceFeatureState();
+      if (!config) throw new Error("load failed");
+    } catch (_) {
+      panel.insertAdjacentHTML("beforeend", '<p class="voice-settings-note">语音配置暂时没有加载出来，请收起后重试。</p>');
+      _voicePanelOpen = true;
+      return;
+    }
+
+    const intro = document.createElement("section");
+    intro.className = "voice-settings-card";
+    intro.innerHTML = `
+      <h3>说说喵°语音收发</h3>
+      <p class="voice-settings-note">默认关闭、随时可拔。发出的声音会明确标记为「AI 语音」；Token 只保存在后端，浏览器只能知道“是否已配置”，看不到原文。</p>`;
+    intro.appendChild(voiceSwitch("语音总开关", "voiceEnabled", config.enabled));
+    panel.appendChild(intro);
+
+    const ttsCard = document.createElement("section");
+    ttsCard.className = "voice-settings-card";
+    const ttsTitle = document.createElement("h3");
+    ttsTitle.textContent = "发语音 · TTS";
+    const ttsNote = document.createElement("p");
+    ttsNote.className = "voice-settings-note";
+    ttsNote.textContent = "OpenAI-compatible 使用 model / input / voice；自定义 HTTP 使用 model / text / voice_id，并接收原始音频或 audio_base64。";
+    const ttsGrid = document.createElement("div");
+    ttsGrid.className = "voice-settings-grid";
+    const ttsProvider = voiceProviderSelect("voiceTtsProvider");
+    ttsProvider.value = config.tts.provider;
+    const ttsEndpoint = voiceInput("voiceTtsEndpoint", "url");
+    ttsEndpoint.value = config.tts.endpoint;
+    const ttsModel = voiceInput("voiceTtsModel");
+    ttsModel.value = config.tts.model;
+    const ttsToken = voiceInput("voiceTtsToken", "password");
+    ttsToken.placeholder = config.tts.token_configured
+      ? "已保存在后端，留空不改" : "可留空（自托管服务可不需要）";
+    ttsToken.autocomplete = "new-password";
+    const ttsFormat = document.createElement("select");
+    ttsFormat.id = "voiceTtsFormat";
+    ["mp3", "opus", "aac", "flac", "wav"].forEach(value => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value.toUpperCase();
+      ttsFormat.appendChild(option);
+    });
+    ttsFormat.value = config.tts.response_format;
+    ttsGrid.append(
+      voiceField("接口类型", ttsProvider),
+      voiceField("模型", ttsModel),
+      voiceField("接口地址", ttsEndpoint),
+      voiceField("Token（不会回显）", ttsToken),
+      voiceField("音频格式", ttsFormat),
+    );
+    const ttsClear = voiceSwitch("清除后端已保存的 TTS Token", "voiceTtsClear", false);
+    const voiceIds = document.createElement("div");
+    voiceIds.className = "voice-character-voices";
+    config.characters.forEach(character => {
+      const input = voiceInput(`voiceId-${character.id}`);
+      input.dataset.voiceCharacter = character.id;
+      input.value = config.tts.voices[character.id] || "";
+      input.placeholder = "例如 alloy / 自定义 voice_id";
+      voiceIds.appendChild(voiceField(`${character.name} · voice_id`, input));
+    });
+    ttsCard.append(ttsTitle, ttsNote, ttsGrid, ttsClear, voiceIds);
+
+    const preview = document.createElement("div");
+    preview.className = "voice-preview-row";
+    const previewBox = document.createElement("div");
+    previewBox.className = "voice-settings-field";
+    const previewChar = document.createElement("select");
+    previewChar.id = "voicePreviewCharacter";
+    config.characters.forEach(character => {
+      const option = document.createElement("option");
+      option.value = character.id;
+      option.textContent = character.name;
+      previewChar.appendChild(option);
+    });
+    const previewText = document.createElement("textarea");
+    previewText.id = "voicePreviewText";
+    previewText.maxLength = Number(config.limits.max_chars || 180);
+    previewText.value = "你好呀，这是一条AI语音试听。";
+    previewBox.append(voiceField("试听角色", previewChar), voiceField("试听文字（试听也计入今日次数）", previewText));
+    const previewBtn = document.createElement("button");
+    previewBtn.type = "button";
+    previewBtn.className = "voice-secondary-btn";
+    previewBtn.textContent = "试听";
+    previewBtn.onclick = async () => {
+      previewBtn.disabled = true;
+      previewBtn.textContent = "生成中…";
+      try {
+        await saveVoiceSettings({ announce: false });
+        const response = await fetch("/api/voice/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            character_id: previewChar.value,
+            text: previewText.value.trim(),
+          }),
+        });
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || "试听失败");
+        }
+        const url = URL.createObjectURL(await response.blob());
+        const audio = new Audio(url);
+        audio.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
+        await audio.play();
+        showToast("正在播放AI语音试听");
+      } catch (error) {
+        showToast(error.message || "试听失败");
+      } finally {
+        previewBtn.disabled = false;
+        previewBtn.textContent = "试听";
+      }
+    };
+    preview.append(previewBox, previewBtn);
+    ttsCard.appendChild(preview);
+    panel.appendChild(ttsCard);
+
+    const sttCard = document.createElement("section");
+    sttCard.className = "voice-settings-card";
+    const sttTitle = document.createElement("h3");
+    sttTitle.textContent = "收语音 · STT";
+    const sttNote = document.createElement("p");
+    sttNote.className = "voice-settings-note";
+    sttNote.textContent = "iPhone 录音先上传到后端转成文字，再把文字作为普通消息交给角色；录音不会塞进模型上下文。";
+    const sttEnabled = voiceSwitch("开启录音转文字", "voiceSttEnabled", config.stt.enabled);
+    const sttReuse = voiceSwitch("复用 TTS 地址凭证中的 Token", "voiceSttReuse", config.stt.reuse_tts_credentials);
+    const sttGrid = document.createElement("div");
+    sttGrid.className = "voice-settings-grid";
+    const sttProvider = voiceProviderSelect("voiceSttProvider");
+    sttProvider.value = config.stt.provider;
+    const sttEndpoint = voiceInput("voiceSttEndpoint", "url");
+    sttEndpoint.value = config.stt.endpoint;
+    const sttModel = voiceInput("voiceSttModel");
+    sttModel.value = config.stt.model;
+    const sttToken = voiceInput("voiceSttToken", "password");
+    sttToken.autocomplete = "new-password";
+    sttToken.placeholder = config.stt.token_configured ? "已保存在后端，留空不改" : "可留空";
+    const sttMax = voiceInput("voiceSttMaxMb", "number");
+    sttMax.min = "1";
+    sttMax.max = "20";
+    sttMax.value = config.stt.max_upload_mb;
+    sttGrid.append(
+      voiceField("接口类型", sttProvider),
+      voiceField("模型", sttModel),
+      voiceField("接口地址", sttEndpoint),
+      voiceField("独立 Token（不会回显）", sttToken),
+      voiceField("单段录音上限（MB）", sttMax),
+    );
+    const sttClear = voiceSwitch("清除后端已保存的独立 STT Token", "voiceSttClear", false);
+    sttCard.append(sttTitle, sttNote, sttEnabled, sttReuse, sttGrid, sttClear);
+    panel.appendChild(sttCard);
+
+    const limitsCard = document.createElement("section");
+    limitsCard.className = "voice-settings-card";
+    const limitsTitle = document.createElement("h3");
+    limitsTitle.textContent = "话唠保险丝";
+    const limitsNote = document.createElement("p");
+    limitsNote.className = "voice-settings-note";
+    limitsNote.textContent = "费用按你填写的“每千字单价”估算；填 0 表示不估价，次数和单条字数仍会硬限制。";
+    const limitsGrid = document.createElement("div");
+    limitsGrid.className = "voice-settings-grid";
+    const maxChars = voiceInput("voiceMaxChars", "number");
+    maxChars.min = "20"; maxChars.max = "4000"; maxChars.value = config.limits.max_chars;
+    const dailyCount = voiceInput("voiceDailyCount", "number");
+    dailyCount.min = "1"; dailyCount.max = "1000"; dailyCount.value = config.limits.daily_count;
+    const rate = voiceInput("voiceRate", "number");
+    rate.min = "0"; rate.max = "100"; rate.step = "0.000001"; rate.value = config.limits.cost_per_1k_chars_usd;
+    const dailyCost = voiceInput("voiceDailyCost", "number");
+    dailyCost.min = "0"; dailyCost.max = "1000"; dailyCost.step = "0.01"; dailyCost.value = config.limits.daily_cost_usd;
+    limitsGrid.append(
+      voiceField("单条最多字数", maxChars),
+      voiceField("每日生成/试听次数", dailyCount),
+      voiceField("每千字费用（USD）", rate),
+      voiceField("每日费用上限（USD）", dailyCost),
+    );
+    const usage = document.createElement("div");
+    usage.className = "voice-usage-line";
+    usage.textContent = `今天已生成 ${config.usage_today.count} 次 · ${config.usage_today.characters} 字 · 估算 $${Number(config.usage_today.estimated_cost_usd || 0).toFixed(4)}`;
+    limitsCard.append(limitsTitle, limitsNote, limitsGrid, usage);
+    panel.appendChild(limitsCard);
+
+    const actions = document.createElement("div");
+    actions.className = "voice-settings-actions";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "voice-primary-btn";
+    save.textContent = "保存语音配置 🐾";
+    save.onclick = async () => {
+      save.disabled = true;
+      save.textContent = "保存中…";
+      try {
+        await saveVoiceSettings();
+        save.textContent = "已保存 ✓";
+      } catch (error) {
+        showToast(error.message || "保存失败");
+        save.textContent = "保存语音配置 🐾";
+      } finally {
+        save.disabled = false;
+        setTimeout(() => { save.textContent = "保存语音配置 🐾"; }, 1200);
+      }
+    };
+    actions.appendChild(save);
+    panel.appendChild(actions);
+    _voicePanelOpen = true;
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function closeVoicePanel() {
+    const panel = document.getElementById("voicePanel");
+    panel.style.display = "none";
+    panel.innerHTML = "";
+    _voicePanelOpen = false;
     document.getElementById("moreContent").scrollTop = 0;
   }
 
@@ -4346,6 +4985,9 @@
     } else if (action === "gesture-help") {
       if (_gestureHelpPanelOpen) closeGestureHelpPanel();
       else openGestureHelpPanel();
+    } else if (action === "voice") {
+      if (_voicePanelOpen) closeVoicePanel();
+      else openVoicePanel();
     }
   });
 
@@ -6857,6 +7499,7 @@
     await loadSettings();
     await loadAppearance();
     await loadGroupConfig();
+    await loadVoiceFeatureState();
     // 群聊标题初始化 + 长按可改
     const groupTitleEl = document.getElementById("groupChatTitle");
     if (groupTitleEl) {
