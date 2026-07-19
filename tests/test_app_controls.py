@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -48,6 +49,7 @@ class AppControlsTests(unittest.TestCase):
         app_module.LIMITS.update(self.original_limits)
         app_module._write_setting(app_module.THEME_SETTING_KEY, app_module.DEFAULT_THEME_ID)
         app_module._write_setting(app_module.WEATHER_EFFECT_SETTING_KEY, "off")
+        app_module._write_setting("desire_frequency", app_module.DESIRE_FREQUENCY_DEFAULT)
         conn = app_module.sqlite3.connect(app_module.DB_PATH)
         conn.execute("DELETE FROM settings WHERE key=?", (app_module.VOICE_SETTING_KEY,))
         conn.execute("DELETE FROM voice_assets")
@@ -93,6 +95,170 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn("长按群聊发送爪", script)
         self.assertNotIn("双击（250ms 内两次 tap）", script)
         self.assertIn('aria-label="发送；长按选择在线角色"', markup)
+
+    def test_memory_overview_keeps_backend_and_character_payload(self):
+        script = (
+            Path(app_module.__file__).with_name("static") / "app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'writeSecondaryViewCache("memory-overview", characters);\n    return data;',
+            script,
+        )
+        self.assertIn(
+            "renderMemoryList(data.characters || [], data.backend || null)",
+            script,
+        )
+
+    def test_voice_settings_entry_lives_inside_feature_controls(self):
+        static_dir = Path(app_module.__file__).with_name("static")
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+        markup = (static_dir / "index.html").read_text(encoding="utf-8")
+
+        self.assertNotIn('data-action="voice"', markup)
+        self.assertIn('voiceLink.className = "scheduler-feature-link"', script)
+        self.assertIn("voiceLink.onclick = openVoicePanel", script)
+        self.assertIn("panel.appendChild(voiceLink)", script)
+
+    def test_memory_files_import_json_and_txt_by_character(self):
+        class ImportStore:
+            def __init__(self):
+                self.entries = []
+                self.keys = set()
+
+            def recall(self, _owner_id):
+                return ""
+
+            def save(self, content, owner_id, **metadata):
+                source_key = metadata.get("source_key")
+                created = source_key not in self.keys
+                if created:
+                    self.keys.add(source_key)
+                    self.entries.append((owner_id, content, metadata))
+                return source_key, created
+
+        store = ImportStore()
+        backend = MemoryBackend(store, name="test-import")
+
+        def upload_payload():
+            return {
+                "fallback_character": "",
+                "files": [
+                    (io.BytesIO(json.dumps({
+                        "char1": [{
+                            "content": "Char 1 的旧记忆",
+                            "importance": 8,
+                            "tags": ["往事"],
+                        }],
+                        "char3": [{"text": "Char 3 的旧记忆"}],
+                    }, ensure_ascii=False).encode("utf-8")), "memories.json"),
+                    (io.BytesIO("第一段\n\n第二段".encode("utf-8")), "char2-notes.txt"),
+                ],
+            }
+
+        with patch.object(app_module, "MEMORY_SERVICE", backend):
+            first = self.client.post(
+                "/api/memory/import-files",
+                data=upload_payload(),
+                content_type="multipart/form-data",
+            )
+            second = self.client.post(
+                "/api/memory/import-files",
+                data=upload_payload(),
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.get_json()["imported"], 4)
+        self.assertEqual(first.get_json()["by_character"], {
+            "char1": 1, "char2": 2, "char3": 1,
+        })
+        self.assertEqual(second.get_json()["imported"], 0)
+        self.assertEqual(second.get_json()["skipped"], 4)
+        self.assertEqual({entry[0] for entry in store.entries}, {"char1", "char2", "char3"})
+        char1_metadata = next(entry[2] for entry in store.entries if entry[0] == "char1")
+        self.assertEqual(char1_metadata["importance"], 8)
+        self.assertEqual(char1_metadata["tags"], ["往事"])
+        self.assertEqual(char1_metadata["source"], "file_import")
+
+    def test_memory_file_import_uses_selected_fallback_without_guessing(self):
+        saved = []
+
+        class ImportStore:
+            def recall(self, _owner_id):
+                return ""
+
+            def save(self, content, owner_id, **metadata):
+                saved.append((owner_id, content, metadata))
+                return "fallback-memory", True
+
+        with patch.object(
+            app_module, "MEMORY_SERVICE", MemoryBackend(ImportStore(), name="test-import")
+        ):
+            response = self.client.post(
+                "/api/memory/import-files",
+                data={
+                    "fallback_character": "char4",
+                    "files": (io.BytesIO(b'{"memories":["ownerless memory"]}'), "notes.json"),
+                },
+                content_type="multipart/form-data",
+            )
+            unknown_owner = self.client.post(
+                "/api/memory/import-files",
+                data={
+                    "fallback_character": "char4",
+                    "files": (
+                        io.BytesIO(b'{"memories":[{"role":"assistant","content":"do not guess"}]}'),
+                        "unknown.json",
+                    ),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(saved[0][0], "char4")
+        self.assertEqual(saved[0][1], "ownerless memory")
+        self.assertEqual(unknown_owner.status_code, 400)
+        self.assertEqual(unknown_owner.get_json()["unassigned"], 1)
+        self.assertEqual(len(saved), 1)
+
+    def test_desire_frequency_is_editable_and_persistent(self):
+        expected = {
+            "low": (4 * 3600, 90 * 60, 3),
+            "medium": (int(2.5 * 3600), 60 * 60, 5),
+            "high": (int(1.5 * 3600), 30 * 60, 8),
+        }
+        for frequency, values in expected.items():
+            response = self.client.post("/api/scheduler/config", json={
+                "desire_enabled": True,
+                "desire_frequency": frequency,
+                "desire_quiet_start": "23:30",
+                "desire_quiet_end": "08:30",
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                self.client.get("/api/scheduler/config").get_json()["desire_frequency"],
+                frequency,
+            )
+            selected, config = app_module._desire_frequency_config()
+            self.assertEqual(selected, frequency)
+            self.assertEqual(
+                (
+                    config["min_interval_seconds"],
+                    config["user_cooldown_seconds"],
+                    config["daily_limit"],
+                ),
+                values,
+            )
+
+        invalid = self.client.post("/api/scheduler/config", json={
+            "desire_frequency": "不停说话",
+        })
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(
+            self.client.get("/api/scheduler/config").get_json()["desire_frequency"],
+            "high",
+        )
 
     def test_voice_config_tokens_are_server_only(self):
         response = self.client.post("/api/voice/config", json=self._voice_payload())

@@ -12,6 +12,7 @@ import json
 import os
 import base64
 import copy
+import hashlib
 import mimetypes
 import re
 import secrets
@@ -184,6 +185,10 @@ ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 MAX_TEXT_BYTES = 5 * 1024 * 1024
+MAX_MEMORY_IMPORT_FILES = 12
+MAX_MEMORY_IMPORT_RECORDS = 1000
+MAX_MEMORY_IMPORT_BYTES = 5 * 1024 * 1024
+MAX_MEMORY_IMPORT_CONTENT_CHARS = 12000
 VOICE_SETTING_KEY = "voice_config_v1"
 VOICE_MAX_AUDIO_BYTES = 8 * 1024 * 1024
 VOICE_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -202,6 +207,24 @@ app.config["MAX_CONTENT_LENGTH"] = max(
 )
 DESIRE_TICK_MINUTES = int(os.environ.get("DESIRE_TICK_MINUTES", "10"))
 DESIRE_DEFAULT_ENABLED = os.environ.get("DESIRE_DRIVEN", "true").lower() == "true"
+DESIRE_FREQUENCY_DEFAULT = "low"
+DESIRE_FREQUENCY_PRESETS = {
+    "low": {
+        "min_interval_seconds": 4 * 3600,
+        "user_cooldown_seconds": 90 * 60,
+        "daily_limit": 3,
+    },
+    "medium": {
+        "min_interval_seconds": int(2.5 * 3600),
+        "user_cooldown_seconds": 60 * 60,
+        "daily_limit": 5,
+    },
+    "high": {
+        "min_interval_seconds": int(1.5 * 3600),
+        "user_cooldown_seconds": 30 * 60,
+        "daily_limit": 8,
+    },
+}
 
 
 # ============================================================
@@ -1687,6 +1710,218 @@ def _decode_text_upload(raw):
     raise ValueError("暂时认不出这本 TXT 的编码")
 
 
+_MEMORY_IMPORT_CONTENT_FIELDS = ("content", "text", "memory", "summary", "note")
+_MEMORY_IMPORT_OWNER_FIELDS = (
+    "owner_id", "character_id", "character", "char_id", "domain", "role"
+)
+_MEMORY_IMPORT_WRAPPER_FIELDS = ("memories", "items", "records", "data")
+
+
+def _memory_import_owner(value):
+    if isinstance(value, dict):
+        value = value.get("id") or value.get("character_id") or value.get("name")
+    if isinstance(value, (list, tuple, set)):
+        owners = {_memory_import_owner(item) for item in value}
+        owners.discard(None)
+        return next(iter(owners)) if len(owners) == 1 else None
+    if value is None:
+        return None
+
+    normalized = re.sub(r"[\s_-]+", "", str(value)).casefold()
+    aliases = {}
+    for character_id, character in CHARACTERS.items():
+        number = re.sub(r"\D", "", character_id)
+        for alias in (
+            character_id,
+            character.get("domain"),
+            character.get("name"),
+            f"character{number}" if number else None,
+            f"role{number}" if number else None,
+        ):
+            if alias:
+                aliases[re.sub(r"[\s_-]+", "", str(alias)).casefold()] = character_id
+    return aliases.get(normalized)
+
+
+def _memory_import_owner_from_filename(filename):
+    stem = os.path.splitext(os.path.basename(filename or ""))[0]
+    for character_id in CHARACTERS:
+        number = re.sub(r"\D", "", character_id)
+        if number and re.search(
+            rf"(?<![a-z0-9])(?:char|character|role)[\s_-]*{number}(?!\d)",
+            stem,
+            re.IGNORECASE,
+        ):
+            return character_id
+    return None
+
+
+def _memory_import_chunks(text):
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return []
+    chunks = []
+    remaining = normalized
+    while len(remaining) > MAX_MEMORY_IMPORT_CONTENT_CHARS:
+        window = remaining[:MAX_MEMORY_IMPORT_CONTENT_CHARS + 1]
+        cut = max(
+            window.rfind(marker)
+            for marker in ("\n\n", "\n", "。", "！", "？", ".", "!", "?")
+        )
+        if cut < MAX_MEMORY_IMPORT_CONTENT_CHARS // 2:
+            cut = MAX_MEMORY_IMPORT_CONTENT_CHARS
+        elif window[cut:cut + 2] == "\n\n":
+            cut += 2
+        else:
+            cut += 1
+        chunks.append(remaining[:cut].strip())
+        remaining = remaining[cut:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return [chunk for chunk in chunks if chunk]
+
+
+def _memory_import_metadata(item):
+    if not isinstance(item, dict):
+        return {}
+    metadata = {}
+    tags = item.get("tags", [])
+    if isinstance(tags, str):
+        tags = [part.strip() for part in re.split(r"[,，]", tags) if part.strip()]
+    if isinstance(tags, list):
+        metadata["tags"] = [str(tag).strip()[:80] for tag in tags if str(tag).strip()][:30]
+    for key in ("name", "title", "created", "last_active"):
+        if item.get(key) is not None:
+            target = "name" if key == "title" else key
+            metadata[target] = str(item[key]).strip()[:300]
+    try:
+        metadata["importance"] = max(1, min(int(float(item.get("importance", 5))), 10))
+    except (TypeError, ValueError):
+        metadata["importance"] = 5
+    for key, default in (("valence", 0.5), ("arousal", 0.3)):
+        try:
+            metadata[key] = max(0.0, min(float(item.get(key, default)), 1.0))
+        except (TypeError, ValueError):
+            metadata[key] = default
+    for key in ("pinned", "protected", "resolved", "digested"):
+        if key in item:
+            metadata[key] = bool(item[key])
+    bucket_type = str(item.get("type") or item.get("bucket_type") or "dynamic").strip().lower()
+    metadata["bucket_type"] = (
+        bucket_type if bucket_type in {"dynamic", "permanent", "archive", "feel"}
+        else "dynamic"
+    )
+    return metadata
+
+
+def _parse_json_memory_import(payload, fallback_owner=None):
+    records = []
+    unassigned = 0
+    invalid = 0
+
+    def add_record(value, inherited_owner=None):
+        nonlocal unassigned, invalid
+        metadata_source = value if isinstance(value, dict) else {}
+        if isinstance(value, str):
+            content = value
+        elif isinstance(value, dict):
+            content = next(
+                (value.get(field) for field in _MEMORY_IMPORT_CONTENT_FIELDS if value.get(field) is not None),
+                None,
+            )
+        else:
+            content = None
+        if not isinstance(content, (str, int, float)):
+            invalid += 1
+            return
+
+        explicit_owner_present = isinstance(value, dict) and any(
+            field in value for field in _MEMORY_IMPORT_OWNER_FIELDS
+        )
+        explicit_owner = None
+        if explicit_owner_present:
+            explicit_owner = next(
+                (_memory_import_owner(value.get(field)) for field in _MEMORY_IMPORT_OWNER_FIELDS
+                 if field in value and _memory_import_owner(value.get(field))),
+                None,
+            )
+        owner = explicit_owner if explicit_owner_present else inherited_owner or fallback_owner
+        if not owner:
+            unassigned += 1
+            return
+        chunks = _memory_import_chunks(content)
+        if not chunks:
+            invalid += 1
+            return
+        metadata = _memory_import_metadata(metadata_source)
+        for index, chunk in enumerate(chunks):
+            record_metadata = dict(metadata)
+            if index and record_metadata.get("name"):
+                record_metadata["name"] = f"{record_metadata['name']}（{index + 1}）"
+            records.append({"owner_id": owner, "content": chunk, **record_metadata})
+
+    def walk(value, inherited_owner=None):
+        nonlocal invalid
+        if isinstance(value, list):
+            for item in value:
+                walk(item, inherited_owner)
+            return
+        if isinstance(value, str):
+            add_record(value, inherited_owner)
+            return
+        if not isinstance(value, dict):
+            invalid += 1
+            return
+
+        character_values = []
+        for key, child in value.items():
+            owner = _memory_import_owner(key)
+            if owner:
+                character_values.append((owner, child))
+        if character_values:
+            for owner, child in character_values:
+                walk(child, owner)
+            return
+
+        for wrapper in ("characters", "roles"):
+            if isinstance(value.get(wrapper), (dict, list)):
+                walk(value[wrapper], inherited_owner)
+                return
+
+        if any(field in value for field in _MEMORY_IMPORT_CONTENT_FIELDS):
+            add_record(value, inherited_owner)
+            return
+
+        for wrapper in _MEMORY_IMPORT_WRAPPER_FIELDS:
+            if isinstance(value.get(wrapper), (dict, list, str)):
+                walk(value[wrapper], inherited_owner)
+                return
+
+        nested = [child for child in value.values() if isinstance(child, (dict, list, str))]
+        if nested:
+            for child in nested:
+                walk(child, inherited_owner)
+        else:
+            invalid += 1
+
+    walk(payload, fallback_owner)
+    return records, unassigned, invalid
+
+
+def _parse_txt_memory_import(text, owner):
+    if not owner:
+        return [], 1, 0
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    records = []
+    for paragraph in paragraphs:
+        records.extend(
+            {"owner_id": owner, "content": chunk, "importance": 5,
+             "valence": 0.5, "arousal": 0.3, "bucket_type": "dynamic"}
+            for chunk in _memory_import_chunks(paragraph)
+        )
+    return records, 0, 0 if records else 1
+
+
 def _chunk_reading_paragraph(text, max_chars=2400):
     text = text.strip()
     if len(text) <= max_chars:
@@ -2239,6 +2474,17 @@ def _parse_clock_minutes(value, default):
         return parsed if 0 <= parsed < 24 * 60 else default
     except (TypeError, ValueError):
         return default
+
+
+def _desire_frequency_config(value=None):
+    frequency = str(
+        value
+        if value is not None
+        else _read_setting("desire_frequency", DESIRE_FREQUENCY_DEFAULT)
+    ).strip().lower()
+    if frequency not in DESIRE_FREQUENCY_PRESETS:
+        frequency = DESIRE_FREQUENCY_DEFAULT
+    return frequency, DESIRE_FREQUENCY_PRESETS[frequency]
 
 
 def get_summary(session_id, character_id):
@@ -5777,6 +6023,140 @@ def api_import_legacy_memory():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/memory/import-files", methods=["POST"])
+def api_import_memory_files():
+    if not _memory_supports("write"):
+        return jsonify({"error": "当前记忆后端不支持写入"}), 501
+
+    raw_fallback_owner = str(request.form.get("fallback_character", "") or "").strip()
+    fallback_owner = _memory_import_owner(raw_fallback_owner)
+    if raw_fallback_owner and not fallback_owner:
+        return jsonify({"error": "兜底角色不存在"}), 400
+
+    uploads = [upload for upload in request.files.getlist("files") if upload.filename]
+    if not uploads:
+        return jsonify({"error": "请选择 JSON 或 TXT 文件"}), 400
+    if len(uploads) > MAX_MEMORY_IMPORT_FILES:
+        return jsonify({"error": f"一次最多导入 {MAX_MEMORY_IMPORT_FILES} 个文件"}), 400
+
+    records = []
+    file_results = []
+    total_unassigned = 0
+    total_invalid = 0
+    total_bytes = 0
+    parse_errors = []
+    for upload in uploads:
+        original_name = os.path.basename(upload.filename)
+        extension = os.path.splitext(original_name)[1].lower()
+        if extension not in {".json", ".txt"}:
+            parse_errors.append(f"{original_name}：只支持 JSON / TXT")
+            continue
+        raw = upload.read(MAX_MEMORY_IMPORT_BYTES + 1)
+        total_bytes += len(raw)
+        if len(raw) > MAX_MEMORY_IMPORT_BYTES:
+            parse_errors.append(f"{original_name}：文件不能超过 5MB")
+            continue
+        if total_bytes > 20 * 1024 * 1024:
+            return jsonify({"error": "一次导入的文件合计不能超过 20MB"}), 400
+        try:
+            text, _encoding = _decode_text_upload(raw)
+            file_owner = _memory_import_owner_from_filename(original_name) or fallback_owner
+            if extension == ".json":
+                payload = json.loads(text)
+                parsed, unassigned, invalid = _parse_json_memory_import(payload, file_owner)
+            else:
+                parsed, unassigned, invalid = _parse_txt_memory_import(text, file_owner)
+        except json.JSONDecodeError as exc:
+            parse_errors.append(f"{original_name}：JSON 格式不完整（第 {exc.lineno} 行）")
+            continue
+        except ValueError as exc:
+            parse_errors.append(f"{original_name}：{str(exc).replace('TXT', '文件')}")
+            continue
+
+        for record in parsed:
+            record["_import_file"] = original_name
+        records.extend(parsed)
+        total_unassigned += unassigned
+        total_invalid += invalid
+        file_results.append({
+            "name": original_name,
+            "eligible": len(parsed),
+            "unassigned": unassigned,
+            "invalid": invalid,
+        })
+
+    if len(records) > MAX_MEMORY_IMPORT_RECORDS:
+        return jsonify({
+            "error": f"一次最多导入 {MAX_MEMORY_IMPORT_RECORDS} 条记忆，当前识别到 {len(records)} 条"
+        }), 400
+    if not records:
+        message = parse_errors[0] if parse_errors else "没有识别到可导入的记忆"
+        if total_unassigned:
+            message = "有记忆没有对应角色，请用 char1–char6 字段、文件名，或选择兜底角色"
+        return jsonify({
+            "error": message,
+            "eligible": 0,
+            "unassigned": total_unassigned,
+            "invalid": total_invalid,
+            "files": file_results,
+        }), 400
+
+    imported = 0
+    skipped = 0
+    write_errors = 0
+    imported_by_character = {character_id: 0 for character_id in CHARACTERS}
+    touched_characters = set()
+    for record in records:
+        owner_id = record["owner_id"]
+        content = record["content"]
+        digest = hashlib.sha256(
+            f"{owner_id}\0{content}".encode("utf-8")
+        ).hexdigest()
+        metadata = {
+            key: value for key, value in record.items()
+            if key not in {"owner_id", "content", "_import_file"} and value not in (None, "")
+        }
+        metadata.update({
+            "source": "file_import",
+            "source_key": f"file-import:{digest}",
+            "enrichment_status": "pending" if MEMORY_ANALYZER.enabled else "unconfigured",
+            "embedding_status": "pending" if MEMORY_EMBEDDINGS.enabled else "unconfigured",
+        })
+        try:
+            bucket_id, created = MEMORY_SERVICE.save(content, owner_id, **metadata)
+            touched_characters.add(owner_id)
+            if created:
+                imported += 1
+                imported_by_character[owner_id] += 1
+                _queue_memory_enrichment(bucket_id, owner_id, content)
+            else:
+                skipped += 1
+        except Exception as exc:
+            write_errors += 1
+            app.logger.warning(
+                "memory file import failed (%s/%s): %s",
+                record.get("_import_file", "unknown"), owner_id, exc,
+            )
+
+    for character_id in touched_characters:
+        _invalidate_breath_memory(character_id)
+    return jsonify({
+        "ok": True,
+        "eligible": len(records),
+        "imported": imported,
+        "skipped": skipped,
+        "unassigned": total_unassigned,
+        "invalid": total_invalid,
+        "errors": write_errors + len(parse_errors),
+        "parse_errors": parse_errors[:5],
+        "by_character": {
+            character_id: count
+            for character_id, count in imported_by_character.items() if count
+        },
+        "files": file_results,
+    })
+
+
 # ── 一起听 · 网易云供应商 ──────────────────────────────────
 class NeteaseMusicError(RuntimeError):
     pass
@@ -7544,6 +7924,7 @@ def do_desire_heartbeat():
             quiet_end = _parse_clock_minutes(
                 _read_setting("desire_quiet_end", "08:30"), 8 * 60 + 30
             )
+            _frequency, frequency_config = _desire_frequency_config()
             allowed, gate_reason = evaluate_household_gate(
                 now_ts,
                 local_minute,
@@ -7552,9 +7933,9 @@ def do_desire_heartbeat():
                 daily_count,
                 quiet_start_minute=quiet_start,
                 quiet_end_minute=quiet_end,
-                min_interval_seconds=4 * 3600,
-                user_cooldown_seconds=90 * 60,
-                daily_limit=3,
+                min_interval_seconds=frequency_config["min_interval_seconds"],
+                user_cooldown_seconds=frequency_config["user_cooldown_seconds"],
+                daily_limit=frequency_config["daily_limit"],
             )
             if not allowed:
                 _write_setting("desire_last_gate", json.dumps({"reason": gate_reason, "at": now_ts}))
@@ -7959,6 +8340,7 @@ def sleep_nudge():
 # ============================================================
 @app.route("/api/scheduler/config", methods=["GET"])
 def get_scheduler_config():
+    desire_frequency, _frequency_config = _desire_frequency_config()
     return jsonify({
         "moments_slots": _read_setting("sched_moments_slots", ""),
         "desire_enabled": _read_setting(
@@ -7966,16 +8348,24 @@ def get_scheduler_config():
         ) != "false",
         "desire_quiet_start": _read_setting("desire_quiet_start", "23:30"),
         "desire_quiet_end": _read_setting("desire_quiet_end", "08:30"),
+        "desire_frequency": desire_frequency,
     })
 
 
 @app.route("/api/scheduler/config", methods=["POST"])
 def set_scheduler_config():
     data = request.get_json() or {}
+    desire_frequency = str(data.get(
+        "desire_frequency",
+        _read_setting("desire_frequency", DESIRE_FREQUENCY_DEFAULT),
+    )).strip().lower()
+    if desire_frequency not in DESIRE_FREQUENCY_PRESETS:
+        return jsonify({"error": "主动频率不在可选范围内"}), 400
     _write_setting("sched_moments_slots", data.get("moments_slots", ""))
     _write_setting("desire_enabled", "true" if data.get("desire_enabled", True) else "false")
     _write_setting("desire_quiet_start", data.get("desire_quiet_start", "23:30"))
     _write_setting("desire_quiet_end", data.get("desire_quiet_end", "08:30"))
+    _write_setting("desire_frequency", desire_frequency)
     register_scheduler_jobs()
     return jsonify({"ok": True})
 

@@ -1266,6 +1266,12 @@ header {
   color: var(--text);
 }
 .memory-import-title .material-symbols-outlined { font-size: 21px; }
+.memory-import-help {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
 .memory-import-card label {
   display: flex;
   flex-direction: column;
@@ -1273,7 +1279,8 @@ header {
   color: var(--text);
   font-size: 12px;
 }
-.memory-import-card input {
+.memory-import-card input,
+.memory-import-card select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1282,6 +1289,22 @@ header {
   font-size: 14px;
   padding: 10px 12px;
   outline: none;
+}
+.memory-import-card select {
+  appearance: none;
+  -webkit-appearance: none;
+}
+.memory-import-card input[type="file"] {
+  padding: 7px;
+  font-size: 12px;
+}
+.memory-import-card input[type="file"]::file-selector-button {
+  margin-right: 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(var(--dusky-rgb), .12);
+  color: var(--text);
+  padding: 7px 10px;
 }
 .memory-import-submit {
   border: 0;
@@ -2470,6 +2493,127 @@ header {
   justify-content: space-between;
   color: var(--text);
   font-size: 13px;
+}
+.scheduler-feature-link {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border: 2px solid var(--dusky);
+  border-radius: 999px;
+  background: var(--cream);
+  color: var(--dusky);
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.scheduler-feature-link > .material-symbols-outlined {
+  font-size: 21px;
+}
+.scheduler-feature-link > span:nth-child(2) {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.scheduler-feature-link strong {
+  color: var(--dusky);
+  font-size: 14px;
+  font-weight: 600;
+}
+.scheduler-feature-link small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scheduler-frequency-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+.scheduler-frequency-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.scheduler-frequency-head strong {
+  color: var(--dusky);
+  font-weight: 600;
+}
+.scheduler-frequency-slider {
+  --frequency-progress: 0%;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.scheduler-frequency-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--chrome) 0,
+    var(--chrome) var(--frequency-progress),
+    rgba(var(--dusky-rgb), 0.18) var(--frequency-progress),
+    rgba(var(--dusky-rgb), 0.18) 100%
+  );
+}
+.scheduler-frequency-slider::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px;
+  margin-top: -8px;
+  border: 2px solid var(--cream);
+  border-radius: 50%;
+  background: var(--chrome);
+  box-shadow: 0 2px 7px rgba(var(--dusky-rgb), 0.32);
+  appearance: none;
+  -webkit-appearance: none;
+}
+.scheduler-frequency-slider::-moz-range-track {
+  height: 6px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(var(--dusky-rgb), 0.18);
+}
+.scheduler-frequency-slider::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--chrome);
+}
+.scheduler-frequency-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--cream);
+  border-radius: 50%;
+  background: var(--chrome);
+  box-shadow: 0 2px 7px rgba(var(--dusky-rgb), 0.32);
+}
+.scheduler-frequency-scale {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  color: var(--muted);
+  font-size: 11px;
+}
+.scheduler-frequency-scale span:nth-child(2) {
+  text-align: center;
+}
+.scheduler-frequency-scale span:last-child {
+  text-align: right;
+}
+.scheduler-frequency-scale span.is-active {
+  color: var(--dusky);
+  font-weight: 600;
 }
 .scheduler-time-row {
   display: grid;

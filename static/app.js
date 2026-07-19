@@ -2886,7 +2886,7 @@
     const data = await res.json();
     const characters = data.characters || [];
     writeSecondaryViewCache("memory-overview", characters);
-    return characters;
+    return data;
   }
 
   async function fetchUsage() {
@@ -3730,6 +3730,7 @@
     let cfg = {
       moments_slots: "",
       desire_enabled: true,
+      desire_frequency: "low",
       desire_quiet_start: "23:30",
       desire_quiet_end: "08:30",
     };
@@ -3750,6 +3751,9 @@
     } catch(e) {}
     const selMomSlots = new Set(cfg.moments_slots ? cfg.moments_slots.split(",").filter(Boolean) : []);
     let desireEnabled = cfg.desire_enabled !== false;
+    let desireFrequency = ["low", "medium", "high"].includes(cfg.desire_frequency)
+      ? cfg.desire_frequency
+      : "low";
 
     function makeSlotRow(selectedSet) {
       const row = document.createElement("div");
@@ -3787,6 +3791,53 @@
       toggleRow.appendChild(toggleLabel);
       toggleRow.appendChild(toggle);
 
+      const frequencyWrap = document.createElement("div");
+      frequencyWrap.className = "scheduler-frequency-control";
+      const frequencyHead = document.createElement("div");
+      frequencyHead.className = "scheduler-frequency-head";
+      const frequencyLabel = document.createElement("span");
+      frequencyLabel.textContent = "主动频率";
+      const frequencyValue = document.createElement("strong");
+      const frequencyLevels = [
+        { value: "low", label: "克制" },
+        { value: "medium", label: "日常" },
+        { value: "high", label: "热闹" },
+      ];
+      const frequencySlider = document.createElement("input");
+      frequencySlider.type = "range";
+      frequencySlider.min = "0";
+      frequencySlider.max = "2";
+      frequencySlider.step = "1";
+      frequencySlider.className = "scheduler-frequency-slider";
+      frequencySlider.setAttribute("aria-label", "主动频率");
+      const frequencyScale = document.createElement("div");
+      frequencyScale.className = "scheduler-frequency-scale";
+      frequencyLevels.forEach(level => {
+        const mark = document.createElement("span");
+        mark.textContent = level.label;
+        mark.dataset.frequency = level.value;
+        frequencyScale.appendChild(mark);
+      });
+      const applyFrequency = () => {
+        const index = Math.max(0, frequencyLevels.findIndex(level => level.value === desireFrequency));
+        frequencySlider.value = String(index);
+        frequencySlider.style.setProperty("--frequency-progress", `${index * 50}%`);
+        frequencyValue.textContent = frequencyLevels[index].label;
+        frequencyScale.querySelectorAll("span").forEach(mark => {
+          mark.classList.toggle("is-active", mark.dataset.frequency === desireFrequency);
+        });
+      };
+      frequencySlider.oninput = () => {
+        desireFrequency = frequencyLevels[Number(frequencySlider.value)]?.value || "low";
+        applyFrequency();
+      };
+      applyFrequency();
+      frequencyHead.appendChild(frequencyLabel);
+      frequencyHead.appendChild(frequencyValue);
+      frequencyWrap.appendChild(frequencyHead);
+      frequencyWrap.appendChild(frequencySlider);
+      frequencyWrap.appendChild(frequencyScale);
+
       const timeRow = document.createElement("div");
       timeRow.className = "scheduler-time-row";
       const startWrap = document.createElement("label");
@@ -3807,6 +3858,7 @@
       timeRow.appendChild(endWrap);
 
       wrap.appendChild(toggleRow);
+      wrap.appendChild(frequencyWrap);
       wrap.appendChild(timeRow);
       return wrap;
     }
@@ -3976,6 +4028,7 @@
             body: JSON.stringify({
               moments_slots: [...selMomSlots].join(","),
               desire_enabled: desireEnabled,
+              desire_frequency: desireFrequency,
               desire_quiet_start: document.getElementById("desireQuietStart")?.value || "23:30",
               desire_quiet_end: document.getElementById("desireQuietEnd")?.value || "08:30",
             }),
@@ -4028,8 +4081,18 @@
       return wrap;
     }
 
+    const voiceLink = document.createElement("button");
+    voiceLink.type = "button";
+    voiceLink.className = "scheduler-feature-link";
+    voiceLink.innerHTML = `
+      <span class="material-symbols-outlined">graphic_eq</span>
+      <span><strong>说说喵°语音收发</strong><small>TTS、录音转文字、音色与费用限制</small></span>
+      <span class="material-symbols-outlined">chevron_right</span>`;
+    voiceLink.onclick = openVoicePanel;
+
     panel.appendChild(makeAccordion("醒醒喵°欲望心跳", [makeDesireControls()]));
     panel.appendChild(makeAccordion("聊聊喵°自动发帖", [makeSlotRow(selMomSlots)]));
+    panel.appendChild(voiceLink);
     panel.appendChild(makeAccordion("饭饭喵°月度额度", [makeLimitControls()]));
     panel.appendChild(makeAccordion("眠眠喵°睡眠节律", [makeSleepControls()]));
     panel.appendChild(saveBtn);
@@ -4491,7 +4554,7 @@
     document.getElementById("moreContent").scrollTop = 0;
   }
 
-  // ── 旧 Ombre 记忆迁移 ──
+  // ── JSON / TXT 与旧 Ombre 记忆迁移 ──
   let _memoryImportPanelOpen = false;
 
   function openMemoryImportPanel() {
@@ -4512,6 +4575,87 @@
     closeBtn.className = "persona-close-btn";
     closeBtn.textContent = "收起";
     closeBtn.onclick = closeMemoryImportPanel;
+
+    const fileCard = document.createElement("section");
+    fileCard.className = "memory-import-card";
+    const fileTitle = document.createElement("div");
+    fileTitle.className = "memory-import-title";
+    fileTitle.innerHTML = '<span class="material-symbols-outlined">upload_file</span><strong>JSON / TXT</strong>';
+    const fileHelp = document.createElement("p");
+    fileHelp.className = "memory-import-help";
+    fileHelp.textContent = "可一次选择多个文件。会优先识别 JSON 里的 char1–char6、每条记录的角色字段，或 char1.txt 这样的文件名。";
+
+    const fallbackLabel = document.createElement("label");
+    fallbackLabel.textContent = "认不出角色时放进";
+    const fallbackSelect = document.createElement("select");
+    const autoOption = document.createElement("option");
+    autoOption.value = "";
+    autoOption.textContent = "自动识别（不乱放）";
+    fallbackSelect.appendChild(autoOption);
+    Object.keys(histories).forEach(characterId => {
+      const option = document.createElement("option");
+      option.value = characterId;
+      option.textContent = `${nickName(characterId)}（${characterId}）`;
+      fallbackSelect.appendChild(option);
+    });
+    fallbackLabel.appendChild(fallbackSelect);
+
+    const fileLabel = document.createElement("label");
+    fileLabel.textContent = "选择记忆文件";
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".json,.txt,application/json,text/plain";
+    fileInput.multiple = true;
+    fileLabel.appendChild(fileInput);
+
+    const fileStatus = document.createElement("div");
+    fileStatus.className = "memory-import-status";
+    const importFiles = document.createElement("button");
+    importFiles.className = "memory-import-submit";
+    importFiles.textContent = "导入记忆文件";
+    importFiles.onclick = async () => {
+      if (!fileInput.files.length) {
+        fileStatus.className = "memory-import-status error";
+        fileStatus.textContent = "先选择 JSON 或 TXT 文件喵";
+        return;
+      }
+      importFiles.disabled = true;
+      importFiles.textContent = "正在分角色整理…";
+      fileStatus.className = "memory-import-status";
+      fileStatus.textContent = "";
+      const form = new FormData();
+      [...fileInput.files].forEach(file => form.append("files", file));
+      form.append("fallback_character", fallbackSelect.value);
+      try {
+        const response = await fetch("/api/memory/import-files", {
+          method: "POST",
+          body: form,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "导入失败");
+        fileStatus.className = "memory-import-status ok";
+        const extras = [];
+        if (data.unassigned) extras.push(`未分配 ${data.unassigned}`);
+        if (data.invalid) extras.push(`未识别 ${data.invalid}`);
+        if (data.errors) extras.push(`失败 ${data.errors}`);
+        fileStatus.textContent = `迁入 ${data.imported}，重复跳过 ${data.skipped}${extras.length ? `，${extras.join("，")}` : ""}`;
+        fileInput.value = "";
+        importFiles.textContent = "导入完成";
+        await loadMemoryView();
+      } catch (error) {
+        fileStatus.className = "memory-import-status error";
+        fileStatus.textContent = error.message;
+        importFiles.textContent = "重新导入";
+      } finally {
+        importFiles.disabled = false;
+      }
+    };
+    fileCard.appendChild(fileTitle);
+    fileCard.appendChild(fileHelp);
+    fileCard.appendChild(fallbackLabel);
+    fileCard.appendChild(fileLabel);
+    fileCard.appendChild(importFiles);
+    fileCard.appendChild(fileStatus);
 
     const card = document.createElement("section");
     card.className = "memory-import-card";
@@ -4571,6 +4715,7 @@
     card.appendChild(migrate);
     card.appendChild(status);
     panel.appendChild(closeBtn);
+    panel.appendChild(fileCard);
     panel.appendChild(card);
     _memoryImportPanelOpen = true;
     panel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -5005,9 +5150,6 @@
     } else if (action === "gesture-help") {
       if (_gestureHelpPanelOpen) closeGestureHelpPanel();
       else openGestureHelpPanel();
-    } else if (action === "voice") {
-      if (_voicePanelOpen) closeVoicePanel();
-      else openVoicePanel();
     }
   });
 
