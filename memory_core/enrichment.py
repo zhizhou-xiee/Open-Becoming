@@ -106,7 +106,7 @@ class MemoryMetadataAnalyzer:
 
     def analyze(self, content: str) -> dict:
         if not self.enabled:
-            raise MemoryEnrichmentError("未配置往生道打标 API")
+            raise MemoryEnrichmentError("未配置记忆打标 API")
         response = requests.post(
             f"{self.base_url}/chat/completions",
             headers={

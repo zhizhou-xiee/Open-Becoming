@@ -10,6 +10,7 @@ __pycache__
 *.db-shm
 *.db-wal
 becoming_memory
+music_library
 static/uploads/chat_images
 .pytest_cache
 .coverage

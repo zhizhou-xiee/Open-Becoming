@@ -32,13 +32,14 @@
 html {
   height: 100%;
   overflow: hidden;
-  background: var(--chrome);
+  background: var(--cream);
 }
+html.chrome-shell { background: var(--chrome); }
 body {
   font-family: -apple-system, "PingFang SC", sans-serif;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  background: var(--bg);
+  background: var(--cream);
   color: var(--text);
   height: var(--app-height, 100vh);
   max-height: 100dvh;
@@ -49,6 +50,8 @@ body {
   padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px));
   overflow: hidden;
 }
+html.chrome-shell body { background: var(--chrome); }
+html.standalone-pwa body { max-height: none; }
 body::before {
   content: '';
   position: fixed;
@@ -74,6 +77,7 @@ body::before {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
+  background: var(--bg);
 }
 .view.active { display: flex; }
 
@@ -83,8 +87,8 @@ body::before {
   overflow-y: auto;
   background-color: var(--bg);
   background-image:
-    linear-gradient(rgba(var(--cream-rgb), 0.76), rgba(var(--cream-rgb), 0.82)),
-    var(--list-background-image, url("/static/char_list_watercolor.png"));
+    linear-gradient(rgba(var(--cream-rgb), 0.58), rgba(var(--cream-rgb), 0.68)),
+    var(--list-background-image, url("/static/char_list_watercolor.jpg"));
   background-size: cover;
   background-position: center center;
 }
@@ -214,6 +218,52 @@ body::before {
 }
 .unread-dot.hidden { display: none; }
 
+/* ── 睡眠 Z 动画 ── */
+.sleep-zs {
+  position: absolute;
+  bottom: 2px;
+  left: 28px;
+  width: 28px;
+  height: 36px;
+  pointer-events: none;
+  overflow: visible;
+}
+.sleep-zs.hidden { display: none; }
+
+.sleep-zs .z {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: -apple-system, "PingFang SC", sans-serif;
+  color: var(--dusky);
+  opacity: 0;
+  transform-origin: center bottom;
+  animation: z-float 2.4s ease-in-out infinite;
+}
+.sleep-zs .z:nth-child(1) {
+  animation-delay: 0s;
+  left: 44%;
+}
+.sleep-zs .z:nth-child(2) {
+  animation-delay: 0.8s;
+  left: 58%;
+  font-size: 11px;
+}
+.sleep-zs .z:nth-child(3) {
+  animation-delay: 1.6s;
+  left: 70%;
+  font-size: 13px;
+}
+
+@keyframes z-float {
+  0%   { opacity: 0;    transform: translate(0, 0)     scale(0.7) rotate(-8deg); }
+  15%  { opacity: 0.75; }
+  60%  { opacity: 0.55; }
+  100% { opacity: 0;    transform: translate(6px, -30px) scale(1.2) rotate(8deg); }
+}
+
 /* ── 会话层 header ── */
 header {
   background: var(--chrome);
@@ -250,6 +300,7 @@ header {
   color: var(--on-dusky);
 }
 #char-sub { display: none; }
+.msg-avatar-wrap { position: relative; width: 32px; flex-shrink: 0; }
 #char-online {
   display: flex;
   align-items: center;
@@ -775,6 +826,35 @@ header {
   cursor: pointer;
 }
 #groupQuoteClear .material-symbols-outlined { font-size: 18px; }
+.single-quote-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px 6px;
+  background: color-mix(in srgb, var(--card) 86%, transparent);
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  flex-shrink: 0;
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+.single-quote-bar.hidden { display: none; }
+.single-quote-bar > div { min-width: 0; flex: 1; }
+.single-quote-bar strong,
+.single-quote-bar span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.single-quote-bar strong { color: var(--text); font-size: 12px; }
+.single-quote-bar span { margin-top: 1px; font-size: 12px; }
+#singleQuoteClear {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+#singleQuoteClear .material-symbols-outlined { font-size: 18px; }
 #groupInputbar {
   display: flex;
   gap: 10px;
@@ -1506,6 +1586,7 @@ header {
 #splashScreen {
   position: fixed;
   inset: 0;
+  min-height: 100vh;
   z-index: 9999;
   background: var(--chrome);
   display: flex;
@@ -2519,6 +2600,196 @@ header {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* ── 天气氛围：轻量粒子层，不接管任何触摸操作 ── */
+#weatherEffectLayer {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+.weather-particle {
+  position: absolute;
+  left: var(--x);
+  top: -12vh;
+  display: block;
+  opacity: var(--opacity);
+  pointer-events: none;
+  will-change: transform;
+  animation-delay: var(--delay);
+  animation-duration: var(--duration);
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+.weather-rain .weather-particle {
+  width: 0.9px;
+  height: var(--size);
+  border-radius: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--ai-bubble) 38%, var(--dusky))
+  );
+  box-shadow: 0 0 0.5px color-mix(in srgb, var(--dusky) 36%, transparent);
+  animation-name: becoming-rain;
+}
+.weather-rain .weather-variant-1 { width: 0.65px; }
+.weather-rain .weather-variant-2 { width: 1.15px; }
+.weather-snow .weather-particle {
+  width: auto;
+  height: auto;
+  color: color-mix(in srgb, white 72%, var(--ai-bubble));
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: var(--size);
+  line-height: 1;
+  text-shadow:
+    0 1px 1px rgba(var(--dusky-rgb), 0.30),
+    0 0 4px rgba(255, 255, 255, 0.65);
+  animation-name: becoming-snow;
+}
+.weather-snow .weather-variant-1 { filter: blur(0.25px); }
+.weather-snow .weather-variant-2 { filter: drop-shadow(0 1px 2px rgba(var(--dusky-rgb), 0.22)); }
+.weather-leaves .weather-particle {
+  width: var(--size);
+  height: calc(var(--size) - 3px);
+  border-radius: 80% 12% 80% 12%;
+  background: color-mix(in srgb, var(--user-bubble) 62%, var(--dusky));
+  box-shadow: 0 1px 2px rgba(var(--dusky-rgb), 0.14);
+  animation-name: becoming-leaves;
+}
+.weather-leaves .weather-variant-1 {
+  background: color-mix(in srgb, var(--user-bubble) 58%, var(--dusky));
+}
+.weather-leaves .weather-variant-2 {
+  background: color-mix(in srgb, var(--dusky) 72%, var(--cream));
+}
+.weather-leaves .weather-particle::after {
+  content: '';
+  position: absolute;
+  width: 72%;
+  height: 1px;
+  left: 14%;
+  top: 50%;
+  background: color-mix(in srgb, var(--text) 32%, transparent);
+  transform: rotate(-16deg);
+}
+@keyframes becoming-rain {
+  from { transform: translate3d(0, -12vh, 0) rotate(8deg); }
+  to { transform: translate3d(-13vw, 124vh, 0) rotate(8deg); }
+}
+@keyframes becoming-snow {
+  0% { transform: translate3d(0, -10vh, 0) rotate(0); }
+  45% { transform: translate3d(var(--drift-mid), 46vh, 0) rotate(160deg); }
+  100% { transform: translate3d(var(--drift-end), 118vh, 0) rotate(var(--spin)); }
+}
+@keyframes becoming-leaves {
+  0% { transform: translate3d(0, -10vh, 0) rotate(0); }
+  35% { transform: translate3d(var(--drift-mid), 35vh, 0) rotate(190deg); }
+  70% { transform: translate3d(var(--drift), 76vh, 0) rotate(390deg); }
+  100% { transform: translate3d(var(--drift-end), 118vh, 0) rotate(var(--spin)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #weatherEffectLayer { display: none; }
+}
+
+.appearance-weather-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 10px;
+}
+.appearance-weather-option {
+  min-width: 0;
+  height: 52px;
+  padding: 5px 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--cream) 76%, white);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.appearance-weather-option .material-symbols-outlined { font-size: 20px; }
+.appearance-weather-option.active {
+  border-color: var(--dusky);
+  background: var(--chrome);
+  color: var(--on-dusky);
+  box-shadow: 0 3px 8px rgba(var(--dusky-rgb), 0.14);
+}
+.appearance-weather-option:disabled { opacity: 0.55; }
+
+/* 一起听保留水彩气质，但主体纸面不再透得发虚。 */
+#musicPane {
+  background: color-mix(in srgb, var(--bg) 84%, var(--cream));
+}
+#musicMessageForm {
+  background: color-mix(in srgb, var(--bg) 82%, var(--cream));
+}
+
+/* 共读与曲库共用 iOS 式左滑删除。 */
+.swipe-reveal-row {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  touch-action: pan-y;
+}
+.swipe-reveal-foreground {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  transition: transform 180ms ease;
+  will-change: transform;
+}
+.swipe-reveal-row.swiping .swipe-reveal-foreground { transition: none; }
+.swipe-reveal-row.swipe-open .swipe-reveal-foreground {
+  transform: translate3d(-72px, 0, 0);
+}
+.swipe-delete-action {
+  position: absolute !important;
+  z-index: 0;
+  inset: 0 0 1px auto;
+  width: 72px !important;
+  height: auto !important;
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: color-mix(in srgb, var(--user-bubble) 55%, var(--chrome)) !important;
+  color: var(--on-dusky) !important;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.swipe-delete-action .material-symbols-outlined { font-size: 20px; }
+.music-search-row {
+  padding: 0;
+  background: color-mix(in srgb, var(--user-bubble) 55%, var(--chrome));
+}
+.music-track-play {
+  min-height: 58px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--cream) 88%, var(--bg));
+}
+.reading-book-row {
+  display: block;
+  background: color-mix(in srgb, var(--user-bubble) 55%, var(--chrome));
+}
+.reading-book-open {
+  width: 100%;
+  background: color-mix(in srgb, var(--bg) 82%, var(--cream));
+}
 .cache-model-name {
   margin-top: 7px;
   padding-top: 6px;
@@ -2795,7 +3066,7 @@ header {
 #nestTabs {
   flex-shrink: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 7px 12px 8px;
   background: var(--cream);
@@ -2829,6 +3100,361 @@ header {
   flex: 1; overflow-y: auto;
   padding: 12px;
   display: flex; flex-direction: column; gap: 12px;
+}
+
+/* ── 一起听 ── */
+#musicPane { background: var(--bg); }
+#musicRoomScroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 26px;
+}
+#musicRoomHeader {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 168px;
+  padding: 20px 56px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--music-track-color, var(--ai-bubble)) 42%, var(--cream));
+  border-bottom: 1px solid var(--border);
+  transition: background-color .45s ease;
+}
+#musicRoomHeader::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: -22px;
+  background-image: var(--music-track-image, none);
+  background-size: cover;
+  background-position: center;
+  filter: blur(18px) saturate(.82);
+  opacity: 0;
+  transform: scale(1.12);
+  transition: opacity .45s ease;
+  pointer-events: none;
+}
+#musicRoomHeader::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background: color-mix(in srgb, var(--cream) 48%, transparent);
+  pointer-events: none;
+}
+#musicRoomHeader.has-music-artwork::before { opacity: .34; }
+#musicRoomHeader > * { position: relative; z-index: 1; }
+#musicRoomHeader h2 { margin-top: 9px; font-size: 17px; color: var(--text); }
+#musicParticipantsBtn { position: absolute; right: 15px; top: 15px; }
+#musicAvatarPair {
+  min-height: 62px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding-left: 14px;
+}
+.music-room-avatar {
+  width: 58px;
+  height: 58px;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 3px solid var(--cream);
+  background: var(--cream);
+  box-shadow: 0 5px 14px rgba(var(--dusky-rgb), .15);
+  margin-left: -14px;
+}
+.music-room-avatar:first-child { z-index: 3; }
+.music-room-avatar:nth-child(2) { z-index: 2; }
+.music-room-avatar:nth-child(3) { z-index: 1; }
+#musicRoomStats {
+  margin-top: 5px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+#musicRoomStats > * + *::before { content: "·"; margin-right: 7px; }
+#musicDistanceBtn {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+#musicConnectPanel {
+  min-height: 62px;
+  padding: 11px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+#musicAccountAvatar {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border: 2px solid color-mix(in srgb, var(--cream) 82%, transparent);
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 3px 9px rgba(var(--dusky-rgb), .14);
+}
+#musicConnectPanel > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+#musicConnectPanel strong { font-size: 14px; }
+#musicConnectPanel span { color: var(--muted); font-size: 11px; }
+#musicPlaylistShelf {
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid var(--border);
+}
+#musicPlaylistShelf.hidden { display: none; }
+.music-playlist-title {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.music-playlist-scroll {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.music-playlist-scroll::-webkit-scrollbar { display: none; }
+.music-playlist-card {
+  width: 132px;
+  min-width: 132px;
+  padding: 6px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cream) 78%, white 22%);
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+}
+.music-playlist-card.active {
+  border-color: var(--dusky);
+  box-shadow: 0 3px 9px rgba(var(--dusky-rgb), .13);
+}
+.music-playlist-card img,
+.music-playlist-cover {
+  width: 38px;
+  height: 38px;
+  border-radius: 4px;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ai-bubble);
+  color: var(--dusky);
+}
+.music-playlist-card > span { min-width: 0; }
+.music-playlist-card strong,
+.music-playlist-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.music-playlist-card strong { font-size: 11px; }
+.music-playlist-card small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.music-playlist-message { color: var(--muted); font-size: 11px; }
+#musicSearchForm {
+  height: 42px;
+  margin: 12px 16px 6px;
+  padding-left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--cream) 86%, white);
+}
+#musicSearchForm.hidden { display: none; }
+#musicSearchSubmitBtn {
+  width: 24px !important;
+  height: 30px !important;
+  flex: 0 0 24px;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+}
+#musicSearchSubmitBtn .material-symbols-outlined { font-size: 19px; }
+#musicSearchInput {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+#musicSearchForm button,
+#musicMessageForm button {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--chrome);
+  color: var(--on-dusky);
+}
+#musicSearchResults {
+  margin: 0 16px 8px;
+  border-top: 1px solid var(--border);
+}
+#musicSearchResults.hidden { display: none; }
+#musicAudio { display: none; }
+.music-search-row {
+  width: 100%;
+  min-height: 58px;
+  padding: 7px 0;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.music-track-play {
+  min-width: 0;
+  flex: 1;
+  padding: 0 2px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+}
+.music-local-artwork {
+  width: 44px;
+  height: 44px;
+  border-radius: 5px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--ai-bubble) 68%, var(--cream));
+  color: var(--dusky) !important;
+  font-size: 22px !important;
+}
+img.music-local-artwork { display: block !important; object-fit: cover; }
+.music-local-meta { min-width: 0; }
+.music-local-meta strong,
+.music-local-meta > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.music-local-meta strong { font-size: 13px; }
+.music-local-meta > span { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.music-track-play > .material-symbols-outlined { font-size: 20px; color: var(--dusky); }
+.music-track-delete {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+}
+.music-track-delete .material-symbols-outlined { font-size: 18px; }
+.music-track-delete.confirming {
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--user-bubble) 54%, transparent);
+  color: var(--text);
+}
+#musicNowPlaying {
+  padding: 17px 20px 14px;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  column-gap: 14px;
+  border-bottom: 1px solid var(--border);
+}
+#musicRecordSleeve {
+  width: 76px;
+  height: 76px;
+  grid-row: 1 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ai-bubble) 62%, var(--cream));
+  color: var(--muted);
+  box-shadow: 0 6px 16px rgba(var(--dusky-rgb), .12);
+}
+#musicRecordSleeve img { width: 100%; height: 100%; object-fit: cover; }
+#musicRecordSleeve img:not([src]),
+#musicRecordSleeve.has-music-artwork > .material-symbols-outlined { display: none; }
+#musicRecordSleeve .material-symbols-outlined { font-size: 30px; }
+#musicTrackMeta { align-self: center; min-width: 0; }
+#musicTrackMeta strong,
+#musicTrackMeta span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#musicTrackMeta strong { font-size: 15px; }
+#musicTrackMeta span { margin-top: 5px; color: var(--muted); font-size: 12px; }
+#musicProgressWrap { grid-column: 1 / -1; margin-top: 14px; }
+#musicProgress { width: 100%; accent-color: var(--chrome); }
+#musicProgressWrap > div { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+#musicControls {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 8px;
+}
+#musicControls button {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+}
+#musicControls button .material-symbols-outlined { font-size: 27px; }
+#musicPlayBtn { background: var(--chrome) !important; color: var(--on-dusky) !important; }
+#musicControls button:disabled { opacity: .28; }
+#musicRoomConversation { padding: 14px 16px 0; }
+#musicRoomMessages { display: flex; flex-direction: column; gap: 12px; }
+.music-room-message { display: flex; align-items: flex-start; gap: 0; }
+.music-room-message.from-user { justify-content: flex-end; }
+.music-room-message.from-user .music-message-body { margin-right: 10px; text-align: right; }
+.music-room-message:not(.from-user) img { margin-right: 8px; }
+.music-room-message img { width: 30px; height: 30px; flex: 0 0 30px; border-radius: 50%; object-fit: cover; }
+.music-message-body { min-width: 0; max-width: calc(100% - 38px); }
+.music-message-body strong { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
+.music-message-body p { display: inline-block; box-sizing: border-box; max-width: 100%; padding: 8px 10px; border-radius: 7px; background: var(--ai-bubble); font-size: 13px; line-height: 1.55; text-align: left; }
+.music-room-message.from-user .music-message-body p { background: var(--user-bubble); }
+.music-tool-detail { margin-top: 5px; font-size: 10px; color: var(--muted); }
+.music-tool-detail summary { cursor: pointer; }
+.music-tool-detail pre { margin-top: 4px; padding: 7px; overflow-x: auto; border: 1px solid var(--border); border-radius: 5px; white-space: pre-wrap; }
+#musicMessageForm {
+  position: sticky;
+  bottom: -1px;
+  margin-top: 14px;
+  padding: 8px 0 2px;
+  display: flex;
+  gap: 8px;
+  background: var(--bg);
+}
+#musicMessageInput {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 19px;
+  padding: 0 14px;
+  outline: 0;
+  background: var(--cream);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
 }
 
 /* ── 共读室 ── */
@@ -3460,7 +4086,7 @@ header {
   content: '';
   position: absolute;
   inset: 0;
-  background-image: var(--chat-background-image, url("/static/chat_bg.png"));
+  background-image: var(--chat-background-image, url("/static/chat_bg.jpg"));
   background-size: cover;
   background-position: center top;
   pointer-events: none;
@@ -3635,4 +4261,528 @@ header {
 ):disabled {
   transform: none;
   box-shadow: 0 2px 6px rgba(var(--dusky-rgb), 0.10);
+}
+
+/* ── 跨页面水彩底：沿用当前主题的列表底图，避免视图切换时气质断层 ── */
+:is(#memoryView, #momentsView, #moreView) {
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(rgba(var(--cream-rgb), 0.56), rgba(var(--cream-rgb), 0.68)),
+    var(--list-background-image, url("/static/char_list_watercolor.jpg"));
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+:is(
+  #memoryCardContainer,
+  #memoryDetailContent,
+  #moreContent,
+  #momentsPane,
+  #readingPane,
+  #musicPane
+) {
+  background-color: transparent;
+}
+
+:is(#nestTabs, .memory-search-bar, #musicMessageForm) {
+  background: color-mix(in srgb, var(--cream) 88%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.moment-card {
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+/* 记忆总览像一叠横向小票：身份在票头，最新往事留在虚线下。 */
+.memory-card {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--dusky) 52%, transparent);
+  border: 0;
+  border-radius: 7px 7px 0 0;
+  --ticket-shape: polygon(
+    0 0, 100% 0, 100% calc(100% - 6px),
+    97.5% 100%, 95% calc(100% - 6px), 92.5% 100%,
+    90% calc(100% - 6px), 87.5% 100%, 85% calc(100% - 6px),
+    82.5% 100%, 80% calc(100% - 6px), 77.5% 100%,
+    75% calc(100% - 6px), 72.5% 100%, 70% calc(100% - 6px),
+    67.5% 100%, 65% calc(100% - 6px), 62.5% 100%,
+    60% calc(100% - 6px), 57.5% 100%, 55% calc(100% - 6px),
+    52.5% 100%, 50% calc(100% - 6px), 47.5% 100%,
+    45% calc(100% - 6px), 42.5% 100%, 40% calc(100% - 6px),
+    37.5% 100%, 35% calc(100% - 6px), 32.5% 100%,
+    30% calc(100% - 6px), 27.5% 100%, 25% calc(100% - 6px),
+    22.5% 100%, 20% calc(100% - 6px), 17.5% 100%,
+    15% calc(100% - 6px), 12.5% 100%, 10% calc(100% - 6px),
+    7.5% 100%, 5% calc(100% - 6px), 2.5% 100%,
+    0 calc(100% - 6px)
+  );
+  clip-path: var(--ticket-shape);
+  box-shadow: none;
+  filter:
+    drop-shadow(0 2px 2px rgba(var(--dusky-rgb), 0.08))
+    drop-shadow(0 6px 9px rgba(var(--dusky-rgb), 0.14));
+  padding: 18px 18px 23px;
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+.memory-card::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 1px 1px auto;
+  height: 6px;
+  background: color-mix(in srgb, var(--user-bubble) 42%, transparent);
+  border-radius: 6px 6px 0 0;
+  pointer-events: none;
+}
+
+.memory-card::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: 1px 1px 2px;
+  background: color-mix(in srgb, var(--card) 96%, transparent);
+  border-radius: 6px 6px 0 0;
+  clip-path: var(--ticket-shape);
+  pointer-events: none;
+}
+
+.memory-card > * {
+  position: relative;
+  z-index: 2;
+}
+
+.memory-card:active {
+  transform: translateY(1px);
+  box-shadow: none;
+  filter:
+    drop-shadow(0 1px 1px rgba(var(--dusky-rgb), 0.07))
+    drop-shadow(0 3px 5px rgba(var(--dusky-rgb), 0.11));
+}
+
+.memory-card-top {
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.memory-card-top img {
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 2px solid color-mix(in srgb, var(--cream) 92%, transparent);
+  border-radius: 50%;
+  outline: none;
+  transform: none;
+  box-shadow: 0 2px 6px rgba(var(--dusky-rgb), 0.10);
+}
+
+.memory-card-identity {
+  gap: 4px;
+}
+
+.memory-card-identity strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.memory-card-preview {
+  min-height: 0;
+  padding: 12px 0 0;
+  border-top: 1px dashed color-mix(in srgb, var(--dusky) 42%, transparent);
+  line-height: 1.72;
+}
+
+.memory-card-date {
+  width: fit-content;
+  margin: 10px 0 0 auto;
+  padding: 0 0 0 7px;
+  border-top: 0;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 门头只借一点水彩的明暗，底色仍保持原本饱和度。 */
+:is(
+  #singleListHeader,
+  header,
+  .group-header,
+  #memoryListHeader,
+  #momentsListHeader,
+  #moreHeader
+) {
+  isolation: isolate;
+}
+
+:is(
+  #singleListHeader,
+  header,
+  .group-header,
+  #memoryListHeader,
+  #momentsListHeader,
+  #moreHeader
+)::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background-image: var(--list-background-image, url("/static/char_list_watercolor.jpg"));
+  background-size: cover;
+  background-position: center 28%;
+  opacity: 0.30;
+  mix-blend-mode: luminosity;
+  pointer-events: none;
+}
+
+/* Together-listening keeps readable paper while letting the shared watercolor show through. */
+#musicPane {
+  background: color-mix(in srgb, var(--bg) 30%, transparent);
+}
+
+#musicRoomHeader {
+  background: color-mix(in srgb, var(--music-track-color, var(--ai-bubble)) 52%, transparent);
+}
+
+#musicMessageForm {
+  background: color-mix(in srgb, var(--cream) 72%, transparent);
+}
+
+.swipe-reveal-foreground {
+  box-sizing: border-box;
+}
+
+.music-search-row.swipe-reveal-row {
+  padding: 0;
+  background: color-mix(in srgb, var(--user-bubble) 55%, var(--chrome));
+}
+
+.music-search-row .music-track-play.swipe-reveal-foreground {
+  min-height: 58px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--cream) 88%, var(--bg));
+}
+
+.music-search-row.online-track {
+  background: transparent;
+}
+
+.music-search-row.online-track .music-track-play {
+  min-height: 58px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--cream) 82%, transparent);
+}
+
+.reading-book-row.swipe-reveal-row {
+  display: block;
+  grid-template-columns: none;
+  background: color-mix(in srgb, var(--user-bubble) 55%, var(--chrome));
+}
+
+.reading-book-row .reading-book-open.swipe-reveal-foreground {
+  width: 100%;
+  background: color-mix(in srgb, var(--bg) 82%, var(--cream));
+}
+
+/* 一起听：让音乐成为主视觉，曲库按需展开。 */
+#musicRoomScroll {
+  position: relative;
+  padding-bottom: 0;
+}
+
+#musicRoomHeader {
+  min-height: 108px;
+  padding: 15px 108px 14px 18px;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+#musicRoomHeader::before {
+  filter: blur(22px) saturate(.72);
+}
+
+#musicRoomHeader.has-music-artwork::before { opacity: .22; }
+
+.music-room-kicker {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+#musicTrackMeta {
+  width: 100%;
+  align-self: auto;
+}
+
+#musicTrackMeta strong { font-size: 17px; }
+#musicTrackMeta span { margin-top: 4px; font-size: 11px; }
+
+#musicRoomStats {
+  margin-top: 7px;
+  font-size: 10px;
+}
+
+#musicParticipantsBtn {
+  top: 18px;
+  right: 16px;
+}
+
+#musicLibraryPanel {
+  display: contents;
+}
+
+#musicLibraryPanel > summary {
+  position: absolute;
+  z-index: 8;
+  top: 18px;
+  right: 62px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--cream) 76%, transparent);
+  color: var(--text);
+  box-shadow: 0 5px 12px rgba(var(--dusky-rgb), .10);
+  list-style: none;
+  cursor: pointer;
+}
+
+#musicLibraryPanel > summary::-webkit-details-marker { display: none; }
+#musicLibraryPanel > summary .material-symbols-outlined { font-size: 20px; }
+#musicLibraryPanel[open] > summary { background: var(--chrome); color: var(--on-dusky); }
+
+#musicLibraryPanel[open] #musicConnectPanel,
+#musicLibraryPanel[open] #musicPlaylistShelf,
+#musicLibraryPanel[open] #musicSearchForm,
+#musicLibraryPanel[open] #musicSearchResults {
+  background: color-mix(in srgb, var(--cream) 72%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+#musicLibraryPanel[open] #musicSearchForm {
+  margin-top: 8px;
+}
+
+#musicConnectPanel {
+  min-height: 54px;
+  padding: 9px 16px;
+}
+
+#musicSearchForm { margin-top: 8px; }
+#musicSearchResults { max-height: 250px; overflow-y: auto; }
+
+#musicNowPlaying {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 390px;
+  padding: 50px 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--music-track-color, var(--ai-bubble)) 18%, transparent);
+}
+
+#musicNowPlaying::before {
+  content: "";
+  position: absolute;
+  z-index: -2;
+  inset: -18px;
+  background-image: var(--music-track-image, none);
+  background-position: center;
+  background-size: cover;
+  filter: blur(22px) saturate(.72);
+  opacity: 0;
+  transform: scale(1.12);
+  transition: opacity .4s ease;
+}
+
+#musicNowPlaying::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg) 64%, transparent);
+  pointer-events: none;
+}
+
+#musicNowPlaying.has-music-artwork::before { opacity: .30; }
+
+#musicStageVisual {
+  position: relative;
+  width: min(64vw, 270px);
+  aspect-ratio: 1;
+  margin: 0 auto;
+}
+
+#musicRoomMessages {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  display: block;
+  max-height: none;
+  padding: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+#musicRoomMessages > .reading-annotation-empty,
+#musicRoomMessages > .music-room-message {
+  display: none;
+}
+
+#musicRoomMessages > .music-room-message:nth-last-child(-n + 2) {
+  position: absolute;
+  left: -48px;
+  width: min(48vw, 176px);
+  display: flex;
+  pointer-events: auto;
+}
+
+#musicRoomMessages > .music-room-message:nth-last-child(2) { top: 26%; }
+#musicRoomMessages > .music-room-message:last-child { top: 54%; }
+#musicRoomMessages > .music-room-message.from-user {
+  right: -48px;
+  left: auto;
+  justify-content: flex-end;
+}
+
+#musicRoomMessages .music-message-avatar,
+#musicRoomMessages .music-message-body > strong {
+  display: none;
+}
+
+#musicRoomMessages .music-message-body,
+#musicRoomMessages .music-room-message.from-user .music-message-body {
+  max-width: 100%;
+  margin: 0;
+  text-align: inherit;
+}
+
+#musicRoomMessages .music-message-body p {
+  display: inline-block;
+  max-width: 100%;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--border) 66%, transparent);
+  background: color-mix(in srgb, var(--ai-bubble) 88%, transparent);
+  box-shadow: 0 6px 15px rgba(var(--dusky-rgb), .10);
+}
+
+#musicRoomMessages .from-user .music-message-body p {
+  background: color-mix(in srgb, var(--user-bubble) 88%, transparent);
+}
+
+#musicRoomMessages .music-tool-detail {
+  width: 100%;
+  padding: 2px 5px;
+  background: color-mix(in srgb, var(--cream) 82%, transparent);
+  pointer-events: auto;
+}
+
+#musicRoomMessages .music-tool-detail pre {
+  max-height: 96px;
+  overflow: auto;
+}
+
+#musicRecordSleeve {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 8px solid color-mix(in srgb, var(--cream) 76%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ai-bubble) 62%, var(--cream));
+  box-shadow: 0 14px 30px rgba(var(--dusky-rgb), .20), inset 0 0 0 1px rgba(255, 255, 255, .55);
+}
+
+#musicRecordSleeve.has-music-artwork {
+  animation: music-record-spin 20s linear infinite;
+  animation-play-state: paused;
+}
+
+#musicRecordSleeve.has-music-artwork.is-playing {
+  animation-play-state: running;
+  will-change: transform;
+}
+
+@keyframes music-record-spin {
+  to { transform: rotate(1turn); }
+}
+
+#musicRecordSleeve img { border-radius: 50%; }
+#musicRecordSleeve .material-symbols-outlined { font-size: 42px; }
+
+#musicAvatarPair {
+  position: absolute;
+  z-index: 3;
+  top: -30px;
+  left: 50%;
+  min-height: 62px;
+  padding-left: 14px;
+  transform: translateX(-50%);
+}
+
+.music-room-avatar {
+  width: 58px;
+  height: 58px;
+  box-shadow: 0 7px 16px rgba(var(--dusky-rgb), .18);
+}
+
+#musicProgressWrap {
+  width: min(100%, 440px);
+  margin: 20px auto 0;
+}
+
+#musicControls {
+  margin-top: 7px;
+  gap: 36px;
+}
+
+#musicControls button { width: 44px; height: 44px; }
+#musicPlayBtn { width: 52px !important; height: 52px !important; }
+
+#musicRoomConversation {
+  flex: 0 0 auto;
+  min-height: 57px;
+  padding: 9px 16px 9px;
+  background: color-mix(in srgb, var(--bg) 42%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  position: relative;
+  z-index: 6;
+}
+
+#musicMessageForm {
+  position: static;
+  margin: 0;
+  padding: 0;
+}
+
+.music-message-body p {
+  box-shadow: 0 4px 10px rgba(var(--dusky-rgb), .08);
+}
+
+@media (max-height: 760px) {
+  #musicNowPlaying { min-height: 330px; padding-top: 42px; }
+  #musicStageVisual { width: min(52vw, 220px); }
+  #musicRoomMessages > .music-room-message:nth-last-child(-n + 2) {
+    left: -54px;
+    width: min(50vw, 168px);
+  }
+  #musicRoomMessages > .music-room-message.from-user { right: -54px; left: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #musicRecordSleeve.has-music-artwork { animation: none; }
 }

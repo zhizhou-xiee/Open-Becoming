@@ -79,6 +79,7 @@ class MobileExtensionTests(unittest.TestCase):
         manifest = public_mobile_manifest(push_enabled=True)
         self.assertTrue(manifest["push"]["configured"])
         self.assertEqual(manifest["music"]["extension_point"], "custom_mcp")
+        self.assertTrue(manifest["music"]["web_room_built_in"])
         self.assertTrue(manifest["phone"]["read_only"])
         self.assertEqual(
             manifest["voice"]["directions"],

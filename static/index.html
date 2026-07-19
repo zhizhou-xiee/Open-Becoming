@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh" class="chrome-shell">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -22,7 +22,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Mrs+Saint+Delafield&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet">
 <link rel="apple-touch-icon" href="/static/icon.png">
-<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/styles.css?v=__BUILD_VERSION__">
 </head>
 <body>
 
@@ -34,6 +34,8 @@
       </symbol>
     </defs>
   </svg>
+
+  <div id="weatherEffectLayer" aria-hidden="true"></div>
 
   <div id="loginOverlay">
     <div id="loginBox">
@@ -131,6 +133,15 @@
         </div>
       </div>
 
+      <div id="singleQuoteBar" class="single-quote-bar hidden">
+        <div>
+          <strong id="singleQuoteName"></strong>
+          <span id="singleQuoteText"></span>
+        </div>
+        <button id="singleQuoteClear" type="button" aria-label="取消引用" title="取消引用">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
       <div id="inputbar">
         <input id="input" type="text" placeholder="小猫酝酿坏主意中…" autocomplete="off">
         <input id="imageInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden>
@@ -205,6 +216,7 @@
     <div id="nestTabs" role="tablist" aria-label="猫窝房间">
       <button class="nest-tab active" data-nest-pane="moments" role="tab" aria-selected="true">朋友圈</button>
       <button class="nest-tab" data-nest-pane="reading" role="tab" aria-selected="false">共读室</button>
+      <button class="nest-tab" data-nest-pane="music" role="tab" aria-selected="false">一起听</button>
     </div>
     <div id="momentsPane" class="nest-pane">
       <div id="momentsFeed"></div>
@@ -251,6 +263,73 @@
           <button id="readingNoteBtn"><span class="material-symbols-outlined">edit_note</span><span>写批注</span></button>
           <button id="readingAskBtn"><span class="material-symbols-outlined">forum</span><span>喊祂们</span></button>
         </div>
+      </section>
+    </div>
+    <div id="musicPane" class="nest-pane hidden">
+      <div id="musicRoomScroll">
+        <section id="musicRoomHeader">
+          <span class="music-room-kicker">一起听</span>
+          <div id="musicTrackMeta">
+            <strong id="musicTrackName">房间还安安静静的</strong>
+            <span id="musicArtistName">挑一首歌，再喊祂们坐过来</span>
+          </div>
+          <div id="musicRoomStats">
+            <span id="musicTogetherTime">刚刚坐下</span>
+            <button id="musicDistanceBtn" type="button">相距多远</button>
+          </div>
+          <button id="musicParticipantsBtn" class="reading-icon-btn" aria-label="选择一起听成员" title="选择一起听成员">
+            <span class="material-symbols-outlined">group</span>
+          </button>
+        </section>
+
+        <details id="musicLibraryPanel">
+          <summary aria-label="打开曲库" title="打开曲库"><span class="material-symbols-outlined">queue_music</span></summary>
+          <section id="musicConnectPanel">
+            <img id="musicAccountAvatar" alt="" hidden>
+            <div>
+              <strong id="musicConnectTitle">网易云音乐</strong>
+              <span id="musicConnectHint">正在连接账号</span>
+            </div>
+          </section>
+
+          <div id="musicPlaylistShelf" class="hidden" aria-label="我的歌单"></div>
+
+          <form id="musicSearchForm" role="search">
+            <button id="musicSearchSubmitBtn" type="submit" aria-label="搜索曲库"><span class="material-symbols-outlined">search</span></button>
+            <input id="musicSearchInput" type="search" placeholder="搜索网易云音乐" autocomplete="off">
+            <button id="musicLibraryCollapseBtn" type="button" aria-label="收起曲库"><span class="material-symbols-outlined">expand_less</span></button>
+          </form>
+          <div id="musicSearchResults" class="hidden"></div>
+        </details>
+
+        <audio id="musicAudio" preload="metadata"></audio>
+
+        <section id="musicNowPlaying" class="music-now-empty">
+          <div id="musicStageVisual">
+            <div id="musicRecordSleeve">
+              <img id="musicArtwork" alt="">
+              <span class="material-symbols-outlined">music_note</span>
+            </div>
+            <div id="musicAvatarPair" aria-label="一起听成员"></div>
+            <div id="musicRoomMessages" aria-live="polite"></div>
+          </div>
+          <div id="musicProgressWrap">
+            <input id="musicProgress" type="range" min="0" max="1000" value="0" aria-label="播放进度">
+            <div><span id="musicCurrentTime">0:00</span><span id="musicDuration">0:00</span></div>
+          </div>
+          <div id="musicControls">
+            <button id="musicPreviousBtn" type="button" aria-label="上一首"><span class="material-symbols-outlined">skip_previous</span></button>
+            <button id="musicPlayBtn" type="button" aria-label="播放"><span class="material-symbols-outlined">play_arrow</span></button>
+            <button id="musicNextBtn" type="button" aria-label="下一首"><span class="material-symbols-outlined">skip_next</span></button>
+          </div>
+        </section>
+      </div>
+
+      <section id="musicRoomConversation">
+        <form id="musicMessageForm">
+          <input id="musicMessageInput" type="text" placeholder="贴着耳机说点什么…" autocomplete="off">
+          <button type="submit" aria-label="发送"><span class="material-symbols-outlined">arrow_upward</span></button>
+        </form>
       </section>
     </div>
   </div>
@@ -491,7 +570,7 @@
     <button class="bubble-action-item hidden" id="bubbleQuoteBtn">
       <span class="material-symbols-outlined">format_quote</span><span>引用</span>
     </button>
-    <div class="bubble-action-divider"></div>
+    <div id="bubbleDeleteDivider" class="bubble-action-divider"></div>
     <button class="bubble-action-item" id="bubbleDeleteBtn">
       <span class="material-symbols-outlined">delete</span><span>删除</span>
     </button>
@@ -575,6 +654,6 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=__BUILD_VERSION__"></script>
 </body>
 </html>

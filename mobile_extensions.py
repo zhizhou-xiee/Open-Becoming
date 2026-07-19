@@ -2,8 +2,9 @@
 
 The core application intentionally ships without native Android/iOS code.  This
 module keeps the integration boundary small: proactive messages can be sent to
-a signed webhook, while music sync, voice, and phone search are implemented by
-an operator-controlled companion or MCP service.
+a signed webhook, while native-player sync, voice, and phone search are
+implemented by an operator-controlled companion or MCP service.  The web app's
+together-listening room is a separate built-in capability.
 """
 
 from __future__ import annotations
@@ -161,7 +162,9 @@ def public_mobile_manifest(push_enabled: bool = False) -> dict:
         },
         "music": {
             "extension_point": "custom_mcp",
+            "scope": "native-player-bridge",
             "built_in": False,
+            "web_room_built_in": True,
             "tools": list(MUSIC_MCP_TOOLS),
         },
         "phone": {

@@ -50,9 +50,18 @@
     el.addEventListener("touchmove", () => clearTimeout(timer));
   }
 
+  const _isStandalonePwa =
+    window.matchMedia?.("(display-mode: standalone)")?.matches ||
+    window.navigator.standalone === true;
+  if (_isStandalonePwa) document.documentElement.classList.add("standalone-pwa");
+
   function setAppHeight() {
-    const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-    document.documentElement.style.setProperty('--app-height', h + 'px');
+    const viewport = window.visualViewport;
+    const keyboardOpen = viewport && window.innerHeight - viewport.height > 120;
+    const height = _isStandalonePwa && !keyboardOpen
+      ? "100vh"
+      : `${viewport ? viewport.height : window.innerHeight}px`;
+    document.documentElement.style.setProperty("--app-height", height);
   }
   (window.visualViewport || window).addEventListener('resize', setAppHeight);
   setAppHeight();
@@ -65,6 +74,10 @@
       if (msgs) msgs.scrollTop = msgs.scrollHeight;
       const groupMsgs = document.getElementById('groupMessages');
       if (groupMsgs) groupMsgs.scrollTop = groupMsgs.scrollHeight;
+      const musicScroll = document.getElementById('musicRoomScroll');
+      if (musicScroll && document.activeElement?.id === 'musicMessageInput') {
+        musicScroll.scrollTop = musicScroll.scrollHeight;
+      }
     });
   }
 
@@ -94,6 +107,7 @@
   }
   function hideLoginOverlay() {
     document.getElementById("loginOverlay").style.display = "none";
+    document.documentElement.classList.remove("chrome-shell");
   }
 
   async function submitLogin() {
@@ -146,6 +160,7 @@
   const histories     = { char1: [], char2: [], char3: [], char4: [], char5: [], char6: [] };
   const historyLoaded = new Set();
   let currentChar = "char1";
+  let singleReplyTarget = null;
   const HISTORY_PAGE_SIZE = 60;
   const historyState = {};
   function ensureHistoryState(charId) {
@@ -268,9 +283,56 @@
     });
   }
 
+  const WEATHER_EFFECTS = new Set(["off", "rain", "snow", "leaves"]);
+
+  function applyWeatherEffect(effectId) {
+    const layer = document.getElementById("weatherEffectLayer");
+    if (!layer) return;
+    const effect = WEATHER_EFFECTS.has(effectId) ? effectId : "off";
+    layer.replaceChildren();
+    layer.className = effect === "off" ? "" : `weather-effect weather-${effect}`;
+    layer.dataset.effect = effect;
+    if (effect === "off") return;
+
+    const count = effect === "rain" ? 64 : effect === "snow" ? 34 : 24;
+    const mobileDurationScale = window.matchMedia("(max-width: 700px)").matches ? 1.28 : 1;
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < count; index += 1) {
+      const particle = document.createElement("i");
+      const baseDuration = effect === "rain"
+        ? 2.8 + Math.random() * 1.4
+        : effect === "snow"
+          ? 12 + Math.random() * 8
+          : 14 + Math.random() * 9;
+      const duration = baseDuration * mobileDurationScale;
+      particle.className = `weather-particle weather-variant-${index % 3}`;
+      if (effect === "snow") particle.textContent = ["❄", "❅", "❆"][index % 3];
+      particle.style.setProperty("--x", `${((index + Math.random()) / count * 100).toFixed(2)}%`);
+      particle.style.setProperty("--delay", `${(-Math.random() * duration).toFixed(2)}s`);
+      particle.style.setProperty("--duration", `${duration.toFixed(2)}s`);
+      const size = effect === "rain"
+        ? 18 + Math.random() * 20
+        : effect === "snow"
+          ? 12 + Math.random() * 13
+          : 6 + Math.random() * 8;
+      const opacity = effect === "rain"
+        ? 0.48 + Math.random() * 0.34
+        : 0.42 + Math.random() * 0.38;
+      particle.style.setProperty("--size", `${size.toFixed(1)}px`);
+      particle.style.setProperty("--opacity", `${opacity.toFixed(2)}`);
+      particle.style.setProperty("--drift-mid", `${(-28 + Math.random() * 56).toFixed(1)}px`);
+      particle.style.setProperty("--drift", `${(-42 + Math.random() * 84).toFixed(1)}px`);
+      particle.style.setProperty("--drift-end", `${(-58 + Math.random() * 116).toFixed(1)}px`);
+      particle.style.setProperty("--spin", `${(300 + Math.random() * 680).toFixed(0)}deg`);
+      fragment.appendChild(particle);
+    }
+    layer.appendChild(fragment);
+  }
+
   function applyAppearance(data) {
     if (!data) return;
     applyTheme(data);
+    applyWeatherEffect(data.weather_effect || "off");
     const avatars = data.avatars || {};
     Object.entries(avatars).forEach(([cid, item]) => {
       if (!item?.url) return;
@@ -664,7 +726,28 @@
     return wrap;
   }
 
-  function buildSingleBlock(text, who, time, messageId, toolsCalled, metrics) {
+  function appendSingleQuote(bubble, quote) {
+    if (!quote) return;
+    const quoted = document.createElement("div");
+    quoted.className = "group-message-quote";
+    const name = document.createElement("strong");
+    name.textContent = quote.character_name || "引用";
+    const content = document.createElement("span");
+    content.textContent = quote.content || "";
+    quoted.appendChild(name);
+    quoted.appendChild(content);
+    bubble.appendChild(quoted);
+  }
+
+  function setSingleBubbleContent(bubble, text, quote = null) {
+    bubble.dataset.bubbleText = text;
+    appendSingleQuote(bubble, quote);
+    const content = document.createElement("span");
+    content.textContent = text;
+    bubble.appendChild(content);
+  }
+
+  function buildSingleBlock(text, who, time, messageId, toolsCalled, metrics, quote = null) {
     if (text && text.startsWith("__TRANSFER__")) {
       try {
         const data = JSON.parse(text.slice(12));
@@ -689,24 +772,27 @@
     const block = document.createElement("div");
     block.className = "single-msg-block " + (who === "user" ? "from-user" : "from-ai");
     if (who === "ai") {
+      const avatarWrap = document.createElement("div");
+      avatarWrap.className = "msg-avatar-wrap";
       const avatarImg = document.createElement("img");
       avatarImg.src = charAvatars[currentChar] || "";
       avatarImg.style.cssText = "width:32px;height:32px;border-radius:50%;object-fit:cover;margin-bottom:4px;";
       avatarImg.onerror = function() { this.style.display = "none"; };
       decorateDesireAvatar(avatarImg, currentChar);
-      block.appendChild(avatarImg);
+      avatarWrap.appendChild(avatarImg);
+      block.appendChild(avatarWrap);
       block.appendChild(buildThinkBlock(toolsCalled, metrics));
-      splitBubbleContent(text).forEach(part => {
+      splitBubbleContent(text).forEach((part, index) => {
         const div = document.createElement("div");
         div.className = "bubble ai";
-        div.textContent = part;
+        setSingleBubbleContent(div, part, index === 0 ? quote : null);
         if (messageId) div.dataset.messageId = messageId;
         block.appendChild(div);
       });
     } else {
       const div = document.createElement("div");
       div.className = "bubble user";
-      div.textContent = text;
+      setSingleBubbleContent(div, text, quote);
       if (messageId) div.dataset.messageId = messageId;
       block.appendChild(div);
       const avatarImg = document.createElement("img");
@@ -725,19 +811,20 @@
     return block;
   }
 
-  function addBubble(content, who, messageId) {
+  function addBubble(content, who, messageId, quote = null) {
     const time = new Date();
-    histories[currentChar].push({ id: messageId, text: content, who, time });
-    messagesEl.appendChild(buildSingleBlock(content, who, time, messageId));
+    histories[currentChar].push({ id: messageId, text: content, who, time, quote });
+    messagesEl.appendChild(buildSingleBlock(content, who, time, messageId, null, null, quote));
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   function renderFromCache(charId) {
     messagesEl.innerHTML = "";
-    histories[charId].forEach(({ id, text, who, time, toolsCalled, metrics }) => {
-      messagesEl.appendChild(buildSingleBlock(text, who, time, id, toolsCalled, metrics));
+    histories[charId].forEach(({ id, text, who, time, toolsCalled, metrics, quote }) => {
+      messagesEl.appendChild(buildSingleBlock(text, who, time, id, toolsCalled, metrics, quote));
     });
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    refreshSleepStates();
   }
 
   async function loadHistory(charId) {
@@ -753,6 +840,7 @@
         time: m.created_at,
         toolsCalled: m.tools_called || [],
         metrics: m.metrics,
+        quote: m.quote,
       }));
       const st = ensureHistoryState(charId);
       st.oldestId = msgs.length ? msgs[0].id : null;
@@ -778,6 +866,7 @@
         time: m.created_at,
         toolsCalled: m.tools_called || [],
         metrics: m.metrics,
+        quote: m.quote,
       }));
       histories[charId].splice(0, 0, ...newEntries);
       if (charId !== currentChar) return;
@@ -785,8 +874,8 @@
       const prevHeight = messagesEl.scrollHeight;
       const prevTop    = messagesEl.scrollTop;
       const anchor     = messagesEl.firstChild;
-      newEntries.forEach(({ id, text, who, time, toolsCalled, metrics }) => messagesEl.insertBefore(
-        buildSingleBlock(text, who, time, id, toolsCalled, metrics), anchor
+      newEntries.forEach(({ id, text, who, time, toolsCalled, metrics, quote }) => messagesEl.insertBefore(
+        buildSingleBlock(text, who, time, id, toolsCalled, metrics, quote), anchor
       ));
       messagesEl.scrollTop = prevTop + (messagesEl.scrollHeight - prevHeight);
     } catch (e) {
@@ -851,6 +940,7 @@
     const listView = document.getElementById("singleListView");
     const chatView = document.getElementById("singleChatView");
     if (sub === "list") {
+      setSingleReplyTarget(null);
       listView.style.display = "flex";
       chatView.style.display = "none";
       refreshCharPreviews();
@@ -918,6 +1008,8 @@
       });
       refreshCharPreviews();
       refreshUnread();
+      refreshSleepStates();
+      scheduleSecondaryViewsWarmup();
     } catch (e) {
       console.warn("initCharList failed", e);
     }
@@ -934,11 +1026,44 @@
     } catch(e) {}
   }
 
+  async function refreshSleepStates() {
+    try {
+      const res = await fetch("/api/sleep_states");
+      if (!res.ok) return;
+      const states = await res.json();
+      // 清除上一个 Z（可能在旧的最后一条消息上）
+      document.querySelectorAll(".msg-avatar-zs").forEach(el => el.remove());
+      // 如果当前角色在睡，把 Z 挂到最后一条 AI 消息的头像旁
+      if (states[currentChar] === "asleep") {
+        const allAi = messagesEl.querySelectorAll(".from-ai");
+        const lastAi = allAi[allAi.length - 1];
+        if (lastAi) {
+          const wrap = lastAi.querySelector(".msg-avatar-wrap");
+          if (wrap) {
+            const zs = document.createElement("div");
+            zs.className = "sleep-zs msg-avatar-zs";
+            ["z","z","z"].forEach(t => {
+              const s = document.createElement("span"); s.className = "z"; s.textContent = t;
+              zs.appendChild(s);
+            });
+            wrap.appendChild(zs);
+          }
+        }
+      }
+    } catch(e) {}
+  }
+
+  // 每 60 秒轮询一次睡眠状态
+  refreshSleepStates();
+  setInterval(refreshSleepStates, 60000);
+
   function switchChar(charId) {
+    setSingleReplyTarget(null);
     currentChar = charId;
     charSubEl.textContent = CHAR_META[charId]?.label ?? charId;
     messagesEl.innerHTML = "";
     loadHistory(charId);
+    refreshSleepStates();
   }
 
   function addPendingAiBlock() {
@@ -1022,24 +1147,61 @@
     histories[currentChar].push({ text: errText, who: "ai", time: new Date() });
   }
 
+  function setSingleReplyTarget(quote) {
+    singleReplyTarget = quote || null;
+    const bar = document.getElementById("singleQuoteBar");
+    bar.classList.toggle("hidden", !singleReplyTarget);
+    document.getElementById("singleQuoteName").textContent = singleReplyTarget
+      ? `引用 ${singleReplyTarget.character_name}` : "";
+    document.getElementById("singleQuoteText").textContent = singleReplyTarget?.content || "";
+  }
+
+  document.getElementById("singleQuoteClear").addEventListener("click", () => {
+    setSingleReplyTarget(null);
+    inputEl.focus();
+  });
+
   async function send() {
     const text = inputEl.value.trim();
     if (!text) return;
     inputEl.value = "";
     closePawMenu();
     sendBtn.disabled = true;
-    addBubble(text, "user");
+    const pendingQuote = singleReplyTarget;
+    addBubble(text, "user", null, pendingQuote);
     const pending = addPendingAiBlock();
 
     try {
       const resp = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, character_id: currentChar, session_id: "default" }),
+        body: JSON.stringify({
+          message: text,
+          character_id: currentChar,
+          session_id: "default",
+          reply_to_id: pendingQuote?.message_id || null,
+          reply_to_text: pendingQuote?.content || null,
+        }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || "发送失败");
-      await renderAiResponse(data, pending);
+      setSingleReplyTarget(null);
+
+      if (data.sleep) {
+        // 角色睡着了，消息已攒，移除 pending AI 气泡，给用户消息加灰色提示
+        if (pending.block && pending.block.parentNode) pending.block.parentNode.removeChild(pending.block);
+        const chat = document.getElementById("chat");
+        const lastUserBubble = chat.querySelector(".block:last-child");
+        if (lastUserBubble) {
+          const note = document.createElement("div");
+          note.className = "sleep-queued-note";
+          note.textContent = "已送达 · 对方睡着了 💤";
+          note.style.cssText = "font-size:11px;color:var(--muted);text-align:right;margin-top:2px;margin-right:4px;";
+          lastUserBubble.appendChild(note);
+        }
+      } else {
+        await renderAiResponse(data, pending);
+      }
     } catch (e) {
       renderAiError(pending, e);
     } finally {
@@ -1194,7 +1356,7 @@
     send();
   });
 
-  // ── 气泡长按删除 ──
+  // ── 单聊气泡长按操作 ──
   let bubblePressTimer = null;
 
   messagesEl.addEventListener("pointerdown", e => {
@@ -1235,8 +1397,13 @@
 
     // 显示操作菜单
     const menu = document.getElementById("bubbleActionMenu");
-    document.getElementById("bubbleQuoteBtn").classList.add("hidden");
-    document.getElementById("bubbleQuoteDivider").classList.add("hidden");
+    const quoteButton = document.getElementById("bubbleQuoteBtn");
+    const quoteDivider = document.getElementById("bubbleQuoteDivider");
+    const messageId = Number(bubble.dataset.messageId);
+    quoteButton.classList.toggle("hidden", !messageId);
+    quoteDivider.classList.toggle("hidden", !messageId);
+    document.getElementById("bubbleDeleteBtn").classList.remove("hidden");
+    document.getElementById("bubbleDeleteDivider").classList.remove("hidden");
     menu.classList.remove("hidden");
 
     const closeMenu = () => menu.classList.add("hidden");
@@ -1245,8 +1412,20 @@
     // 复制
     document.getElementById("bubbleCopyBtn").onclick = () => {
       closeMenu();
-      const text = bubble.textContent || "";
+      const text = bubble.dataset.bubbleText || bubble.textContent || "";
       navigator.clipboard.writeText(text).then(() => showToast("已复制"));
+    };
+
+    quoteButton.onclick = () => {
+      closeMenu();
+      if (!messageId) return;
+      setSingleReplyTarget({
+        message_id: messageId,
+        character_id: bubble.classList.contains("user") ? "user" : currentChar,
+        character_name: bubble.classList.contains("user") ? "User" : nickName(currentChar),
+        content: bubble.dataset.bubbleText || bubble.textContent || "",
+      });
+      inputEl.focus();
     };
 
     // 删除
@@ -1811,7 +1990,8 @@
     pickerSelected = preSelected ? new Set(preSelected) : new Set();
     const grid = document.getElementById("charPickerGrid");
     grid.innerHTML = "";
-    const pickerCharacters = mode.startsWith("reading") ? READING_CHAR_LIST : CHAR_LIST;
+    const quietRoomPicker = mode.startsWith("reading") || mode.startsWith("music");
+    const pickerCharacters = quietRoomPicker ? READING_CHAR_LIST : CHAR_LIST;
     groupContinuePickerBtn.classList.toggle("hidden", mode !== "online");
     pickerCharacters.forEach(c => {
       const item = document.createElement("div");
@@ -1829,8 +2009,10 @@
           pickerSelected.delete(c.id);
           item.classList.remove("selected");
         } else {
-          if (pickerMode.startsWith("reading") && pickerSelected.size >= 2) {
-            showToast("共读一次喊一两位就刚刚好");
+          if ((pickerMode.startsWith("reading") || pickerMode.startsWith("music")) && pickerSelected.size >= 2) {
+            showToast(pickerMode.startsWith("music")
+              ? "一起听喊一两位就刚刚好"
+              : "共读一次喊一两位就刚刚好");
             return;
           }
           pickerSelected.add(c.id);
@@ -1910,6 +2092,13 @@
       }
       document.getElementById("charPickerOverlay").classList.add("hidden");
       await requestReadingAnnotations(pickerMomentId, [...pickerSelected]);
+    } else if (pickerMode === "music_participants") {
+      if (pickerSelected.size > 2) {
+        showToast("最多选两位一起听");
+        return;
+      }
+      document.getElementById("charPickerOverlay").classList.add("hidden");
+      await saveMusicParticipants([...pickerSelected]);
     }
   });
 
@@ -2078,12 +2267,16 @@
   let groupLoadingMore = false;
 
   async function loadGroupHistory() {
-    if (groupHistoryLoaded) { renderGroupFromCache(); return; }
+    if (groupHistoryLoaded) {
+      if (!groupMessagesEl.childElementCount) renderGroupFromCache();
+      return;
+    }
     groupHistoryLoaded = true;
     try {
       const resp = await fetch(`/api/messages?session_id=group_chat&limit=${HISTORY_PAGE_SIZE}`);
       const data = await resp.json();
       groupMessagesEl.innerHTML = "";
+      groupHistory.length = 0;
       const msgs = data.messages || [];
       msgs.forEach(m => {
         const charName = GROUP_CHAR_NAMES[m.character_id] || m.character_id;
@@ -2093,6 +2286,7 @@
       groupOldestId = msgs.length ? msgs[0].id : null;
       groupHasMore  = !!data.has_more;
       groupMessagesEl.scrollTop = groupMessagesEl.scrollHeight;
+      cacheGroupHistorySnapshot();
     } catch (e) {
       console.warn("loadGroupHistory failed", e);
       groupHistoryLoaded = false;
@@ -2154,6 +2348,8 @@
     const quoteDivider = document.getElementById("bubbleQuoteDivider");
     quoteButton.classList.remove("hidden");
     quoteDivider.classList.remove("hidden");
+    document.getElementById("bubbleDeleteBtn").classList.remove("hidden");
+    document.getElementById("bubbleDeleteDivider").classList.remove("hidden");
     menu.classList.remove("hidden");
 
     const closeMenu = () => menu.classList.add("hidden");
@@ -2335,15 +2531,57 @@
   // ════════════════════════════════════════════
   // 记忆视图
   // ════════════════════════════════════════════
+  const SECONDARY_VIEW_CACHE_PREFIX = "becoming-view-cache-v1:";
+
+  function readSecondaryViewCache(key) {
+    try {
+      const cached = JSON.parse(localStorage.getItem(SECONDARY_VIEW_CACHE_PREFIX + key) || "null");
+      return cached?.value ?? null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeSecondaryViewCache(key, value) {
+    try {
+      localStorage.setItem(
+        SECONDARY_VIEW_CACHE_PREFIX + key,
+        JSON.stringify({ saved_at: Date.now(), value }),
+      );
+    } catch (_) {}
+  }
+
+  function cacheGroupHistorySnapshot() {
+    if (!groupHistory.length) return;
+    writeSecondaryViewCache("group-history", groupHistory.slice(-40));
+  }
+
+  function hydrateSecondaryViewsFromCache() {
+    const cachedGroup = readSecondaryViewCache("group-history");
+    if (Array.isArray(cachedGroup) && cachedGroup.length && !groupHistory.length) {
+      groupHistory.push(...cachedGroup);
+      renderGroupFromCache();
+    }
+    const cachedMemory = readSecondaryViewCache("memory-overview");
+    if (Array.isArray(cachedMemory) && cachedMemory.length) renderMemoryList(cachedMemory);
+    const cachedUsage = readSecondaryViewCache("usage");
+    if (cachedUsage && typeof cachedUsage === "object") renderUsage(cachedUsage);
+  }
+
   async function fetchMemoryOverview() {
     const res = await fetch("/api/memory");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    const data = await res.json();
+    const characters = data.characters || [];
+    writeSecondaryViewCache("memory-overview", characters);
+    return characters;
   }
 
   async function fetchUsage() {
     const res = await fetch("/api/usage");
-    return await res.json();
+    const data = await res.json();
+    writeSecondaryViewCache("usage", data);
+    return data;
   }
 
   const CHAR_DISPLAY_NAMES = {
@@ -2753,6 +2991,25 @@
     }
   }
 
+  let secondaryViewsWarmupStarted = false;
+  function scheduleSecondaryViewsWarmup() {
+    if (secondaryViewsWarmupStarted) return;
+    secondaryViewsWarmupStarted = true;
+    const warm = () => {
+      Promise.allSettled([
+        loadGroupHistory(),
+        loadMemoryView(),
+        loadUsagePanel(),
+        loadCompressHealth(),
+      ]);
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(warm, { timeout: 1200 });
+    } else {
+      setTimeout(warm, 450);
+    }
+  }
+
   document.getElementById("backToMemoryList").addEventListener("click", () => {
     document.getElementById("memorySearchInput").value = "";
     showMemorySub("list");
@@ -2795,7 +3052,12 @@
       const splash = document.getElementById("splashScreen");
       if (splash) {
         splash.classList.add("fade-out");
-        setTimeout(() => splash.remove(), 500);
+        setTimeout(() => {
+          splash.remove();
+          document.documentElement.classList.remove("chrome-shell");
+        }, 500);
+      } else if (document.getElementById("loginOverlay").style.display === "none") {
+        document.documentElement.classList.remove("chrome-shell");
       }
     }, delay);
   }
@@ -3161,13 +3423,16 @@
       char1: 10, char2: 30, char3: 10,
       char4: 10, char5: 30, char6: 50,
     };
+    let sleepCfg = {};
     try {
-      const [schedulerRes, limitsRes] = await Promise.all([
+      const [schedulerRes, limitsRes, sleepRes] = await Promise.all([
         fetch("/api/scheduler/config"),
         fetch("/api/limits"),
+        fetch("/api/sleep/config"),
       ]);
       cfg = await schedulerRes.json();
       ({ limits: limitCfg } = await limitsRes.json());
+      sleepCfg = await sleepRes.json();
     } catch(e) {}
     const selMomSlots = new Set(cfg.moments_slots ? cfg.moments_slots.split(",").filter(Boolean) : []);
     let desireEnabled = cfg.desire_enabled !== false;
@@ -3259,6 +3524,107 @@
       return wrap;
     }
 
+    function makeSleepControls() {
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;flex-direction:column;gap:12px;";
+      const CHAR_ORDER = ["char1","char2","char3","char4","char5","char6"];
+      CHAR_ORDER.forEach(cid => {
+        const sc = sleepCfg[cid] || {};
+        const card = document.createElement("div");
+        card.style.cssText = "background:rgba(var(--dusky-rgb),.06);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;";
+
+        // 名字 + 状态徽章
+        const hdrRow = document.createElement("div");
+        hdrRow.style.cssText = "display:flex;align-items:center;gap:8px;";
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = nickName(cid);
+        nameSpan.style.cssText = "font-weight:600;font-size:14px;";
+        const badge = document.createElement("span");
+        badge.textContent = sc.current_state === "asleep" ? "😴 睡着" : "🌤 醒着";
+        badge.style.cssText = "font-size:11px;padding:2px 8px;border-radius:20px;background:rgba(var(--dusky-rgb),.15);color:var(--dusky);";
+        hdrRow.appendChild(nameSpan);
+        hdrRow.appendChild(badge);
+        card.appendChild(hdrRow);
+
+        // 睡点 / 起床
+        const timeRow = document.createElement("div");
+        timeRow.style.cssText = "display:flex;gap:12px;flex-wrap:wrap;";
+        [["bedtime","睡点","sleep_bedtime_"],["waketime","起床","sleep_waketime_"]].forEach(([field,label,prefix]) => {
+          const lbl = document.createElement("label");
+          lbl.style.cssText = "display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted);";
+          lbl.textContent = label;
+          const inp = document.createElement("input");
+          inp.type = "time";
+          inp.value = sc[field] || "";
+          inp.dataset.sleepField = prefix + cid;
+          inp.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:4px 8px;background:var(--card);color:var(--text);font-size:13px;";
+          lbl.appendChild(inp);
+          timeRow.appendChild(lbl);
+        });
+        card.appendChild(timeRow);
+
+        // resist_bias 滑条
+        const sliderRow = document.createElement("div");
+        sliderRow.style.cssText = "display:flex;flex-direction:column;gap:3px;";
+        const sliderLbl = document.createElement("div");
+        sliderLbl.style.cssText = "display:flex;justify-content:space-between;font-size:12px;color:var(--muted);";
+        const sliderTxt = document.createElement("span");
+        sliderTxt.textContent = "硬撑倾向";
+        const sliderVal = document.createElement("span");
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = "0"; slider.max = "1"; slider.step = "0.05";
+        slider.value = sc.resist_bias ?? 0.4;
+        sliderVal.textContent = Number(slider.value).toFixed(2);
+        slider.dataset.sleepField = "sleep_resist_" + cid;
+        slider.style.cssText = "width:100%;accent-color:var(--dusky);";
+        slider.oninput = () => { sliderVal.textContent = Number(slider.value).toFixed(2); };
+        sliderLbl.appendChild(sliderTxt);
+        sliderLbl.appendChild(sliderVal);
+        sliderRow.appendChild(sliderLbl);
+        sliderRow.appendChild(slider);
+        card.appendChild(sliderRow);
+
+        // 反向催睡开关
+        const nagRow = document.createElement("div");
+        nagRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;";
+        const nagLbl = document.createElement("span");
+        nagLbl.style.cssText = "font-size:12px;color:var(--muted);";
+        nagLbl.textContent = "到睡点自动催你睡";
+        let nagOn = !!sc.nag_enabled;
+        const nagBtn = document.createElement("button");
+        const applyNag = () => {
+          nagBtn.className = "tool-toggle" + (nagOn ? " tool-toggle-on" : "");
+          nagBtn.textContent = nagOn ? "开" : "关";
+          nagBtn.dataset.sleepNag = cid;
+          nagBtn.dataset.sleepNagVal = nagOn ? "true" : "false";
+        };
+        applyNag();
+        nagBtn.onclick = () => { nagOn = !nagOn; applyNag(); };
+        nagRow.appendChild(nagLbl);
+        nagRow.appendChild(nagBtn);
+        card.appendChild(nagRow);
+
+        // chronotype 文本
+        const cTypeRow = document.createElement("div");
+        cTypeRow.style.cssText = "display:flex;flex-direction:column;gap:3px;";
+        const cTypeLbl = document.createElement("span");
+        cTypeLbl.style.cssText = "font-size:11px;color:var(--muted);";
+        cTypeLbl.textContent = "人设描述（注入困意时使用）";
+        const cTypeInput = document.createElement("input");
+        cTypeInput.type = "text";
+        cTypeInput.value = sc.chronotype || "";
+        cTypeInput.dataset.sleepField = "sleep_chron_" + cid;
+        cTypeInput.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:6px 10px;background:var(--card);color:var(--text);font-size:12px;width:100%;";
+        cTypeRow.appendChild(cTypeLbl);
+        cTypeRow.appendChild(cTypeInput);
+        card.appendChild(cTypeRow);
+
+        wrap.appendChild(card);
+      });
+      return wrap;
+    }
+
     const saveBtn = document.createElement("button");
     saveBtn.textContent = "保存配置 🐾";
     saveBtn.style.cssText = "display:none;background:var(--chrome);color:var(--on-dusky);border:none;border-radius:20px;padding:10px;font-size:13px;cursor:pointer;width:100%;margin-top:4px;";
@@ -3273,7 +3639,23 @@
           }
           limits[input.dataset.limitCid] = value;
         });
-        const [schedulerSave, limitSave] = await Promise.all([
+        // 收集睡眠配置
+        const sleepPayload = {};
+        const CHAR_ORDER_S = ["char1","char2","char3","char4","char5","char6"];
+        CHAR_ORDER_S.forEach(cid => { sleepPayload[cid] = {}; });
+        panel.querySelectorAll("[data-sleep-field]").forEach(el => {
+          const key = el.dataset.sleepField;
+          if (key.startsWith("sleep_bedtime_"))  sleepPayload[key.slice(14)].bedtime     = el.value;
+          if (key.startsWith("sleep_waketime_")) sleepPayload[key.slice(15)].waketime    = el.value;
+          if (key.startsWith("sleep_resist_"))   sleepPayload[key.slice(13)].resist_bias = el.value;
+          if (key.startsWith("sleep_chron_"))    sleepPayload[key.slice(12)].chronotype  = el.value;
+        });
+        panel.querySelectorAll("[data-sleep-nag]").forEach(btn => {
+          const cid = btn.dataset.sleepNag;
+          sleepPayload[cid].nag_enabled = btn.dataset.sleepNagVal === "true";
+        });
+
+        const [schedulerSave, limitSave, sleepSave] = await Promise.all([
           fetch("/api/scheduler/config", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -3289,8 +3671,13 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ limits }),
           }),
+          fetch("/api/sleep/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(sleepPayload),
+          }),
         ]);
-        if (!schedulerSave.ok || !limitSave.ok) throw new Error("save failed");
+        if (!schedulerSave.ok || !limitSave.ok || !sleepSave.ok) throw new Error("save failed");
         await loadUsagePanel();
         saveBtn.textContent = "已保存 🐾";
         setTimeout(() => { saveBtn.textContent = "保存配置 🐾"; }, 1500);
@@ -3330,6 +3717,7 @@
     panel.appendChild(makeAccordion("醒醒喵°欲望心跳", [makeDesireControls()]));
     panel.appendChild(makeAccordion("聊聊喵°自动发帖", [makeSlotRow(selMomSlots)]));
     panel.appendChild(makeAccordion("饭饭喵°月度额度", [makeLimitControls()]));
+    panel.appendChild(makeAccordion("眠眠喵°睡眠节律", [makeSleepControls()]));
     panel.appendChild(saveBtn);
 
     _schedulerPanelOpen = true;
@@ -3369,6 +3757,18 @@
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "主题切换失败");
+    applyAppearance(data);
+    return data;
+  }
+
+  async function saveAppearanceWeather(effectId) {
+    const res = await fetch("/api/appearance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ weather_effect: effectId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "天气效果没有换好");
     applyAppearance(data);
     return data;
   }
@@ -3464,6 +3864,42 @@
     });
     themeSection.append(themeTitle, themeGrid);
     panel.appendChild(themeSection);
+
+    const weatherSection = document.createElement("section");
+    weatherSection.className = "appearance-section";
+    const weatherTitle = document.createElement("div");
+    weatherTitle.className = "appearance-section-title";
+    weatherTitle.innerHTML = '<span class="material-symbols-outlined">partly_cloudy_day</span><span>天气氛围</span>';
+    const weatherGrid = document.createElement("div");
+    weatherGrid.className = "appearance-weather-grid";
+    [
+      { id: "off", name: "关闭", icon: "clear_day" },
+      { id: "rain", name: "下雨", icon: "rainy" },
+      { id: "snow", name: "落雪", icon: "weather_snowy" },
+      { id: "leaves", name: "落叶", icon: "eco" },
+    ].forEach(weather => {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "appearance-weather-option";
+      option.classList.toggle("active", weather.id === data.weather_effect);
+      option.setAttribute("aria-pressed", weather.id === data.weather_effect ? "true" : "false");
+      option.innerHTML = `<span class="material-symbols-outlined">${weather.icon}</span><span>${weather.name}</span>`;
+      option.addEventListener("click", async () => {
+        if (weather.id === appearanceState?.weather_effect) return;
+        weatherGrid.querySelectorAll("button").forEach(button => { button.disabled = true; });
+        try {
+          await saveAppearanceWeather(weather.id);
+          showToast(weather.id === "off" ? "天气安静下来啦" : `${weather.name}落进来啦`);
+          await renderAppearancePanel();
+        } catch (e) {
+          showToast(e.message);
+          weatherGrid.querySelectorAll("button").forEach(button => { button.disabled = false; });
+        }
+      });
+      weatherGrid.appendChild(option);
+    });
+    weatherSection.append(weatherTitle, weatherGrid);
+    panel.appendChild(weatherSection);
 
     const avatarSection = document.createElement("section");
     avatarSection.className = "appearance-section";
@@ -4107,12 +4543,141 @@
   let readingSelection = null;
   let readingProgressTimer = null;
   const readingHighlightMap = new Map();
+  let musicRoom = null;
+  let musicLibrary = [];
+  let musicQueue = [];
+  let musicSearchItems = [];
+  let musicOnlineSearchItems = [];
+  let musicOnlineSearchBusy = false;
+  let musicNeteaseStatus = null;
+  let musicNeteasePlaylists = [];
+  let musicNeteasePlaylistsLoaded = false;
+  let musicNeteasePlaylistsBusy = false;
+  let activeNeteasePlaylistId = "";
+  let activeMusicTrack = null;
+  let musicObjectUrl = "";
+  let musicArtworkObjectUrl = "";
+  let musicArtworkTrackKey = "";
+  let musicArtworkRenderToken = 0;
+  let musicLibraryArtworkUrls = [];
+  let musicDatabasePromise = null;
+  let musicLibrarySyncPromise = null;
+  let musicLibraryServerAvailable = true;
+  let musicLibraryRefreshedAt = 0;
+  const MUSIC_LIBRARY_RESET_KEY = "becoming-music-library-reset-20260718";
+  let musicLocalReady = false;
+  let musicLoadingTrack = false;
+  let musicRoomPollTimer = null;
+  let musicRoomSyncTimer = null;
+  const handledMusicCommands = new Set();
+  let openSwipeRevealRow = null;
+
+  function findMusicTrack(trackId) {
+    return musicOnlineSearchItems.find(item => item.id === trackId)
+      || (activeMusicTrack?.id === trackId ? activeMusicTrack : null);
+  }
 
   function escapeReadingHtml(value) {
     const div = document.createElement("div");
     div.textContent = value == null ? "" : String(value);
     return div.innerHTML;
   }
+
+  function setSwipeRevealOpen(row, open) {
+    if (!row) return;
+    row.classList.toggle("swipe-open", open);
+    const deleteButton = row.querySelector(".swipe-delete-action");
+    if (deleteButton) deleteButton.tabIndex = open ? 0 : -1;
+    if (open) {
+      if (openSwipeRevealRow && openSwipeRevealRow !== row) setSwipeRevealOpen(openSwipeRevealRow, false);
+      openSwipeRevealRow = row;
+    } else if (openSwipeRevealRow === row) {
+      openSwipeRevealRow = null;
+    }
+  }
+
+  function bindSwipeReveal(row, foregroundSelector, deleteSelector) {
+    const foreground = row.querySelector(foregroundSelector);
+    const deleteButton = row.querySelector(deleteSelector);
+    if (!foreground || !deleteButton) return;
+    row.classList.add("swipe-reveal-row");
+    foreground.classList.add("swipe-reveal-foreground");
+    deleteButton.classList.add("swipe-delete-action");
+    deleteButton.tabIndex = -1;
+
+    let tracking = false;
+    let horizontal = false;
+    let startX = 0;
+    let startY = 0;
+    let currentOffset = 0;
+    const revealWidth = 72;
+
+    row.addEventListener("pointerdown", event => {
+      if (event.target.closest(deleteSelector)) return;
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      tracking = true;
+      horizontal = false;
+      startX = event.clientX;
+      startY = event.clientY;
+      currentOffset = row.classList.contains("swipe-open") ? -revealWidth : 0;
+    });
+
+    row.addEventListener("pointermove", event => {
+      if (!tracking) return;
+      const deltaX = event.clientX - startX;
+      const deltaY = event.clientY - startY;
+      if (!horizontal) {
+        if (Math.abs(deltaY) > Math.abs(deltaX) && Math.abs(deltaY) > 7) {
+          tracking = false;
+          return;
+        }
+        if (Math.abs(deltaX) < 7) return;
+        horizontal = true;
+        row.classList.add("swiping");
+        try { row.setPointerCapture(event.pointerId); } catch (_) {}
+      }
+      event.preventDefault();
+      const base = row.classList.contains("swipe-open") ? -revealWidth : 0;
+      currentOffset = Math.max(-revealWidth, Math.min(0, base + deltaX));
+      foreground.style.transform = `translate3d(${currentOffset}px, 0, 0)`;
+    });
+
+    const finish = event => {
+      if (!tracking && !horizontal) return;
+      const moved = horizontal;
+      tracking = false;
+      horizontal = false;
+      row.classList.remove("swiping");
+      foreground.style.removeProperty("transform");
+      setSwipeRevealOpen(row, currentOffset < -revealWidth / 2);
+      try { row.releasePointerCapture(event.pointerId); } catch (_) {}
+      if (moved) {
+        row.dataset.suppressSwipeClick = "true";
+        setTimeout(() => { delete row.dataset.suppressSwipeClick; }, 220);
+      }
+    };
+    row.addEventListener("pointerup", finish);
+    row.addEventListener("pointercancel", finish);
+    row.addEventListener("click", event => {
+      if (row.dataset.suppressSwipeClick === "true") {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (row.classList.contains("swipe-open") && !event.target.closest(deleteSelector)) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSwipeRevealOpen(row, false);
+      }
+    }, true);
+    deleteButton.addEventListener("focus", () => setSwipeRevealOpen(row, true));
+  }
+
+  document.addEventListener("pointerdown", event => {
+    if (openSwipeRevealRow && !openSwipeRevealRow.contains(event.target)) {
+      setSwipeRevealOpen(openSwipeRevealRow, false);
+    }
+  }, true);
 
   async function readingRequest(url, options = {}) {
     const response = await fetch(url, options);
@@ -4136,13 +4701,1570 @@
     });
     document.getElementById("momentsPane").classList.toggle("hidden", pane !== "moments");
     document.getElementById("readingPane").classList.toggle("hidden", pane !== "reading");
+    document.getElementById("musicPane").classList.toggle("hidden", pane !== "music");
     syncMomentsFab();
     if (pane === "moments") loadMoments();
-    else loadReadingBooks();
+    else if (pane === "reading") loadReadingBooks();
+    else loadMusicRoom();
   }
 
   document.querySelectorAll(".nest-tab").forEach(btn => {
     btn.addEventListener("click", () => setNestPane(btn.dataset.nestPane));
+  });
+
+  // ── 一起听 · 本地音乐 ──────────────────────────────────
+  async function musicRequest(url, options = {}) {
+    const requestOptions = { ...options };
+    const method = String(requestOptions.method || "GET").toUpperCase();
+    if (method === "GET" && !requestOptions.cache) requestOptions.cache = "no-store";
+    const response = await fetch(url, requestOptions);
+    let data = {};
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok) throw new Error(data.error || "一起听房间这次没接好");
+    return data;
+  }
+
+  function formatMusicTime(seconds) {
+    const numeric = Number(seconds);
+    const safe = Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+    return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, "0")}`;
+  }
+
+  function localMusicDuration(audio, track = activeMusicTrack) {
+    const direct = Number(audio?.duration);
+    if (Number.isFinite(direct) && direct >= 0) return direct;
+    if (audio?.seekable?.length) {
+      const seekableEnd = Number(audio.seekable.end(audio.seekable.length - 1));
+      if (Number.isFinite(seekableEnd) && seekableEnd >= 0) return seekableEnd;
+    }
+    const saved = Number(track?.duration);
+    return Number.isFinite(saved) && saved >= 0 ? saved : 0;
+  }
+
+  function openMusicDatabase() {
+    if (musicDatabasePromise) return musicDatabasePromise;
+    musicDatabasePromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open("becoming-local-music", 1);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains("tracks")) {
+          database.createObjectStore("tracks", { keyPath: "id" });
+        }
+        if (!database.objectStoreNames.contains("audio")) {
+          database.createObjectStore("audio", { keyPath: "id" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("本机曲库没有打开"));
+    });
+    return musicDatabasePromise;
+  }
+
+  async function listLocalMusicTracks() {
+    const database = await openMusicDatabase();
+    return new Promise((resolve, reject) => {
+      const request = database.transaction("tracks").objectStore("tracks").getAll();
+      request.onsuccess = () => resolve((request.result || []).sort((a, b) => a.added_at - b.added_at));
+      request.onerror = () => reject(request.error || new Error("本机曲库没有读出来"));
+    });
+  }
+
+  async function getLocalMusicBlob(trackId) {
+    const database = await openMusicDatabase();
+    return new Promise((resolve, reject) => {
+      const request = database.transaction("audio").objectStore("audio").get(trackId);
+      request.onsuccess = () => resolve(request.result?.blob || null);
+      request.onerror = () => reject(request.error || new Error("这首歌没有读出来"));
+    });
+  }
+
+  async function saveLocalMusicTrack(track, blob) {
+    const database = await openMusicDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(["tracks", "audio"], "readwrite");
+      transaction.objectStore("tracks").put(track);
+      transaction.objectStore("audio").put({ id: track.id, blob });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("这首歌没有存下来"));
+      transaction.onabort = () => reject(transaction.error || new Error("设备空间不够了"));
+    });
+  }
+
+  async function updateLocalMusicTrack(track) {
+    const database = await openMusicDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction("tracks", "readwrite");
+      transaction.objectStore("tracks").put(track);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("歌曲资料没有存下来"));
+    });
+  }
+
+  async function removeLocalMusicTrack(trackId) {
+    const database = await openMusicDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(["tracks", "audio"], "readwrite");
+      transaction.objectStore("tracks").delete(trackId);
+      transaction.objectStore("audio").delete(trackId);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("这首歌没有删掉"));
+    });
+  }
+
+  async function resetLocalMusicLibraryOnce() {
+    if (localStorage.getItem(MUSIC_LIBRARY_RESET_KEY) === "done") return 0;
+    const existingTracks = await listLocalMusicTracks();
+    const database = await openMusicDatabase();
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(["tracks", "audio"], "readwrite");
+      transaction.objectStore("tracks").clear();
+      transaction.objectStore("audio").clear();
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("旧曲库没有清干净"));
+      transaction.onabort = () => reject(transaction.error || new Error("旧曲库没有清干净"));
+    });
+    localStorage.setItem(MUSIC_LIBRARY_RESET_KEY, "done");
+    return existingTracks.length;
+  }
+
+  async function fetchSyncedMusicTracks() {
+    const data = await musicRequest(`/api/music/library?refresh=${Date.now()}`);
+    return data.tracks || [];
+  }
+
+  async function uploadMusicTrack(track, blob) {
+    const form = new FormData();
+    form.append("track_id", track.id);
+    form.append("name", track.name || "未命名歌曲");
+    form.append("artist", track.artist || "本地音乐");
+    form.append("album", track.album || "");
+    form.append("duration", String(track.duration || 0));
+    form.append("lyrics", String(track.lyrics || ""));
+    const extensionByType = {
+      "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+      "audio/aac": "aac", "audio/wav": "wav", "audio/x-wav": "wav",
+      "audio/flac": "flac", "audio/ogg": "ogg", "audio/opus": "opus",
+    };
+    const fallbackExtension = extensionByType[blob.type || track.type] || "mp3";
+    form.append("audio", blob, blob.name || track.filename || `${track.name || "music"}.${fallbackExtension}`);
+    if (track.artwork instanceof Blob) {
+      const artworkType = track.artwork.type || "image/jpeg";
+      const artworkExtension = artworkType === "image/png" ? "png"
+        : artworkType === "image/webp" ? "webp"
+          : ["image/tiff", "image/x-tiff"].includes(artworkType) ? "tiff" : "jpg";
+      form.append("artwork", track.artwork, `cover.${artworkExtension}`);
+    }
+    const data = await musicRequest("/api/music/library", { method: "POST", body: form });
+    return data.track;
+  }
+
+  async function deleteSyncedMusicTrack(trackId) {
+    await musicRequest(`/api/music/library/${encodeURIComponent(trackId)}`, { method: "DELETE" });
+  }
+
+  async function syncLocalMusicTracks(localTracks, serverTracks) {
+    const serverById = new Map(serverTracks.map(track => [track.id, track]));
+    const serverIds = new Set(serverTracks.map(track => track.id));
+    const pending = localTracks.filter(track => {
+      const synced = serverById.get(track.id);
+      return !synced
+        || (track.artwork instanceof Blob && !synced.artwork_url)
+        || (Boolean(track.lyrics) && !synced.has_lyrics);
+    });
+    if (!pending.length) return { uploadedTracks: [], failures: [] };
+    const hint = document.getElementById("musicConnectHint");
+    const uploadedTracks = [];
+    const failures = [];
+    for (let index = 0; index < pending.length; index += 1) {
+      hint.textContent = `正在同步 ${index + 1}/${pending.length}`;
+      try {
+        const blob = await getLocalMusicBlob(pending[index].id);
+        if (!blob) throw new Error("本机音频文件不见了");
+        const uploaded = await uploadMusicTrack(pending[index], blob);
+        uploadedTracks.push(uploaded);
+        serverIds.add(uploaded.id);
+        await updateLocalMusicTrack({
+          ...pending[index],
+          audio_url: uploaded.audio_url || "",
+          artwork_url: uploaded.artwork_url || "",
+          lyrics: uploaded.lyrics || pending[index].lyrics || "",
+          has_lyrics: Boolean(uploaded.has_lyrics || pending[index].lyrics),
+          synced: true,
+        });
+      } catch (error) {
+        failures.push({ track: pending[index], error });
+        console.warn("music library sync failed", error);
+      }
+    }
+    return { uploadedTracks, failures };
+  }
+
+  function localMusicTrackId(file) {
+    const seed = `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
+    let hash = 2166136261;
+    for (let index = 0; index < seed.length; index += 1) {
+      hash ^= seed.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `local:${(hash >>> 0).toString(16)}:${file.size}`;
+  }
+
+  function localMusicDisplayName(filename) {
+    return String(filename || "未命名歌曲").replace(/\.[^.]+$/, "").trim() || "未命名歌曲";
+  }
+
+  function localMusicImportKey(filename) {
+    return localMusicDisplayName(filename)
+      .replace(/(?:[._ -]cover|[._ -]artwork|封面)$/i, "")
+      .trim()
+      .toLocaleLowerCase();
+  }
+
+  function isMusicArtworkFile(file) {
+    return String(file?.type || "").startsWith("image/")
+      || /\.(?:png|jpe?g|webp)$/i.test(String(file?.name || ""));
+  }
+
+  function isMusicLyricsFile(file) {
+    return /\.lrc$/i.test(String(file?.name || ""));
+  }
+
+  async function readMusicLyricsFile(file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const encodings = ["utf-8", "gb18030", "utf-16le", "utf-16be"];
+    for (const encoding of encodings) {
+      try {
+        const text = new TextDecoder(encoding).decode(bytes).replace(/^\uFEFF/, "").trim();
+        if (text && !text.includes("�")) return text.slice(0, 50000);
+      } catch (_) {}
+    }
+    return new TextDecoder("utf-8").decode(bytes).replace(/^\uFEFF/, "").trim().slice(0, 50000);
+  }
+
+  function localMusicFilenameMetadata(filename) {
+    const stem = localMusicDisplayName(filename);
+    const separators = [" - ", " – ", " — ", "-", "–", "—"];
+    for (const separator of separators) {
+      const at = stem.lastIndexOf(separator);
+      if (at <= 0 || at >= stem.length - separator.length) continue;
+      const artist = stem.slice(0, at).trim();
+      const title = stem.slice(at + separator.length).trim();
+      if (artist && title) return { artist, title };
+    }
+    return { artist: "", title: stem };
+  }
+
+  function musicBytesToText(bytes, encoding = 3) {
+    if (!bytes?.length) return "";
+    let label = "utf-8";
+    let content = bytes;
+    if (encoding === 0) label = "windows-1252";
+    else if (encoding === 1) {
+      if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+        label = "utf-16be";
+        content = bytes.subarray(2);
+      } else {
+        label = "utf-16le";
+        content = bytes[0] === 0xff && bytes[1] === 0xfe ? bytes.subarray(2) : bytes;
+      }
+    } else if (encoding === 2) label = "utf-16be";
+    try {
+      return new TextDecoder(label).decode(content).replace(/\0/g, "").trim();
+    } catch (_) {
+      return new TextDecoder("utf-8").decode(content).replace(/\0/g, "").trim();
+    }
+  }
+
+  function musicImageMime(bytes, fallback = "image/jpeg") {
+    if (bytes?.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+    if (bytes?.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    if (bytes?.length >= 4 && (
+      (bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2a && bytes[3] === 0x00)
+      || (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[2] === 0x00 && bytes[3] === 0x2a)
+    )) return "image/tiff";
+    if (bytes?.length >= 6 && String.fromCharCode(...bytes.subarray(0, 6)).startsWith("GIF8")) return "image/gif";
+    if (bytes?.length >= 12 && String.fromCharCode(...bytes.subarray(8, 12)) === "WEBP") return "image/webp";
+    return fallback && fallback.startsWith("image/") ? fallback : "image/jpeg";
+  }
+
+  function musicReadUint32(bytes, offset, littleEndian = false) {
+    if (offset < 0 || offset + 4 > bytes.length) return 0;
+    return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, littleEndian);
+  }
+
+  function musicReadSynchsafe(bytes, offset) {
+    return ((bytes[offset] & 0x7f) << 21) | ((bytes[offset + 1] & 0x7f) << 14) |
+      ((bytes[offset + 2] & 0x7f) << 7) | (bytes[offset + 3] & 0x7f);
+  }
+
+  function musicFindTerminator(bytes, start, wide = false) {
+    if (wide) {
+      for (let index = start; index + 1 < bytes.length; index += 2) {
+        if (bytes[index] === 0 && bytes[index + 1] === 0) return index;
+      }
+    } else {
+      const index = bytes.indexOf(0, start);
+      if (index >= 0) return index;
+    }
+    return bytes.length;
+  }
+
+  function musicFindSequence(bytes, sequence) {
+    for (let index = 0; index <= bytes.length - sequence.length; index += 1) {
+      let match = true;
+      for (let offset = 0; offset < sequence.length; offset += 1) {
+        if (bytes[index + offset] !== sequence[offset]) { match = false; break; }
+      }
+      if (match) return index;
+    }
+    return -1;
+  }
+
+  function parseId3Picture(payload, legacy = false) {
+    if (!payload?.length) return null;
+    const encoding = payload[0];
+    let cursor = 1;
+    let mime = "image/jpeg";
+    if (legacy) {
+      const format = musicBytesToText(payload.subarray(cursor, cursor + 3), 0).toLowerCase();
+      mime = format === "png" ? "image/png" : "image/jpeg";
+      cursor += 4;
+    } else {
+      const mimeEnd = musicFindTerminator(payload, cursor);
+      mime = musicBytesToText(payload.subarray(cursor, mimeEnd), 0) || mime;
+      cursor = mimeEnd + 2;
+    }
+    const descriptionEnd = musicFindTerminator(payload, cursor, encoding === 1 || encoding === 2);
+    cursor = descriptionEnd + (encoding === 1 || encoding === 2 ? 2 : 1);
+    if (cursor >= payload.length) return null;
+    const image = payload.subarray(cursor);
+    return new Blob([image], { type: musicImageMime(image, mime) });
+  }
+
+  function parseId3Lyrics(payload) {
+    if (!payload?.length || payload.length < 5) return "";
+    const encoding = payload[0];
+    const wide = encoding === 1 || encoding === 2;
+    const descriptionStart = 4;
+    const descriptionEnd = musicFindTerminator(payload, descriptionStart, wide);
+    const lyricStart = Math.min(payload.length, descriptionEnd + (wide ? 2 : 1));
+    return musicBytesToText(payload.subarray(lyricStart), encoding).slice(0, 50000);
+  }
+
+  function parseId3Metadata(bytes, start = 0) {
+    const result = {};
+    if (start + 10 > bytes.length || musicBytesToText(bytes.subarray(start, start + 3)) !== "ID3") return result;
+    const version = bytes[start + 3];
+    const tagEnd = Math.min(bytes.length, start + 10 + musicReadSynchsafe(bytes, start + 6));
+    let cursor = start + 10;
+    while (cursor + (version === 2 ? 6 : 10) <= tagEnd) {
+      const idLength = version === 2 ? 3 : 4;
+      const frameId = musicBytesToText(bytes.subarray(cursor, cursor + idLength), 0);
+      if (!frameId || /^\x00+$/.test(frameId)) break;
+      const size = version === 2
+        ? (bytes[cursor + 3] << 16) | (bytes[cursor + 4] << 8) | bytes[cursor + 5]
+        : version === 4
+          ? musicReadSynchsafe(bytes, cursor + 4)
+          : musicReadUint32(bytes, cursor + 4);
+      const headerSize = version === 2 ? 6 : 10;
+      const payloadStart = cursor + headerSize;
+      const payloadEnd = Math.min(tagEnd, payloadStart + size);
+      if (size <= 0 || payloadEnd <= payloadStart) break;
+      const payload = bytes.subarray(payloadStart, payloadEnd);
+      if (["TIT2", "TT2"].includes(frameId)) result.title = musicBytesToText(payload.subarray(1), payload[0]);
+      else if (["TPE1", "TP1"].includes(frameId)) result.artist = musicBytesToText(payload.subarray(1), payload[0]);
+      else if (["TALB", "TAL"].includes(frameId)) result.album = musicBytesToText(payload.subarray(1), payload[0]);
+      else if (!result.lyrics && ["USLT", "ULT"].includes(frameId)) result.lyrics = parseId3Lyrics(payload);
+      else if (!result.artwork && ["APIC", "PIC"].includes(frameId)) result.artwork = parseId3Picture(payload, frameId === "PIC");
+      cursor = payloadStart + size;
+    }
+    return result;
+  }
+
+  function musicAtomType(bytes, offset) {
+    return offset + 4 <= bytes.length ? String.fromCharCode(...bytes.subarray(offset, offset + 4)) : "";
+  }
+
+  function musicMp4Boxes(bytes, start, end) {
+    const boxes = [];
+    let cursor = start;
+    while (cursor + 8 <= end) {
+      let size = musicReadUint32(bytes, cursor);
+      const type = musicAtomType(bytes, cursor + 4);
+      let header = 8;
+      if (size === 1 && cursor + 16 <= end) {
+        const high = musicReadUint32(bytes, cursor + 8);
+        const low = musicReadUint32(bytes, cursor + 12);
+        size = high * 4294967296 + low;
+        header = 16;
+      } else if (size === 0) size = end - cursor;
+      if (!type || size < header || cursor + size > end) break;
+      boxes.push({ type, start: cursor + header, end: cursor + size });
+      cursor += size;
+    }
+    return boxes;
+  }
+
+  function parseMp4Metadata(bytes) {
+    const result = {};
+    let containers = musicMp4Boxes(bytes, 0, bytes.length);
+    let ilst = null;
+    for (let depth = 0; depth < 8 && containers.length && !ilst; depth += 1) {
+      const next = [];
+      for (const box of containers) {
+        if (box.type === "ilst") { ilst = box; break; }
+        if (["moov", "udta", "meta"].includes(box.type)) {
+          next.push(...musicMp4Boxes(bytes, box.start + (box.type === "meta" ? 4 : 0), box.end));
+        }
+      }
+      containers = next;
+    }
+    if (!ilst) return result;
+    for (const item of musicMp4Boxes(bytes, ilst.start, ilst.end)) {
+      const data = musicMp4Boxes(bytes, item.start, item.end).find(box => box.type === "data");
+      if (!data || data.start + 8 > data.end) continue;
+      const payload = bytes.subarray(data.start + 8, data.end);
+      if (item.type === "©nam") result.title = musicBytesToText(payload);
+      else if (["©ART", "aART"].includes(item.type)) result.artist = musicBytesToText(payload);
+      else if (item.type === "©alb") result.album = musicBytesToText(payload);
+      else if (item.type === "©lyr") result.lyrics = musicBytesToText(payload).slice(0, 50000);
+      else if (item.type === "covr" && !result.artwork && payload.length) {
+        result.artwork = new Blob([payload], { type: musicImageMime(payload) });
+      }
+    }
+    return result;
+  }
+
+  function parseFlacMetadata(bytes) {
+    const result = {};
+    if (bytes.length < 4 || musicBytesToText(bytes.subarray(0, 4)) !== "fLaC") return result;
+    let cursor = 4;
+    let last = false;
+    while (!last && cursor + 4 <= bytes.length) {
+      last = Boolean(bytes[cursor] & 0x80);
+      const type = bytes[cursor] & 0x7f;
+      const length = (bytes[cursor + 1] << 16) | (bytes[cursor + 2] << 8) | bytes[cursor + 3];
+      const start = cursor + 4;
+      const end = Math.min(bytes.length, start + length);
+      if (type === 4 && start + 8 <= end) {
+        let at = start;
+        const vendorLength = musicReadUint32(bytes, at, true);
+        at += 4 + vendorLength;
+        const count = musicReadUint32(bytes, at, true);
+        at += 4;
+        for (let index = 0; index < count && at + 4 <= end; index += 1) {
+          const itemLength = musicReadUint32(bytes, at, true);
+          at += 4;
+          const entry = musicBytesToText(bytes.subarray(at, Math.min(end, at + itemLength)));
+          at += itemLength;
+          const separator = entry.indexOf("=");
+          if (separator < 0) continue;
+          const key = entry.slice(0, separator).toUpperCase();
+          const value = entry.slice(separator + 1).trim();
+          if (key === "TITLE") result.title = value;
+          else if (key === "ARTIST") result.artist = value;
+          else if (key === "ALBUM") result.album = value;
+          else if (["LYRICS", "UNSYNCEDLYRICS"].includes(key) && value) result.lyrics = value.slice(0, 50000);
+        }
+      } else if (type === 6 && !result.artwork && start + 32 <= end) {
+        result.artwork = musicPictureFromBlock(bytes.subarray(start, end));
+      }
+      cursor = start + length;
+    }
+    return result;
+  }
+
+  function musicJoinByteParts(parts, length) {
+    const joined = new Uint8Array(length);
+    let offset = 0;
+    parts.forEach(part => {
+      joined.set(part, offset);
+      offset += part.length;
+    });
+    return joined;
+  }
+
+  function musicOggPackets(bytes, limit = 4) {
+    const packets = [];
+    let packetParts = [];
+    let packetLength = 0;
+    let cursor = 0;
+    while (cursor + 27 <= bytes.length && packets.length < limit) {
+      if (musicBytesToText(bytes.subarray(cursor, cursor + 4), 0) !== "OggS") break;
+      const segmentCount = bytes[cursor + 26];
+      const lacingStart = cursor + 27;
+      const payloadStart = lacingStart + segmentCount;
+      if (payloadStart > bytes.length) break;
+      let payloadCursor = payloadStart;
+      for (let index = 0; index < segmentCount; index += 1) {
+        const segmentLength = bytes[lacingStart + index];
+        const segmentEnd = payloadCursor + segmentLength;
+        if (segmentEnd > bytes.length) return packets;
+        if (segmentLength) {
+          const part = bytes.subarray(payloadCursor, segmentEnd);
+          packetParts.push(part);
+          packetLength += part.length;
+        }
+        payloadCursor = segmentEnd;
+        if (segmentLength < 255) {
+          packets.push(musicJoinByteParts(packetParts, packetLength));
+          packetParts = [];
+          packetLength = 0;
+          if (packets.length >= limit) return packets;
+        }
+      }
+      cursor = payloadCursor;
+    }
+    return packets;
+  }
+
+  function musicPictureFromBlock(bytes) {
+    if (!bytes?.length || bytes.length < 32) return null;
+    let cursor = 4;
+    const mimeLength = musicReadUint32(bytes, cursor);
+    cursor += 4;
+    if (cursor + mimeLength + 4 > bytes.length) return null;
+    const mime = musicBytesToText(bytes.subarray(cursor, cursor + mimeLength), 0);
+    cursor += mimeLength;
+    const descriptionLength = musicReadUint32(bytes, cursor);
+    cursor += 4 + descriptionLength + 16;
+    if (cursor + 4 > bytes.length) return null;
+    const imageLength = musicReadUint32(bytes, cursor);
+    cursor += 4;
+    const image = bytes.subarray(cursor, Math.min(bytes.length, cursor + imageLength));
+    return image.length ? new Blob([image], { type: musicImageMime(image, mime) }) : null;
+  }
+
+  function musicBytesFromBase64(value) {
+    try {
+      const raw = atob(String(value || "").replace(/\s/g, ""));
+      const bytes = new Uint8Array(raw.length);
+      for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
+      return bytes;
+    } catch (_) {
+      return new Uint8Array();
+    }
+  }
+
+  function parseOggMetadata(bytes) {
+    const result = {};
+    const commentPacket = musicOggPackets(bytes, 4).find(packet => {
+      const signature = musicBytesToText(packet.subarray(0, 8), 0);
+      return signature.startsWith("\u0003vorbis") || signature.startsWith("OpusTags");
+    });
+    if (!commentPacket) return result;
+    const signature = musicBytesToText(commentPacket.subarray(0, 8), 0);
+    let cursor = signature.startsWith("OpusTags") ? 8 : 7;
+    if (cursor + 4 > commentPacket.length) return result;
+    const vendorLength = musicReadUint32(commentPacket, cursor, true);
+    cursor += 4 + vendorLength;
+    if (cursor + 4 > commentPacket.length) return result;
+    const count = musicReadUint32(commentPacket, cursor, true);
+    cursor += 4;
+    let coverArt = "";
+    let coverMime = "image/jpeg";
+    for (let index = 0; index < count && cursor + 4 <= commentPacket.length; index += 1) {
+      const length = musicReadUint32(commentPacket, cursor, true);
+      cursor += 4;
+      const entry = musicBytesToText(commentPacket.subarray(cursor, Math.min(commentPacket.length, cursor + length)));
+      cursor += length;
+      const separator = entry.indexOf("=");
+      if (separator < 0) continue;
+      const key = entry.slice(0, separator).toUpperCase();
+      const value = entry.slice(separator + 1).trim();
+      if (key === "TITLE" && value) result.title = value;
+      else if (key === "ARTIST" && value) result.artist = value;
+      else if (key === "ALBUM" && value) result.album = value;
+      else if (["LYRICS", "UNSYNCEDLYRICS"].includes(key) && value) result.lyrics = value.slice(0, 50000);
+      else if (key === "METADATA_BLOCK_PICTURE" && value && !result.artwork) {
+        result.artwork = musicPictureFromBlock(musicBytesFromBase64(value));
+      } else if (key === "COVERART" && value) coverArt = value;
+      else if (key === "COVERARTMIME" && value) coverMime = value;
+    }
+    if (!result.artwork && coverArt) {
+      const image = musicBytesFromBase64(coverArt);
+      if (image.length) result.artwork = new Blob([image], { type: musicImageMime(image, coverMime) });
+    }
+    return result;
+  }
+
+  async function readEmbeddedMusicMetadata(file) {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const signature = musicBytesToText(bytes.subarray(0, 12), 0);
+      if (signature.startsWith("ID3")) return parseId3Metadata(bytes);
+      if (signature.startsWith("fLaC")) return parseFlacMetadata(bytes);
+      if (signature.startsWith("OggS")) return parseOggMetadata(bytes);
+      if (musicAtomType(bytes, 4) === "ftyp") return parseMp4Metadata(bytes);
+      const id3Offset = musicFindSequence(bytes, [0x49, 0x44, 0x33]);
+      if (id3Offset >= 0 && musicBytesToText(bytes.subarray(id3Offset, id3Offset + 3), 0) === "ID3") {
+        return parseId3Metadata(bytes, id3Offset);
+      }
+    } catch (error) {
+      console.warn("music metadata read failed", error);
+    }
+    return {};
+  }
+
+  function inspectLocalAudio(file) {
+    const durationPromise = new Promise((resolve, reject) => {
+      const audio = document.createElement("audio");
+      const url = URL.createObjectURL(file);
+      const done = result => {
+        URL.revokeObjectURL(url);
+        audio.removeAttribute("src");
+        result();
+      };
+      audio.preload = "metadata";
+      audio.onloadedmetadata = () => {
+        const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+        done(() => resolve(duration));
+      };
+      audio.onerror = () => done(() => reject(new Error(`${file.name} 不是这台设备能播放的音频`)));
+      audio.src = url;
+    });
+    return Promise.all([durationPromise, readEmbeddedMusicMetadata(file)]).then(([duration, metadata]) => ({
+      duration,
+      ...metadata,
+      metadata_scanned: true,
+    }));
+  }
+
+  async function refreshLocalMusicLibrary({ syncLocal = true } = {}) {
+    const localTracks = await listLocalMusicTracks();
+    let serverTracks = [];
+    let serverAvailable = true;
+    let syncFailures = [];
+    try {
+      serverTracks = await fetchSyncedMusicTracks();
+      if (syncLocal) {
+        if (!musicLibrarySyncPromise) {
+          musicLibrarySyncPromise = syncLocalMusicTracks(localTracks, serverTracks)
+            .finally(() => { musicLibrarySyncPromise = null; });
+        }
+        const syncResult = await musicLibrarySyncPromise;
+        syncFailures = syncResult.failures;
+        if (syncResult.uploadedTracks.length) {
+          const serverMap = new Map(serverTracks.map(track => [track.id, track]));
+          syncResult.uploadedTracks.forEach(track => serverMap.set(track.id, track));
+          serverTracks = [...serverMap.values()];
+        }
+      }
+    } catch (error) {
+      serverAvailable = false;
+      console.warn("synced music library unavailable", error);
+    }
+    musicLibraryServerAvailable = serverAvailable;
+    musicLibraryRefreshedAt = Date.now();
+    const merged = new Map(serverTracks.map(track => [track.id, track]));
+    localTracks.forEach(track => {
+      const synced = merged.get(track.id) || {};
+      merged.set(track.id, {
+        ...synced,
+        ...track,
+        audio_url: synced.audio_url || track.audio_url || "",
+        artwork_url: synced.artwork_url || track.artwork_url || "",
+        synced: Boolean(synced.audio_url),
+      });
+    });
+    musicLibrary = [...merged.values()].sort((a, b) => Number(a.added_at || 0) - Number(b.added_at || 0));
+    if (!musicQueue.length) musicQueue = [...musicLibrary];
+    const pendingCount = musicLibrary.filter(track => !track.synced).length;
+    const hint = document.getElementById("musicConnectHint");
+    return { serverAvailable, pendingCount, syncFailures };
+  }
+
+  function renderLocalMusicLibrary(query = "") {
+    musicLibraryArtworkUrls.forEach(url => URL.revokeObjectURL(url));
+    musicLibraryArtworkUrls = [];
+    const normalized = String(query || "").trim().toLocaleLowerCase();
+    musicSearchItems = musicLibrary.filter(track => {
+      if (!normalized) return true;
+      return `${track.name} ${track.artist || ""}`.toLocaleLowerCase().includes(normalized);
+    });
+    const wrap = document.getElementById("musicSearchResults");
+    wrap.innerHTML = musicSearchItems.map(track => `
+      <div class="music-search-row" data-track-id="${escapeReadingHtml(track.id)}">
+        <button type="button" class="music-track-delete" aria-label="删除 ${escapeReadingHtml(track.name)}" title="删除这首歌">
+          <span class="material-symbols-outlined">delete</span><span>删除</span>
+        </button>
+        <button type="button" class="music-track-play" aria-label="播放 ${escapeReadingHtml(track.name)}">
+          ${track.artwork instanceof Blob || track.artwork_url
+            ? `<img class="music-local-artwork" data-music-artwork-id="${escapeReadingHtml(track.id)}" alt="">`
+            : `<span class="music-local-artwork material-symbols-outlined">music_note</span>`}
+          <span class="music-local-meta"><strong>${escapeReadingHtml(track.name)}</strong><span>${escapeReadingHtml(track.artist || "本地音乐")}</span></span>
+          <span class="material-symbols-outlined">play_arrow</span>
+        </button>
+      </div>`).join("") || `<div class="reading-annotation-empty">${musicLibrary.length ? "没有找到这首歌。" : "导入几首歌，曲库就会住在这里。"}</div>`;
+    wrap.querySelectorAll(".music-search-row").forEach(row => {
+      bindSwipeReveal(row, ".music-track-play", ".music-track-delete");
+    });
+    wrap.querySelectorAll("img[data-music-artwork-id]").forEach(image => {
+      const track = musicLibrary.find(item => item.id === image.dataset.musicArtworkId);
+      if (track?.artwork instanceof Blob) {
+        const url = URL.createObjectURL(track.artwork);
+        musicLibraryArtworkUrls.push(url);
+        image.src = url;
+      } else if (track?.artwork_url) {
+        image.src = track.artwork_url;
+      }
+    });
+  }
+
+  function renderOnlineMusicLibrary(message = "") {
+    const wrap = document.getElementById("musicSearchResults");
+    if (message) {
+      wrap.innerHTML = `<div class="reading-annotation-empty">${escapeReadingHtml(message)}</div>`;
+      return;
+    }
+    wrap.innerHTML = musicOnlineSearchItems.map(track => `
+      <div class="music-search-row online-track" data-track-id="${escapeReadingHtml(track.id)}">
+        <button type="button" class="music-track-play" aria-label="播放 ${escapeReadingHtml(track.name)}">
+          ${track.artwork_url
+            ? `<img class="music-local-artwork" src="${escapeReadingHtml(track.artwork_url)}" alt="">`
+            : `<span class="music-local-artwork material-symbols-outlined">music_note</span>`}
+          <span class="music-local-meta"><strong>${escapeReadingHtml(track.name)}</strong><span>${escapeReadingHtml(track.artist || "网易云音乐")}${track.album ? ` · ${escapeReadingHtml(track.album)}` : ""}</span></span>
+          <span class="material-symbols-outlined">play_arrow</span>
+        </button>
+      </div>`).join("") || '<div class="reading-annotation-empty">输入歌名或歌手，去网易云找一找。</div>';
+  }
+
+  function renderNeteaseAccount() {
+    const profile = musicNeteaseStatus?.profile || {};
+    const valid = Boolean(musicNeteaseStatus?.account_valid);
+    const avatar = document.getElementById("musicAccountAvatar");
+    document.getElementById("musicConnectTitle").textContent = valid && profile.nickname
+      ? profile.nickname
+      : "网易云音乐";
+    document.getElementById("musicConnectHint").textContent = valid
+      ? `${musicNeteasePlaylists.length || ""}${musicNeteasePlaylists.length ? " 个歌单 · " : ""}账号已接入`
+      : (musicNeteaseStatus?.error || (musicNeteaseStatus?.account_configured
+          ? "正在验证网易云账号"
+          : "需要在后端接入 MUSIC_U"));
+    if (valid && profile.avatar_url) {
+      avatar.src = profile.avatar_url;
+      avatar.hidden = false;
+    } else {
+      avatar.removeAttribute("src");
+      avatar.hidden = true;
+    }
+  }
+
+  function renderNeteasePlaylists(message = "") {
+    const shelf = document.getElementById("musicPlaylistShelf");
+    if (!musicNeteaseStatus?.account_valid) {
+      shelf.classList.add("hidden");
+      shelf.innerHTML = "";
+      return;
+    }
+    shelf.classList.remove("hidden");
+    if (message) {
+      shelf.innerHTML = `<div class="music-playlist-title">我的歌单</div><div class="music-playlist-message">${escapeReadingHtml(message)}</div>`;
+      return;
+    }
+    shelf.innerHTML = `
+      <div class="music-playlist-title">我的歌单</div>
+      <div class="music-playlist-scroll">
+        ${musicNeteasePlaylists.map(playlist => `
+          <button type="button" class="music-playlist-card${playlist.id === activeNeteasePlaylistId ? " active" : ""}" data-playlist-id="${escapeReadingHtml(playlist.id)}">
+            ${playlist.cover_url
+              ? `<img src="${escapeReadingHtml(playlist.cover_url)}" alt="">`
+              : `<span class="music-playlist-cover material-symbols-outlined">queue_music</span>`}
+            <span><strong>${escapeReadingHtml(playlist.name)}</strong><small>${playlist.track_count} 首</small></span>
+          </button>`).join("") || '<span class="music-playlist-message">账号里还没有歌单。</span>'}
+      </div>`;
+  }
+
+  async function loadNeteasePlaylists({ force = false } = {}) {
+    if (musicNeteasePlaylistsBusy || (musicNeteasePlaylistsLoaded && !force)) return;
+    if (!musicNeteaseStatus?.account_valid) return;
+    musicNeteasePlaylistsBusy = true;
+    renderNeteasePlaylists("正在把歌单抱过来……");
+    try {
+      const data = await musicRequest("/api/music/netease/playlists");
+      musicNeteasePlaylists = Array.isArray(data.playlists) ? data.playlists : [];
+      musicNeteaseStatus = { ...musicNeteaseStatus, account_valid: true, profile: data.profile || musicNeteaseStatus.profile };
+      musicNeteasePlaylistsLoaded = true;
+      renderNeteaseAccount();
+      renderNeteasePlaylists();
+    } catch (error) {
+      renderNeteasePlaylists(error.message || "歌单这次没有接上。");
+    } finally {
+      musicNeteasePlaylistsBusy = false;
+    }
+  }
+
+  async function openNeteasePlaylist(playlistId) {
+    const playlist = musicNeteasePlaylists.find(item => item.id === playlistId);
+    if (!playlist) return;
+    activeNeteasePlaylistId = playlistId;
+    renderNeteasePlaylists();
+    renderOnlineMusicLibrary(`正在打开《${playlist.name}》……`);
+    document.getElementById("musicSearchResults").classList.remove("hidden");
+    try {
+      const data = await musicRequest(`/api/music/netease/playlists/${encodeURIComponent(playlistId)}`);
+      musicOnlineSearchItems = Array.isArray(data.playlist?.songs) ? data.playlist.songs : [];
+      musicQueue = [...musicOnlineSearchItems];
+      renderOnlineMusicLibrary(musicOnlineSearchItems.length ? "" : "这个歌单暂时是空的。");
+    } catch (error) {
+      renderOnlineMusicLibrary(error.message || "这个歌单没有打开。");
+    }
+  }
+
+  async function searchOnlineMusic(query) {
+    const keyword = String(query || "").trim();
+    if (!keyword) {
+      renderOnlineMusicLibrary("输入歌名或歌手，去网易云找一找。");
+      return;
+    }
+    if (musicOnlineSearchBusy) return;
+    activeNeteasePlaylistId = "";
+    renderNeteasePlaylists();
+    musicOnlineSearchBusy = true;
+    renderOnlineMusicLibrary("正在网易云里找歌……");
+    try {
+      const data = await musicRequest(`/api/music/netease/search?q=${encodeURIComponent(keyword)}&limit=12`);
+      musicOnlineSearchItems = Array.isArray(data.songs) ? data.songs : [];
+      renderOnlineMusicLibrary(musicOnlineSearchItems.length ? "" : "没有找到这首歌，换个关键词试试。");
+    } catch (error) {
+      renderOnlineMusicLibrary(error.message || "网易云这次没有接上。");
+    } finally {
+      musicOnlineSearchBusy = false;
+    }
+  }
+
+  function updateMusicMediaSession(track) {
+    if (!("mediaSession" in navigator) || !window.MediaMetadata) return;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.name,
+      artist: track.artist || "音乐",
+      album: track.album || "Becoming 一起听",
+      artwork: musicArtworkObjectUrl ? [{ src: musicArtworkObjectUrl, type: track.artwork?.type || "image/jpeg" }] : [],
+    });
+  }
+
+  function musicArtworkColor(image) {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 32;
+      canvas.height = 32;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(image, 0, 0, 32, 32);
+      const pixels = context.getImageData(0, 0, 32, 32).data;
+      const buckets = new Map();
+      for (let index = 0; index < pixels.length; index += 16) {
+        if (pixels[index + 3] < 180) continue;
+        const red = pixels[index];
+        const green = pixels[index + 1];
+        const blue = pixels[index + 2];
+        const max = Math.max(red, green, blue);
+        const min = Math.min(red, green, blue);
+        const lightness = (max + min) / 510;
+        if (lightness < .09 || lightness > .94) continue;
+        const saturation = max === min ? 0 : (max - min) / (255 - Math.abs(max + min - 255));
+        const key = `${Math.round(red / 32)}:${Math.round(green / 32)}:${Math.round(blue / 32)}`;
+        const bucket = buckets.get(key) || { red: 0, green: 0, blue: 0, weight: 0 };
+        const weight = .35 + saturation * 1.65;
+        bucket.red += red * weight;
+        bucket.green += green * weight;
+        bucket.blue += blue * weight;
+        bucket.weight += weight;
+        buckets.set(key, bucket);
+      }
+      const winner = [...buckets.values()].sort((a, b) => b.weight - a.weight)[0];
+      if (!winner) return "";
+      return `rgb(${Math.round(winner.red / winner.weight)} ${Math.round(winner.green / winner.weight)} ${Math.round(winner.blue / winner.weight)})`;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function renderMusicArtwork(track) {
+    const image = document.getElementById("musicArtwork");
+    const sleeve = document.getElementById("musicRecordSleeve");
+    const header = document.getElementById("musicRoomHeader");
+    const stage = document.getElementById("musicNowPlaying");
+    const surfaces = [header, stage];
+    const localArtwork = track?.artwork instanceof Blob ? track.artwork : null;
+    const remoteArtwork = !localArtwork ? String(track?.artwork_url || "") : "";
+    const key = track ? `${track.id || track.name}:${localArtwork?.size || remoteArtwork}` : "";
+    if (key === musicArtworkTrackKey) return;
+    musicArtworkTrackKey = key;
+    const renderToken = ++musicArtworkRenderToken;
+    if (musicArtworkObjectUrl.startsWith("blob:")) URL.revokeObjectURL(musicArtworkObjectUrl);
+    musicArtworkObjectUrl = localArtwork ? URL.createObjectURL(localArtwork) : remoteArtwork;
+    surfaces.forEach(surface => surface.classList.toggle("has-music-artwork", Boolean(musicArtworkObjectUrl)));
+    sleeve.classList.toggle("has-music-artwork", Boolean(musicArtworkObjectUrl));
+    surfaces.forEach(surface => {
+      surface.style.removeProperty("--music-track-color");
+      surface.style.setProperty("--music-track-image", musicArtworkObjectUrl ? `url("${musicArtworkObjectUrl}")` : "none");
+    });
+    image.removeAttribute("src");
+    image.alt = "";
+    if (!musicArtworkObjectUrl) return;
+    image.onload = () => {
+      if (renderToken !== musicArtworkRenderToken) return;
+      const color = musicArtworkColor(image);
+      if (color) surfaces.forEach(surface => surface.style.setProperty("--music-track-color", color));
+    };
+    image.onerror = () => {
+      if (renderToken !== musicArtworkRenderToken) return;
+      surfaces.forEach(surface => surface.classList.remove("has-music-artwork"));
+      sleeve.classList.remove("has-music-artwork");
+      surfaces.forEach(surface => surface.style.setProperty("--music-track-image", "none"));
+      image.removeAttribute("src");
+    };
+    image.src = musicArtworkObjectUrl;
+    image.alt = `${track.name || "歌曲"}封面`;
+  }
+
+  async function enrichLocalMusicTrack(track, blob) {
+    if (track.metadata_scanned) return track;
+    const metadata = await readEmbeddedMusicMetadata(blob);
+    const enriched = {
+      ...track,
+      name: metadata.title || track.name,
+      artist: metadata.artist || track.artist,
+      album: metadata.album || track.album,
+      artwork: metadata.artwork || track.artwork || null,
+      lyrics: metadata.lyrics || track.lyrics || "",
+      has_lyrics: Boolean(metadata.lyrics || track.lyrics),
+      metadata_scanned: true,
+    };
+    await updateLocalMusicTrack(enriched);
+    musicLibrary = musicLibrary.map(item => item.id === enriched.id ? enriched : item);
+    musicQueue = musicQueue.map(item => item.id === enriched.id ? enriched : item);
+    return enriched;
+  }
+
+  function currentLocalMusicState() {
+    const audio = document.getElementById("musicAudio");
+    const duration = localMusicDuration(audio);
+    const position = Number(audio.currentTime);
+    return {
+      song_id: activeMusicTrack?.id || "",
+      song_name: activeMusicTrack?.name || "",
+      artist_name: activeMusicTrack?.artist || "",
+      album_name: activeMusicTrack?.album || "",
+      artwork_url: activeMusicTrack?.artwork_url || "",
+      duration_ms: Math.round(duration * 1000),
+      position_ms: Math.round((Number.isFinite(position) ? Math.max(0, position) : 0) * 1000),
+      playback_state: activeMusicTrack ? (audio.paused ? "paused" : "playing") : "stopped",
+    };
+  }
+
+  async function persistLocalMusicState() {
+    if (!activeMusicTrack || musicLoadingTrack) return;
+    const state = currentLocalMusicState();
+    musicRoom = { ...(musicRoom || {}), ...state };
+    try {
+      const data = await musicRequest("/api/music/room", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state),
+      });
+      musicRoom = data.room;
+    } catch (_) {}
+  }
+
+  async function loadLocalMusicTrack(trackId, { autoplay = true, announce = true, positionMs = 0 } = {}) {
+    let track = findMusicTrack(trackId);
+    if (!track) throw new Error("曲库里没有找到这首歌");
+    const isOnlineTrack = track.source === "netease" || String(track.id || "").startsWith("netease:");
+    const blob = isOnlineTrack ? null : await getLocalMusicBlob(track.id);
+    if (blob) track = await enrichLocalMusicTrack(track, blob);
+    if (!blob && !track.audio_url) throw new Error("这首歌的音频文件不见了");
+
+    const audio = document.getElementById("musicAudio");
+    const previousId = activeMusicTrack?.id || musicRoom?.song_id || "";
+    musicLoadingTrack = true;
+    audio.pause();
+    if (musicObjectUrl.startsWith("blob:")) URL.revokeObjectURL(musicObjectUrl);
+    musicObjectUrl = blob ? URL.createObjectURL(blob) : track.audio_url;
+    activeMusicTrack = { ...track, playback_unavailable: false };
+    renderMusicRoom();
+    try {
+      if (isOnlineTrack) {
+        await musicRequest(`/api/music/netease/audio/${encodeURIComponent(track.source_id)}/status`);
+      }
+      await new Promise((resolve, reject) => {
+        const loaded = () => { cleanup(); resolve(); };
+        const failed = () => {
+          const code = audio.error?.code;
+          const message = code === 2
+            ? "网易云音频网络没有接上"
+            : code === 3
+              ? "这首歌的音频没有解码成功"
+              : code === 4
+                ? "这首歌暂时没有可播放的音源"
+                : "这首歌没有放起来";
+          cleanup();
+          reject(new Error(message));
+        };
+        const cleanup = () => {
+          audio.removeEventListener("loadedmetadata", loaded);
+          audio.removeEventListener("error", failed);
+        };
+        audio.addEventListener("loadedmetadata", loaded);
+        audio.addEventListener("error", failed);
+        audio.src = musicObjectUrl;
+        audio.load();
+      });
+      const duration = localMusicDuration(audio, track);
+      if (positionMs > 0 && duration > 0) {
+        audio.currentTime = Math.min(positionMs / 1000, Math.max(0, duration - 0.25));
+      }
+    } catch (error) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      activeMusicTrack = { ...track, playback_unavailable: true };
+      musicRoom = {
+        ...(musicRoom || {}),
+        song_id: track.id,
+        song_name: track.name || "",
+        artist_name: track.artist || "",
+        album_name: track.album || "",
+        artwork_url: track.artwork_url || "",
+        duration_ms: Math.round(Number(track.duration || 0) * 1000),
+        position_ms: 0,
+        playback_state: "paused",
+      };
+      try {
+        const saved = await musicRequest("/api/music/room", {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            song_id: track.id,
+            song_name: track.name || "",
+            artist_name: track.artist || "",
+            album_name: track.album || "",
+            artwork_url: track.artwork_url || "",
+            duration_ms: Math.round(Number(track.duration || 0) * 1000),
+            position_ms: 0,
+            playback_state: "paused",
+          }),
+        });
+        musicRoom = saved.room;
+      } catch (_) {}
+      renderMusicRoom();
+      throw error;
+    } finally {
+      musicLoadingTrack = false;
+    }
+    renderMusicArtwork(track);
+    updateMusicMediaSession(track);
+    let autoplayBlocked = false;
+    if (autoplay) {
+      try {
+        await audio.play();
+      } catch (error) {
+        if (error?.name !== "NotAllowedError") throw error;
+        autoplayBlocked = true;
+      }
+    }
+    await persistLocalMusicState();
+    renderMusicRoom();
+
+    if (announce && (musicRoom?.participants || []).length) {
+      const reacted = await musicRequest("/api/music/room/react", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: previousId && previousId !== track.id ? "track_changed" : "track_started" }),
+      });
+      musicRoom = reacted.room;
+      renderMusicRoom();
+      await applyPendingMusicCommands();
+    }
+    return { track, autoplayBlocked };
+  }
+
+  async function importLocalMusic(files) {
+    const selected = [...files].filter(file => file.size > 0);
+    const artworkFiles = selected.filter(isMusicArtworkFile);
+    const lyricsFiles = selected.filter(isMusicLyricsFile);
+    const candidates = selected.filter(file => !isMusicArtworkFile(file) && !isMusicLyricsFile(file));
+    if (!candidates.length && !artworkFiles.length && !lyricsFiles.length) return;
+    if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+    const artworkByName = new Map(
+      artworkFiles.map(file => [localMusicImportKey(file.name), file]),
+    );
+    const lyricsByName = new Map(await Promise.all(
+      lyricsFiles.map(async file => [localMusicImportKey(file.name), await readMusicLyricsFile(file)]),
+    ));
+    let patchedArtwork = 0;
+    let patchedLyrics = 0;
+    if (artworkByName.size || lyricsByName.size) {
+      const localTracks = await listLocalMusicTracks();
+      for (const track of localTracks) {
+        const artwork = artworkByName.get(localMusicImportKey(track.filename || track.name));
+        const lyrics = lyricsByName.get(localMusicImportKey(track.filename || track.name));
+        if (!artwork && !lyrics) continue;
+        await updateLocalMusicTrack({
+          ...track,
+          ...(artwork ? { artwork, artwork_url: "" } : {}),
+          ...(lyrics ? { lyrics, has_lyrics: true } : {}),
+        });
+        if (artwork) patchedArtwork += 1;
+        if (lyrics) patchedLyrics += 1;
+      }
+    }
+    let imported = 0;
+    const importFailures = [];
+    for (const file of candidates) {
+      try {
+        const inspected = await inspectLocalAudio(file);
+        const filenameMetadata = localMusicFilenameMetadata(file.name);
+        const track = {
+          id: localMusicTrackId(file),
+          name: inspected.title || filenameMetadata.title || localMusicDisplayName(file.name),
+          artist: inspected.artist || filenameMetadata.artist || "本地音乐",
+          album: inspected.album || "",
+          artwork: inspected.artwork || artworkByName.get(localMusicImportKey(file.name)) || null,
+          lyrics: inspected.lyrics || lyricsByName.get(localMusicImportKey(file.name)) || "",
+          has_lyrics: Boolean(inspected.lyrics || lyricsByName.get(localMusicImportKey(file.name))),
+          metadata_scanned: true,
+          duration: inspected.duration,
+          size: file.size,
+          type: file.type || "audio/*",
+          filename: file.name,
+          added_at: Date.now() + imported,
+        };
+        await saveLocalMusicTrack(track, file);
+        imported += 1;
+      } catch (error) {
+        importFailures.push({ file, error });
+      }
+    }
+    musicQueue = [];
+    const syncStatus = await refreshLocalMusicLibrary();
+    document.getElementById("musicSearchResults").classList.remove("hidden");
+    if (!candidates.length) {
+      const patched = [];
+      if (patchedArtwork) patched.push(`${patchedArtwork} 首封面`);
+      if (patchedLyrics) patched.push(`${patchedLyrics} 首歌词`);
+      const unmatched = artworkFiles.length + lyricsFiles.length - patchedArtwork - patchedLyrics;
+      showToast(patched.length
+        ? `补好了 ${patched.join("、")}${unmatched > 0 ? `，${unmatched} 个文件没有找到同名歌曲` : ""}`
+        : "没有找到同名歌曲，封面或歌词名要和歌曲名一致");
+    } else if (importFailures.length) {
+      const firstName = importFailures[0].file?.name || "音频";
+      showToast(`收下 ${imported} 首，${firstName} 没有认出来`);
+    } else if (syncStatus.pendingCount) {
+      const reason = syncStatus.syncFailures[0]?.error?.message;
+      showToast(reason ? `已保存在电脑，云端同步失败：${reason}` : `收下 ${imported} 首，稍后继续同步`);
+    } else {
+      showToast(`收下并同步了 ${imported} 首歌`);
+    }
+  }
+
+  async function initializeMusicPlayer() {
+    if (musicLocalReady) return;
+    const audio = document.getElementById("musicAudio");
+    audio.addEventListener("timeupdate", () => {
+      if (!activeMusicTrack) return;
+      musicRoom = { ...(musicRoom || {}), ...currentLocalMusicState() };
+      renderMusicPlaybackState();
+    });
+    audio.addEventListener("play", () => {
+      if (musicLoadingTrack) return;
+      musicRoom = { ...(musicRoom || {}), ...currentLocalMusicState() };
+      renderMusicPlaybackState();
+      persistLocalMusicState();
+    });
+    audio.addEventListener("pause", () => {
+      if (musicLoadingTrack) return;
+      musicRoom = { ...(musicRoom || {}), ...currentLocalMusicState() };
+      renderMusicPlaybackState();
+      persistLocalMusicState();
+    });
+    audio.addEventListener("ended", () => {
+      const queue = musicQueue.length ? musicQueue : musicOnlineSearchItems;
+      if (queue.length > 1 && localMusicDuration(audio) > 0) {
+        runMusicAction("next").catch(() => persistLocalMusicState());
+        return;
+      }
+      audio.pause();
+      try { audio.currentTime = 0; } catch (_) {}
+      musicRoom = { ...(musicRoom || {}), ...currentLocalMusicState() };
+      renderMusicPlaybackState();
+      persistLocalMusicState();
+    });
+    if ("mediaSession" in navigator) {
+      for (const [action, handler] of [
+        ["play", () => runMusicAction("play")],
+        ["pause", () => runMusicAction("pause")],
+        ["previoustrack", () => runMusicAction("previous")],
+        ["nexttrack", () => runMusicAction("next")],
+      ]) {
+        try { navigator.mediaSession.setActionHandler(action, handler); } catch (_) {}
+      }
+    }
+    musicRoomSyncTimer = setInterval(() => {
+      if (activeNestPane === "music" && activeMusicTrack && !audio.paused) persistLocalMusicState();
+    }, 8000);
+    musicLocalReady = true;
+  }
+
+  function renderMusicPlaybackState() {
+    const audio = document.getElementById("musicAudio");
+    const hasTrack = Boolean(activeMusicTrack);
+    const canPlay = hasTrack && !activeMusicTrack.playback_unavailable;
+    const durationSeconds = hasTrack ? localMusicDuration(audio) : (musicRoom?.duration_ms || 0) / 1000;
+    const rawPosition = Number(audio.currentTime);
+    const positionSeconds = hasTrack
+      ? (Number.isFinite(rawPosition) ? Math.max(0, rawPosition) : 0)
+      : (musicRoom?.position_ms || 0) / 1000;
+    const progress = document.getElementById("musicProgress");
+    progress.value = durationSeconds ? Math.min(1000, positionSeconds / durationSeconds * 1000) : 0;
+    progress.disabled = !canPlay;
+    document.getElementById("musicCurrentTime").textContent = formatMusicTime(positionSeconds);
+    document.getElementById("musicDuration").textContent = formatMusicTime(durationSeconds);
+    const isPlaying = canPlay && !audio.paused;
+    document.getElementById("musicRecordSleeve").classList.toggle("is-playing", isPlaying);
+    document.querySelector("#musicPlayBtn .material-symbols-outlined").textContent = isPlaying ? "pause" : "play_arrow";
+    document.getElementById("musicPlayBtn").setAttribute("aria-label", isPlaying ? "暂停" : "播放");
+    document.getElementById("musicPreviousBtn").disabled = !canPlay;
+    document.getElementById("musicPlayBtn").disabled = !canPlay;
+    document.getElementById("musicNextBtn").disabled = !canPlay;
+  }
+
+  function renderMusicRoom() {
+    if (!musicRoom) return;
+    const avatarWrap = document.getElementById("musicAvatarPair");
+    const people = [
+      ...(musicRoom.participants || []),
+      { name: "User", avatar: userAvatar },
+    ];
+    const curImgs = avatarWrap.querySelectorAll("img");
+    const avatarChanged = curImgs.length !== people.length ||
+      [...curImgs].some((img, i) => img.getAttribute("src") !== people[i].avatar);
+    if (avatarChanged) {
+      avatarWrap.innerHTML = people.map(person =>
+        `<img class="music-room-avatar" src="${escapeReadingHtml(person.avatar)}" alt="${escapeReadingHtml(person.name)}">`
+      ).join("");
+    }
+    const elapsedMinutes = Math.floor((musicRoom.together_seconds || 0) / 60);
+    const hasCompanions = Boolean((musicRoom.participants || []).length);
+    document.getElementById("musicTogetherTime").textContent = elapsedMinutes
+      ? `${hasCompanions ? "一起" : "自己"}听了 ${elapsedMinutes} 分钟`
+      : (hasCompanions ? "刚刚坐下" : "一个人也很好");
+    document.getElementById("musicDistanceBtn").hidden = !hasCompanions;
+    document.getElementById("musicDistanceBtn").textContent = musicRoom.distance_km == null
+      ? "相距多远" : `相距 ${Number(musicRoom.distance_km).toLocaleString()} 公里`;
+
+    const shownTrack = activeMusicTrack || (musicRoom.song_id ? {
+      id: musicRoom.song_id,
+      name: musicRoom.song_name,
+      artist: musicRoom.artist_name,
+      album: musicRoom.album_name,
+      artwork_url: musicRoom.artwork_url,
+    } : null);
+    const hasTrack = Boolean(shownTrack);
+    document.getElementById("musicNowPlaying").classList.toggle("music-now-empty", !hasTrack);
+    renderMusicArtwork(shownTrack);
+    document.getElementById("musicTrackName").textContent = hasTrack
+      ? shownTrack.name : "房间还安安静静的";
+    document.getElementById("musicArtistName").textContent = hasTrack
+      ? shownTrack.artist || "音乐" : (hasCompanions ? "挑一首歌，再喊祂们坐过来" : "挑一首歌，自己听也很好");
+    renderMusicPlaybackState();
+    renderMusicMessages();
+  }
+
+  function renderMusicMessages() {
+    const wrap = document.getElementById("musicRoomMessages");
+    const messages = musicRoom?.messages || [];
+    const visibleMessages = messages.slice(-2);
+    const renderKey = JSON.stringify(visibleMessages.map(message => [
+      message.id,
+      message.author_id,
+      message.author_name,
+      message.avatar,
+      message.content,
+      message.details,
+    ]));
+    if (wrap.dataset.renderKey === renderKey && wrap.childElementCount) return;
+    wrap.dataset.renderKey = renderKey;
+    if (!messages.length) {
+      wrap.innerHTML = '<div class="reading-annotation-empty">同一副耳机里还没有人说话。</div>';
+      return;
+    }
+    wrap.innerHTML = visibleMessages.map(message => {
+      const isUser = message.author_id === "user";
+      const details = message.details || {};
+      const traces = Array.isArray(details.tools) && details.tools.length
+        ? details.tools
+        : (details.tool ? [{ name: details.tool, arguments: details.input, output: details.output }] : []);
+      const toolLabels = {
+        music_player_control: "播放器",
+        music_search: "搜歌",
+        music_play_track: "点歌",
+      };
+      const tool = traces.map(trace => `
+        <details class="music-tool-detail">
+          <summary>${escapeReadingHtml(toolLabels[trace.name] || trace.name || "音乐工具")}</summary>
+          <pre>${escapeReadingHtml(JSON.stringify({ input: trace.arguments || {}, output: trace.output, status: trace.status }, null, 2))}</pre>
+        </details>`).join("");
+      const avatarImg = `<img class="music-message-avatar" src="${escapeReadingHtml(message.avatar)}" alt="">`;
+      return `
+        <div class="music-room-message${isUser ? " from-user" : ""}">
+          ${isUser ? "" : avatarImg}
+          <div class="music-message-body">
+            ${isUser ? "" : `<strong>${escapeReadingHtml(message.author_name)}</strong>`}
+            <p class="music-message-bubble">${escapeReadingHtml(message.content)}</p>${tool}
+          </div>
+          ${isUser ? avatarImg : ""}
+        </div>`;
+    }).join("");
+  }
+
+  async function loadMusicRoom({ quiet = false } = {}) {
+    try {
+      const data = await musicRequest("/api/music/room");
+      musicRoom = data.room;
+      await initializeMusicPlayer();
+      if (!musicNeteaseStatus) {
+        try { musicNeteaseStatus = await musicRequest("/api/music/netease/status"); }
+        catch (error) {
+          musicNeteaseStatus = { available: false, account_configured: false, account_valid: false, error: error.message };
+        }
+        renderNeteaseAccount();
+        renderNeteasePlaylists();
+        await loadNeteasePlaylists();
+      }
+      if (!activeMusicTrack && musicRoom.song_id) {
+        let savedTrack = findMusicTrack(musicRoom.song_id);
+        if (!savedTrack && String(musicRoom.song_id).startsWith("netease:")) {
+          const sourceId = String(musicRoom.song_id).split(":", 2)[1];
+          try {
+            const onlineData = await musicRequest(`/api/music/netease/tracks/${encodeURIComponent(sourceId)}`);
+            savedTrack = onlineData.track;
+            if (savedTrack) {
+              musicOnlineSearchItems = [savedTrack, ...musicOnlineSearchItems.filter(track => track.id !== savedTrack.id)];
+              musicQueue = [savedTrack];
+            }
+          } catch (error) {
+            if (!quiet) showToast(error.message || "在线歌曲暂时没有接上");
+          }
+        }
+        if (savedTrack) {
+          await loadLocalMusicTrack(savedTrack.id, {
+            autoplay: false,
+            announce: false,
+            positionMs: musicRoom.position_ms || 0,
+          });
+        } else if (!String(musicRoom.song_id).startsWith("netease:")) {
+          const reset = await musicRequest("/api/music/room", {
+            method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reset: true }),
+          });
+          musicRoom = reset.room;
+        }
+      }
+      renderMusicRoom();
+      await applyPendingMusicCommands();
+      if (!musicRoomPollTimer) {
+        musicRoomPollTimer = setInterval(() => {
+          if (activeNestPane === "music" && document.getElementById("momentsView").classList.contains("active")) {
+            loadMusicRoom({ quiet: true });
+          }
+        }, 5000);
+      }
+    } catch (error) {
+      if (!quiet) showToast(error.message);
+    }
+  }
+
+  document.getElementById("musicLibraryPanel").addEventListener("toggle", event => {
+    if (!event.target.open) return;
+    renderNeteaseAccount();
+    renderNeteasePlaylists();
+    loadNeteasePlaylists();
+  });
+
+  document.getElementById("musicPlaylistShelf").addEventListener("click", event => {
+    const button = event.target.closest("[data-playlist-id]");
+    if (button) openNeteasePlaylist(button.dataset.playlistId);
+  });
+
+  document.getElementById("musicLibraryCollapseBtn").addEventListener("click", () => {
+    document.getElementById("musicSearchResults").classList.add("hidden");
+    document.getElementById("musicSearchInput").blur();
+    document.getElementById("musicLibraryPanel").open = false;
+  });
+
+  document.getElementById("musicSearchForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    const results = document.getElementById("musicSearchResults");
+    const query = document.getElementById("musicSearchInput").value;
+    await searchOnlineMusic(query);
+    results.classList.remove("hidden");
+  });
+
+  document.getElementById("musicSearchInput").addEventListener("focus", () => {
+    renderOnlineMusicLibrary();
+    document.getElementById("musicSearchResults").classList.remove("hidden");
+  });
+
+  document.getElementById("musicSearchInput").addEventListener("input", () => {
+    document.getElementById("musicSearchResults").classList.remove("hidden");
+  });
+
+  document.getElementById("musicSearchResults").addEventListener("click", async event => {
+    const row = event.target.closest(".music-search-row");
+    if (!row) return;
+    let track = findMusicTrack(row.dataset.trackId);
+    if (!track) return;
+    try {
+      const prepared = await musicRequest(`/api/music/netease/tracks/${encodeURIComponent(track.source_id)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(track),
+      });
+      track = prepared.track;
+      musicOnlineSearchItems = musicOnlineSearchItems.map(item => item.id === track.id ? track : item);
+      musicQueue = [...musicOnlineSearchItems];
+      document.getElementById("musicSearchResults").classList.add("hidden");
+      const playback = await loadLocalMusicTrack(track.id);
+      if (playback.autoplayBlocked) showToast("歌已经放进播放器，轻点一下就开唱");
+    } catch (error) { showToast(error.message || "这首歌没有放起来"); }
+  });
+
+  async function runMusicAction(action, { announce = true } = {}) {
+    const audio = document.getElementById("musicAudio");
+    if (!activeMusicTrack) throw new Error("曲库里还没有正在播放的歌");
+    if (action === "pause") audio.pause();
+    else if (action === "play") await audio.play();
+    else if (action === "previous" || action === "next") {
+      const queue = musicQueue.length ? musicQueue : musicOnlineSearchItems;
+      if (!queue.length) throw new Error("当前曲库还是空的");
+      let index = queue.findIndex(track => track.id === activeMusicTrack.id);
+      if (index < 0) index = 0;
+      index = action === "previous"
+        ? (index - 1 + queue.length) % queue.length
+        : (index + 1) % queue.length;
+      await loadLocalMusicTrack(queue[index].id, { announce });
+      return;
+    }
+    await persistLocalMusicState();
+    renderMusicRoom();
+  }
+
+  document.getElementById("musicPreviousBtn").addEventListener("click", () => runMusicAction("previous").catch(error => showToast(error.message)));
+  document.getElementById("musicNextBtn").addEventListener("click", () => runMusicAction("next").catch(error => showToast(error.message)));
+  document.getElementById("musicPlayBtn").addEventListener("click", () => {
+    const action = document.getElementById("musicAudio").paused ? "play" : "pause";
+    runMusicAction(action).catch(error => showToast(error.message));
+  });
+  document.getElementById("musicProgress").addEventListener("change", async event => {
+    const audio = document.getElementById("musicAudio");
+    const duration = localMusicDuration(audio);
+    if (!activeMusicTrack || !duration) return;
+    try {
+      audio.currentTime = duration * Number(event.target.value) / 1000;
+      await persistLocalMusicState();
+      renderMusicPlaybackState();
+    } catch (error) { showToast(error.message || "没有跳到这里"); }
+  });
+
+  async function applyPendingMusicCommands() {
+    for (const command of musicRoom?.pending_commands || []) {
+      if (handledMusicCommands.has(command.id)) continue;
+      handledMusicCommands.add(command.id);
+      let status = "applied";
+      let output = "播放器已执行";
+      try {
+        if (command.action === "play_online") {
+          let track = command.arguments?.track;
+          if (!track || track.source !== "netease" || !track.id || !track.audio_url) {
+            throw new Error("在线点歌资料不完整");
+          }
+          musicOnlineSearchItems = [track, ...musicOnlineSearchItems.filter(item => item.id !== track.id)];
+          musicQueue = [...musicOnlineSearchItems];
+          const playback = await loadLocalMusicTrack(track.id, { announce: false });
+          output = playback.autoplayBlocked
+            ? `已选好《${track.name}》，需要你轻点播放`
+            : `已开始播放《${track.name}》`;
+        } else {
+          await runMusicAction(command.action, { announce: false });
+        }
+      }
+      catch (error) { status = "failed"; output = error.message || "播放器执行失败"; }
+      try {
+        await musicRequest(`/api/music/room/commands/${command.id}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status, output }),
+        });
+      } catch (_) {}
+    }
+  }
+
+  document.getElementById("musicParticipantsBtn").addEventListener("click", () => {
+    openCharPicker("music_participants", null, (musicRoom?.participants || []).map(person => person.id));
+  });
+
+  async function saveMusicParticipants(characterIds) {
+    try {
+      const data = await musicRequest("/api/music/room/participants", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ character_ids: characterIds }),
+      });
+      musicRoom = data.room || { ...(musicRoom || {}), participants: data.participants };
+      renderMusicRoom();
+      if (!characterIds.length) {
+        showToast("那就自己安安静静听");
+        return;
+      }
+      const reacted = await musicRequest("/api/music/room/react", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type: "invite" }),
+      });
+      musicRoom = reacted.room;
+      renderMusicRoom();
+      await applyPendingMusicCommands();
+    } catch (error) { showToast(error.message); }
+  }
+
+  document.getElementById("musicDistanceBtn").addEventListener("click", async () => {
+    const current = musicRoom?.distance_km == null ? "" : String(musicRoom.distance_km);
+    const raw = prompt("相距多少公里？留空就隐藏", current);
+    if (raw === null) return;
+    try {
+      const body = { ...musicRoom, distance_km: raw.trim() === "" ? null : raw.trim() };
+      delete body.messages;
+      delete body.participants;
+      delete body.pending_commands;
+      const data = await musicRequest("/api/music/room", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      musicRoom = data.room;
+      renderMusicRoom();
+    } catch (error) { showToast(error.message); }
+  });
+
+  document.getElementById("musicMessageForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    const input = document.getElementById("musicMessageInput");
+    const content = input.value.trim();
+    if (!content) return;
+    input.disabled = true;
+    try {
+      const data = await musicRequest("/api/music/room/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      input.value = "";
+      musicRoom = data.room;
+      renderMusicRoom();
+      await applyPendingMusicCommands();
+    } catch (error) { showToast(error.message); }
+    finally { input.disabled = false; input.focus(); }
+  });
+
+  document.getElementById("musicMessageInput").addEventListener("focus", () => {
+    setTimeout(() => {
+      window.scrollTo(0, 0);
+      const musicScroll = document.getElementById("musicRoomScroll");
+      musicScroll.scrollTop = musicScroll.scrollHeight;
+      document.getElementById("musicMessageInput").scrollIntoView({ block: "nearest" });
+    }, 350);
   });
 
   function renderReadingBooks() {
@@ -4162,6 +6284,9 @@
         `<img src="${escapeReadingHtml(person.avatar)}" alt="${escapeReadingHtml(person.name)}">`
       ).join("");
       row.innerHTML = `
+        <button type="button" class="reading-book-delete" aria-label="删除 ${escapeReadingHtml(book.title)}" title="删除这本书">
+          <span class="material-symbols-outlined">delete</span><span>删除</span>
+        </button>
         <button type="button" class="reading-book-open" aria-label="打开 ${escapeReadingHtml(book.title)}">
           <div class="reading-book-main">
             <div class="reading-book-title">${escapeReadingHtml(book.title)}</div>
@@ -4170,12 +6295,10 @@
           <div class="reading-book-people">${people}</div>
           <div class="reading-book-progress" aria-label="已读 ${book.progress.percent}%"><span style="width:${book.progress.percent}%"></span></div>
         </button>
-        <button type="button" class="reading-book-delete" aria-label="删除 ${escapeReadingHtml(book.title)}" title="删除这本书">
-          <span class="material-symbols-outlined">delete</span>
-        </button>
       `;
       row.querySelector(".reading-book-open").addEventListener("click", () => openReadingBook(book.id));
       row.querySelector(".reading-book-delete").addEventListener("click", () => {
+        setSwipeRevealOpen(row, false);
         showConfirmDialog(`把《${book.title}》和它的划线批注一起移出书架？`, async () => {
           try {
             await readingRequest(`/api/reading/books/${book.id}`, { method: "DELETE" });
@@ -4185,6 +6308,7 @@
           } catch (error) { showToast(error.message); }
         });
       });
+      bindSwipeReveal(row, ".reading-book-open", ".reading-book-delete");
       list.appendChild(row);
     });
   }
@@ -4718,7 +6842,8 @@
     item.addEventListener("click", () => {
       if (item.dataset.view === "momentsView") {
         if (activeNestPane === "moments") loadMoments();
-        else loadReadingBooks();
+        else if (activeNestPane === "reading") loadReadingBooks();
+        else loadMusicRoom();
         syncMomentsFab();
       } else {
         momentsFab.classList.add("hidden");
@@ -4728,6 +6853,7 @@
 
   // ── 页面加载：检查登录态，再初始化 ──
   document.addEventListener("DOMContentLoaded", async () => {
+    hydrateSecondaryViewsFromCache();
     await loadSettings();
     await loadAppearance();
     await loadGroupConfig();
@@ -4749,3 +6875,4 @@
     initStickers();      // 拉表情包列表，供猫爪菜单选择面板使用
     startSplashDismiss(); // 已登录时正常2s后淡出；未登录时splash已被showLoginOverlay移除
   });
+  window.addEventListener("pagehide", cacheGroupHistorySnapshot);

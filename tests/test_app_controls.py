@@ -2,7 +2,11 @@ import io
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
+
+from PIL import Image
 
 from memory_backend import MemoryBackend
 
@@ -42,6 +46,7 @@ class AppControlsTests(unittest.TestCase):
         app_module.LIMITS.clear()
         app_module.LIMITS.update(self.original_limits)
         app_module._write_setting(app_module.THEME_SETTING_KEY, app_module.DEFAULT_THEME_ID)
+        app_module._write_setting(app_module.WEATHER_EFFECT_SETTING_KEY, "off")
 
     def test_model_and_limits_are_editable(self):
         response = self.client.post("/api/character-config/char2", json={
@@ -78,6 +83,48 @@ class AppControlsTests(unittest.TestCase):
             response = unauthenticated.post("/api/login", json={"password": ""})
         self.assertEqual(response.status_code, 503)
 
+    def test_public_sleep_nudge_stays_closed_without_a_configured_password(self):
+        unauthenticated = app_module.app.test_client()
+        with patch.object(app_module, "SLEEP_NUDGE_ENABLED", True), patch.object(
+            app_module, "APP_PASSWORD", ""
+        ):
+            response = unauthenticated.post(
+                "/api/sleep/nudge",
+                json={"password": "", "character_id": "char1"},
+            )
+        self.assertEqual(response.status_code, 401)
+
+    def test_public_sleep_nudge_is_disabled_by_default(self):
+        unauthenticated = app_module.app.test_client()
+        with patch.object(app_module, "SLEEP_NUDGE_ENABLED", False):
+            response = unauthenticated.post(
+                "/api/sleep/nudge",
+                json={"password": "test-password", "character_id": "char1"},
+            )
+        self.assertEqual(response.status_code, 404)
+
+    def test_sleep_nudge_cors_does_not_open_other_apis(self):
+        unauthenticated = app_module.app.test_client()
+        origin = "https://controller.example"
+        with patch.object(app_module, "SLEEP_NUDGE_ENABLED", True), patch.object(
+            app_module, "CORS_ALLOW_ORIGINS", {origin}
+        ):
+            nudge = unauthenticated.open(
+                "/api/sleep/nudge",
+                method="OPTIONS",
+                headers={"Origin": origin},
+            )
+            chat = unauthenticated.open(
+                "/api/chat",
+                method="OPTIONS",
+                headers={"Origin": origin},
+            )
+
+        self.assertIn(nudge.status_code, (200, 204))
+        self.assertEqual(nudge.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertEqual(chat.status_code, 401)
+        self.assertNotIn("Access-Control-Allow-Origin", chat.headers)
+
     def test_public_character_ids_are_neutral_placeholders(self):
         self.assertEqual(list(app_module.CHARACTERS), [
             "char1", "char2", "char3", "char4", "char5", "char6",
@@ -92,6 +139,7 @@ class AppControlsTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload["push"]["configured"])
         self.assertEqual(payload["music"]["extension_point"], "custom_mcp")
+        self.assertTrue(payload["music"]["web_room_built_in"])
         self.assertTrue(payload["phone"]["read_only"])
         self.assertIn("mobile_companion", payload["voice"]["extension_points"])
         self.assertFalse(payload["voice"]["built_in"])
@@ -224,8 +272,8 @@ class AppControlsTests(unittest.TestCase):
         self.assertEqual(selected["colors"]["ai_bubble"], "#C6D8CF")
         self.assertEqual(selected["colors"]["dusky"], "#75805F")
         self.assertEqual(selected["colors"]["chrome"], "#75805F")
-        self.assertEqual(appearance["chat_background"]["default_url"], "/static/theme_matcha.png")
-        self.assertEqual(appearance["chat_background"]["url"], "/static/theme_matcha.png")
+        self.assertEqual(appearance["chat_background"]["default_url"], "/static/theme_matcha.jpg")
+        self.assertEqual(appearance["chat_background"]["url"], "/static/theme_matcha.jpg")
         self.assertEqual(
             [theme["name"] for theme in appearance["themes"]],
             ["恋人", "抹茶", "雾港", "丁香"],
@@ -234,6 +282,447 @@ class AppControlsTests(unittest.TestCase):
 
         invalid = self.client.post("/api/appearance", json={"theme": "unknown"})
         self.assertEqual(invalid.status_code, 400)
+
+    def test_appearance_weather_effect_persists(self):
+        for effect in ("rain", "snow", "leaves", "off"):
+            response = self.client.post("/api/appearance", json={"weather_effect": effect})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["weather_effect"], effect)
+            self.assertEqual(self.client.get("/api/appearance").get_json()["weather_effect"], effect)
+
+        invalid = self.client.post("/api/appearance", json={"weather_effect": "storm"})
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_music_room_persists_members_track_and_distance(self):
+        response = self.client.put("/api/music/room/participants", json={
+            "character_ids": ["char1", "char6"],
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in response.get_json()["participants"]],
+            ["char1", "char6"],
+        )
+        response = self.client.put("/api/music/room", json={
+            "song_id": "local:test-song-1",
+            "song_name": "测试曲",
+            "artist_name": "测试歌手",
+            "album_name": "测试专辑",
+            "artwork_url": "https://example.com/cover.jpg",
+            "duration_ms": 180000,
+            "position_ms": 12000,
+            "playback_state": "playing",
+            "distance_km": 952.7,
+        })
+        self.assertEqual(response.status_code, 200)
+        room = response.get_json()["room"]
+        self.assertEqual(room["song_id"], "local:test-song-1")
+        self.assertEqual(room["position_ms"], 12000)
+        self.assertEqual(room["distance_km"], 952.7)
+        self.assertIsNotNone(room["started_at"])
+
+    def test_music_room_allows_listening_alone(self):
+        response = self.client.put("/api/music/room/participants", json={
+            "character_ids": [],
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["participants"], [])
+
+        response = self.client.post("/api/music/room/messages", json={"content": "自己听一会儿。"})
+        self.assertEqual(response.status_code, 200)
+        room = response.get_json()["room"]
+        self.assertEqual(room["participants"], [])
+        self.assertEqual(room["messages"][-1]["author_id"], "user")
+        self.assertEqual(room["messages"][-1]["content"], "自己听一会儿。")
+
+    def test_music_room_clears_previous_conversation_when_participants_change(self):
+        self.client.put("/api/music/room/participants", json={
+            "character_ids": ["char1"],
+        })
+        with patch.object(
+            app_module,
+            "ask_music_companion",
+            return_value=("我在。", None, {}),
+        ):
+            self.client.post("/api/music/room/messages", json={"content": "一起听。"})
+
+        changed = self.client.put("/api/music/room/participants", json={
+            "character_ids": [],
+        })
+        self.assertEqual(changed.status_code, 200)
+        room = changed.get_json()["room"]
+        self.assertEqual(room["participants"], [])
+        self.assertEqual(room["messages"], [])
+        self.assertEqual(room["pending_commands"], [])
+
+    def test_music_library_upload_stream_and_delete(self):
+        track_id = "local:test-synced-song"
+        response = self.client.post(
+            "/api/music/library",
+            data={
+                "track_id": track_id,
+                "name": "同步测试曲",
+                "artist": "测试歌手",
+                "album": "测试专辑",
+                "duration": "61.5",
+                "lyrics": "[00:10.00]第一句\n[00:20.00]第二句",
+                "audio": (io.BytesIO(b"ID3" + b"a" * 64), "sync-test.mp3", "audio/mpeg"),
+                "artwork": (io.BytesIO(b"fake-cover"), "cover.jpg", "image/jpeg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 201)
+        track = response.get_json()["track"]
+        self.assertEqual(track["id"], track_id)
+        self.assertEqual(track["name"], "同步测试曲")
+        self.assertTrue(track["audio_url"])
+        self.assertTrue(track["artwork_url"])
+        self.assertTrue(track["has_lyrics"])
+        conn = app_module.sqlite3.connect(app_module.DB_PATH)
+        stored = app_module._music_library_row(conn, track_id)
+        conn.close()
+        self.assertIn("第二句", stored[10])
+
+        tracks = self.client.get("/api/music/library").get_json()["tracks"]
+        self.assertIn(track_id, [item["id"] for item in tracks])
+        streamed = self.client.get(track["audio_url"], headers={"Range": "bytes=0-2"})
+        self.assertEqual(streamed.status_code, 206)
+        self.assertEqual(streamed.data, b"ID3")
+        streamed.close()
+        artwork = self.client.get(track["artwork_url"])
+        self.assertEqual(artwork.data, b"fake-cover")
+        artwork.close()
+
+        self.assertEqual(self.client.delete(f"/api/music/library/{track_id}").status_code, 200)
+        self.assertEqual(self.client.get(track["audio_url"]).status_code, 404)
+
+    def test_music_lyrics_context_uses_current_lrc_window(self):
+        lyrics = "\n".join([
+            "[00:01.00]开头",
+            "[00:10.00]第一句",
+            "[00:20.00]第二句",
+            "[00:30.00]第三句",
+            "[00:40.00]第四句",
+            "[01:30.00]很远以后",
+        ])
+        context = app_module._music_lyrics_context(lyrics, 21)
+        self.assertIn("当前进度附近歌词", context)
+        self.assertIn("[0:20] 第二句", context)
+        self.assertIn("[0:30] 第三句", context)
+        self.assertNotIn("很远以后", context)
+
+    def test_music_lyrics_context_refuses_to_invent_missing_lyrics(self):
+        context = app_module._music_lyrics_context("", 90)
+        self.assertIn("未提供", context)
+        self.assertIn("没有音频输入", context)
+
+    def test_music_library_is_uncached_and_existing_track_can_be_repaired(self):
+        track_id = "local:test-repair-song"
+        first = self.client.post(
+            "/api/music/library",
+            data={
+                "track_id": track_id,
+                "name": "旧名字",
+                "artist": "旧歌手",
+                "audio": (io.BytesIO(b"ID3-old-audio"), "repair.mp3", "audio/mpeg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(first.status_code, 201)
+        listing = self.client.get("/api/music/library")
+        self.assertIn("no-store", listing.headers.get("Cache-Control", ""))
+
+        updated = self.client.post(
+            "/api/music/library",
+            data={
+                "track_id": track_id,
+                "name": "新名字",
+                "artist": "新歌手",
+                "audio": (io.BytesIO(b"ID3-unused"), "repair.mp3", "audio/mpeg"),
+                "artwork": (io.BytesIO(b"new-cover"), "cover.jpg", "image/jpeg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertTrue(updated.get_json()["existing"])
+        track = updated.get_json()["track"]
+        self.assertEqual(track["name"], "新名字")
+        self.assertTrue(track["artwork_url"])
+        artwork = self.client.get(track["artwork_url"])
+        self.assertEqual(artwork.data, b"new-cover")
+        artwork.close()
+
+        conn = app_module.sqlite3.connect(app_module.DB_PATH)
+        row = app_module._music_library_row(conn, track_id)
+        conn.close()
+        os.remove(app_module._music_storage_path(row[7]))
+        repaired = self.client.post(
+            "/api/music/library",
+            data={
+                "track_id": track_id,
+                "name": "修复完成",
+                "artist": "新歌手",
+                "audio": (io.BytesIO(b"ID3-repaired-audio"), "repair.mp3", "audio/mpeg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(repaired.status_code, 201)
+        repaired_track = repaired.get_json()["track"]
+        streamed = self.client.get(repaired_track["audio_url"])
+        self.assertEqual(streamed.data, b"ID3-repaired-audio")
+        streamed.close()
+        self.client.delete(f"/api/music/library/{track_id}")
+
+    def test_music_library_normalizes_mislabeled_tiff_artwork(self):
+        track_id = "local:test-tiff-cover"
+        tiff = io.BytesIO()
+        Image.new("RGB", (8, 6), (117, 128, 95)).save(tiff, format="TIFF")
+        tiff.seek(0)
+        response = self.client.post(
+            "/api/music/library",
+            data={
+                "track_id": track_id,
+                "name": "伪装封面测试曲",
+                "audio": (io.BytesIO(b"ID3-tiff-cover"), "tiff-cover.mp3", "audio/mpeg"),
+                "artwork": (tiff, "cover.jpg", "image/jpeg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 201)
+        track = response.get_json()["track"]
+        artwork = self.client.get(track["artwork_url"])
+        self.assertEqual(artwork.mimetype, "image/png")
+        self.assertTrue(artwork.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        artwork.close()
+        self.client.delete(f"/api/music/library/{track_id}")
+
+    def test_music_companion_control_is_queued_and_acknowledged(self):
+        self.client.put("/api/music/room/participants", json={
+            "character_ids": ["char1"],
+        })
+        with patch.object(
+            app_module,
+            "ask_music_companion",
+            return_value=(
+                "这首停一下。",
+                "pause",
+                {
+                    "tool": "music_player_control",
+                    "input": {"action": "pause"},
+                    "output": {"status": "queued", "message": "已交给房间播放器"},
+                },
+            ),
+        ):
+            response = self.client.post("/api/music/room/messages", json={"content": "等一下"})
+        self.assertEqual(response.status_code, 200)
+        room = response.get_json()["room"]
+        self.assertEqual(len(room["pending_commands"]), 1)
+        command = room["pending_commands"][0]
+        companion = room["messages"][-1]
+        self.assertEqual(companion["details"]["tool"], "music_player_control")
+        self.assertEqual(companion["details"]["output"]["command_id"], command["id"])
+
+        response = self.client.patch(
+            f"/api/music/room/commands/{command['id']}",
+            json={"status": "applied", "output": "播放器已暂停"},
+        )
+        self.assertEqual(response.status_code, 200)
+        refreshed = self.client.get("/api/music/room").get_json()["room"]
+        updated = next(item for item in refreshed["messages"] if item["id"] == companion["id"])
+        self.assertEqual(updated["details"]["output"]["status"], "applied")
+        self.assertEqual(updated["details"]["output"]["message"], "播放器已暂停")
+
+    def test_music_companion_reply_is_limited_to_ninety_characters(self):
+        self.client.put("/api/music/room/participants", json={
+            "character_ids": ["char1"],
+        })
+        long_reply = "甲" * 52 + "。" + "乙" * 100
+        with patch.object(
+            app_module,
+            "ask_music_companion",
+            return_value=(long_reply, None, {}),
+        ):
+            response = self.client.post("/api/music/room/messages", json={"content": "说短一点。"})
+        self.assertEqual(response.status_code, 200)
+        reply = response.get_json()["room"]["messages"][-1]["content"]
+        self.assertLessEqual(len(reply), 90)
+        self.assertTrue(reply.endswith("。"))
+
+    def test_music_room_uses_netease_as_its_only_visible_source(self):
+        response = self.client.get("/api/music/room")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["configured"])
+        self.assertEqual(response.get_json()["source"], "netease")
+
+    def test_netease_status_validates_the_configured_account(self):
+        profile = {
+            "user_id": "13579", "nickname": "User的云村",
+            "avatar_url": "https://example.com/avatar.jpg",
+        }
+        with patch.object(app_module, "NETEASE_MUSIC_U", "secret-cookie"), patch.object(
+            app_module, "_netease_account_profile", return_value=profile
+        ):
+            response = self.client.get("/api/music/netease/status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["account_valid"])
+        self.assertEqual(payload["profile"]["nickname"], "User的云村")
+        self.assertNotIn("secret-cookie", response.get_data(as_text=True))
+
+    def test_netease_personal_playlists_and_tracks_are_returned(self):
+        profile = {"user_id": "13579", "nickname": "User", "avatar_url": ""}
+        playlists = [{
+            "id": "24680", "name": "想一起听", "cover_url": "",
+            "track_count": 2, "creator_name": "User", "subscribed": False,
+        }]
+        playlist = {
+            "id": "24680", "name": "想一起听", "cover_url": "",
+            "songs": [{
+                "id": "netease:97531", "source": "netease", "source_id": "97531",
+                "name": "恋爱告急", "artist": "鞠婧祎", "album": "专辑",
+                "duration": 253, "artwork_url": "", "audio_url": "/api/music/netease/audio/97531",
+            }],
+        }
+        with patch.object(app_module, "_netease_account_profile", return_value=profile), patch.object(
+            app_module, "_netease_user_playlists", return_value=playlists
+        ), patch.object(app_module, "_netease_playlist_songs", return_value=playlist):
+            response = self.client.get("/api/music/netease/playlists")
+            tracks_response = self.client.get("/api/music/netease/playlists/24680")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["playlists"][0]["name"], "想一起听")
+        self.assertEqual(tracks_response.status_code, 200)
+        self.assertEqual(tracks_response.get_json()["playlist"]["songs"][0]["source_id"], "97531")
+
+    def test_netease_audio_is_proxied_with_range_support(self):
+        upstream = unittest.mock.Mock()
+        upstream.status_code = 206
+        upstream.headers = {
+            "Content-Type": "audio/mpeg",
+            "Content-Length": "4",
+            "Content-Range": "bytes 0-3/100",
+            "Accept-Ranges": "bytes",
+        }
+        upstream.iter_content.return_value = [b"test"]
+        with patch.object(
+            app_module, "_netease_resolve_audio_url",
+            return_value="https://music.126.net/test.mp3",
+        ), patch.object(app_module.requests, "get", return_value=upstream) as get_audio:
+            response = self.client.get(
+                "/api/music/netease/audio/97531",
+                headers={"Range": "bytes=0-3"},
+            )
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.data, b"test")
+        self.assertEqual(response.headers["Content-Range"], "bytes 0-3/100")
+        self.assertEqual(get_audio.call_args.kwargs["headers"]["Range"], "bytes=0-3")
+        self.assertNotIn("Cookie", get_audio.call_args.kwargs["headers"])
+        upstream.close.assert_called_once()
+
+    def test_netease_audio_status_checks_a_small_range(self):
+        upstream = unittest.mock.Mock()
+        upstream.status_code = 206
+        upstream.headers = {"Content-Type": "audio/mpeg"}
+        with patch.object(
+            app_module, "_netease_resolve_audio_url",
+            return_value="https://music.126.net/test.mp3",
+        ), patch.object(app_module.requests, "get", return_value=upstream) as get_audio:
+            response = self.client.get("/api/music/netease/audio/97531/status")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["playable"])
+        self.assertEqual(get_audio.call_args.kwargs["headers"]["Range"], "bytes=0-1")
+        upstream.close.assert_called_once()
+
+    def test_netease_audio_status_preserves_the_provider_error(self):
+        with patch.object(
+            app_module, "_netease_resolve_audio_url",
+            side_effect=app_module.NeteaseMusicError("账号没有拿到这首歌的播放权限"),
+        ):
+            response = self.client.get("/api/music/netease/audio/97531/status")
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(response.get_json()["playable"])
+        self.assertIn("播放权限", response.get_json()["error"])
+
+    def test_netease_search_returns_online_tracks_without_exposing_cookie(self):
+        song = {
+            "id": "netease:12345", "source": "netease", "source_id": "12345",
+            "name": "在线测试曲", "artist": "测试歌手", "album": "测试专辑",
+            "duration": 180, "artwork_url": "https://example.com/cover.jpg",
+            "audio_url": "/api/music/netease/audio/12345", "has_lyrics": False,
+            "synced": False,
+        }
+        with patch.object(app_module, "_netease_search_songs", return_value=[song]):
+            response = self.client.get("/api/music/netease/search?q=在线测试")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["songs"][0]["source_id"], "12345")
+        self.assertNotIn("MUSIC_U", response.get_data(as_text=True))
+
+    def test_music_tools_search_then_choose_only_a_returned_song(self):
+        candidate = {
+            "id": "netease:24680", "source": "netease", "source_id": "24680",
+            "name": "祂挑的歌", "artist": "歌手", "album": "专辑", "duration": 200,
+            "artwork_url": "", "audio_url": "/api/music/netease/audio/24680",
+        }
+        prepared = {**candidate, "has_lyrics": True, "synced": False}
+        state = {"action": None, "action_input": {}, "search_results": {}, "traces": []}
+        with patch.object(app_module, "_netease_search_songs", return_value=[candidate]), patch.object(
+            app_module, "_prepare_netease_track", return_value=prepared
+        ):
+            search_output = app_module._execute_music_tool("music_search", {"query": "祂挑的歌"}, state)
+            rejected = app_module._execute_music_tool("music_play_track", {"source_id": "99999"}, state)
+            selected = app_module._execute_music_tool("music_play_track", {"source_id": "24680"}, state)
+        self.assertIn("24680", search_output)
+        self.assertIn("不在本轮搜索结果", rejected)
+        self.assertIn("祂挑的歌", selected)
+        self.assertEqual(state["action"], "play_online")
+        self.assertEqual(state["action_input"]["track"]["source_id"], "24680")
+
+    def test_music_online_command_carries_track_to_the_browser(self):
+        self.client.put("/api/music/room/participants", json={"character_ids": []})
+        self.client.put("/api/music/room/participants", json={"character_ids": ["char1"]})
+        track = {
+            "id": "netease:13579", "source": "netease", "source_id": "13579",
+            "name": "点来的歌", "artist": "测试歌手",
+            "audio_url": "/api/music/netease/audio/13579",
+        }
+        details = {
+            "tool": "music_play_track",
+            "input": {"action": "play_online", "track": track},
+            "output": {"status": "queued", "message": "已交给房间播放器"},
+        }
+        with patch.object(
+            app_module, "ask_music_companion", return_value=("给你放这首。", "play_online", details)
+        ):
+            response = self.client.post("/api/music/room/messages", json={"content": "你来挑歌。"})
+        command = response.get_json()["room"]["pending_commands"][0]
+        self.assertEqual(command["action"], "play_online")
+        self.assertEqual(command["arguments"]["track"]["source_id"], "13579")
+
+    def test_netease_lyrics_are_given_to_music_companion(self):
+        self.client.put("/api/music/room/participants", json={"character_ids": []})
+        self.client.put("/api/music/room/participants", json={"character_ids": ["char1"]})
+        self.client.put("/api/music/room", json={
+            "song_id": "netease:97531", "song_name": "歌词测试曲",
+            "artist_name": "测试歌手", "duration_ms": 180000,
+            "position_ms": 21000, "playback_state": "playing",
+        })
+        conn = app_module.sqlite3.connect(app_module.DB_PATH)
+        conn.execute(
+            "INSERT OR REPLACE INTO music_netease_tracks "
+            "(source_id,name,artist,lyrics,translated_lyrics) VALUES (?,?,?,?,?)",
+            ("97531", "歌词测试曲", "测试歌手", "[00:20.00]这一句真的存在", ""),
+        )
+        conn.commit()
+        conn.close()
+        prompts = []
+
+        def capture_prompt(_char, prompt):
+            prompts.append(prompt)
+            return "我看到了。", None, {}
+
+        with patch.object(app_module, "ask_music_companion", side_effect=capture_prompt):
+            response = self.client.post("/api/music/room/messages", json={"content": "歌词呢？"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("这一句真的存在", prompts[0])
 
     def test_custom_mcp_token_is_never_returned(self):
         created_ids = []
@@ -473,6 +962,184 @@ class AppControlsTests(unittest.TestCase):
             "status": "ok",
         }])
 
+    def test_openrouter_can_chain_mcp_tools_after_reading_output(self):
+        responses = []
+        for payload in (
+            {
+                "usage": {"prompt_tokens": 10},
+                "choices": [{"message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call-read",
+                        "function": {
+                            "name": "mcp_1_read_post",
+                            "arguments": '{"post_id":7}',
+                        },
+                    }],
+                }}],
+            },
+            {
+                "usage": {"prompt_tokens": 12},
+                "choices": [{"message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call-reply",
+                        "function": {
+                            "name": "mcp_1_reply_post",
+                            "arguments": '{"post_id":7,"content":"收到"}',
+                        },
+                    }],
+                }}],
+            },
+            {
+                "usage": {"prompt_tokens": 14},
+                "choices": [{"message": {"content": "看完也回复好了。"}}],
+            },
+        ):
+            response = unittest.mock.Mock(status_code=200)
+            response.json.return_value = payload
+            responses.append(response)
+
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": name,
+                "parameters": {"type": "object"},
+            },
+        } for name in ("mcp_1_read_post", "mcp_1_reply_post")]
+        with patch.object(app_module, "OPENROUTER_API_KEY", "test-key"), patch.object(
+            app_module, "get_tool_enabled", return_value=False
+        ), patch.object(
+            app_module, "_custom_mcp_tools", return_value=tools
+        ), patch.object(
+            app_module, "call_custom_mcp_tool",
+            side_effect=[("帖子正文", "论坛°查看帖子"), ("回复成功", "论坛°回复帖子")],
+        ) as call_tool, patch.object(
+            app_module.requests, "post", side_effect=responses
+        ) as post:
+            result = app_module.call_or_with_tools(
+                "openai/gpt-5.5", [{"role": "user", "content": "看看再回复"}]
+            )
+
+        self.assertEqual(result[0], "看完也回复好了。")
+        self.assertEqual(call_tool.call_count, 2)
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["tool_choice"], "auto")
+        self.assertEqual(
+            [item["name"] for item in result[-1]],
+            ["mcp:论坛°查看帖子", "mcp:论坛°回复帖子"],
+        )
+
+    def test_anthropic_can_chain_mcp_tools_after_reading_output(self):
+        response_payloads = [
+            {
+                "usage": {"input_tokens": 10},
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tool-read",
+                    "name": "mcp_1_read_post",
+                    "input": {"post_id": 7},
+                }],
+            },
+            {
+                "usage": {"input_tokens": 12},
+                "stop_reason": "tool_use",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tool-reply",
+                    "name": "mcp_1_reply_post",
+                    "input": {"post_id": 7, "content": "收到"},
+                }],
+            },
+            {
+                "usage": {"input_tokens": 14},
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "看完也回复好了。"}],
+            },
+        ]
+        responses = []
+        for payload in response_payloads:
+            response = unittest.mock.Mock(status_code=200)
+            response.json.return_value = payload
+            responses.append(response)
+
+        tools = [{
+            "name": name,
+            "description": name,
+            "input_schema": {"type": "object"},
+        } for name in ("mcp_1_read_post", "mcp_1_reply_post")]
+        with patch.object(app_module, "ANTHROPIC_API_KEY", "test-key"), patch.object(
+            app_module, "get_tool_enabled", return_value=False
+        ), patch.object(
+            app_module, "_custom_mcp_tools", return_value=tools
+        ), patch.object(
+            app_module, "call_custom_mcp_tool",
+            side_effect=[("帖子正文", "论坛°查看帖子"), ("回复成功", "论坛°回复帖子")],
+        ) as call_tool, patch.object(
+            app_module.requests, "post", side_effect=responses
+        ) as post:
+            result = app_module.call_anthropic_with_tools(
+                "claude-sonnet-4-6",
+                [{"type": "text", "text": "system"}],
+                [{"role": "user", "content": "看看再回复"}],
+            )
+
+        self.assertEqual(result[0], "看完也回复好了。")
+        self.assertEqual(call_tool.call_count, 2)
+        self.assertEqual(post.call_count, 3)
+        self.assertNotIn("tool_choice", post.call_args_list[1].kwargs["json"])
+        self.assertEqual(
+            [item["name"] for item in result[-1]],
+            ["mcp:论坛°查看帖子", "mcp:论坛°回复帖子"],
+        )
+
+    def test_tool_chain_forces_text_after_round_limit(self):
+        first = unittest.mock.Mock(status_code=200)
+        first.json.return_value = {
+            "usage": {},
+            "choices": [{"message": {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call-read",
+                    "function": {
+                        "name": "mcp_1_read_post",
+                        "arguments": '{"post_id":7}',
+                    },
+                }],
+            }}],
+        }
+        final = unittest.mock.Mock(status_code=200)
+        final.json.return_value = {
+            "usage": {},
+            "choices": [{"message": {"content": "先到这里。"}}],
+        }
+        with patch.object(app_module, "OPENROUTER_API_KEY", "test-key"), patch.object(
+            app_module, "TOOL_CHAIN_MAX_ROUNDS", 1
+        ), patch.object(
+            app_module, "get_tool_enabled", return_value=False
+        ), patch.object(
+            app_module, "_custom_mcp_tools", return_value=[{
+                "type": "function",
+                "function": {
+                    "name": "mcp_1_read_post",
+                    "description": "看帖子",
+                    "parameters": {"type": "object"},
+                },
+            }]
+        ), patch.object(
+            app_module, "call_custom_mcp_tool", return_value=("帖子正文", "论坛°查看帖子")
+        ), patch.object(
+            app_module.requests, "post", side_effect=[first, final]
+        ) as post:
+            result = app_module.call_or_with_tools(
+                "openai/gpt-5.5", [{"role": "user", "content": "看看论坛"}]
+            )
+
+        self.assertEqual(result[0], "先到这里。")
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["tool_choice"], "none")
+
     def test_special_replies_persist_and_return_tool_effects(self):
         fake_result = (
             "特殊入口回复",
@@ -678,6 +1345,133 @@ class AppControlsTests(unittest.TestCase):
             f"/api/messages?session_id={session_id}&limit=20"
         ).get_json()["messages"]
         self.assertEqual([item["id"] for item in remaining], [source_id])
+
+    def test_single_chat_quote_persists_and_reaches_character_prompt(self):
+        session_id = "single_quote_test"
+        character_id = "char1"
+        source_id = app_module.save_message(
+            session_id, character_id, "user", "这是要被引用的原句"
+        )
+
+        with patch.object(
+            app_module,
+            "_get_sleep_state",
+            return_value={"state": "awake", "slept_at": None},
+        ), patch.object(
+            app_module,
+            "_minutes_past_bedtime",
+            return_value=None,
+        ), patch.object(
+            app_module,
+            "ask_character",
+            return_value=("我知道你在说哪一句。", None, None, [], None),
+        ) as character_call:
+            response = self.client.post("/api/chat", json={
+                "session_id": session_id,
+                "character_id": character_id,
+                "message": "接着这句说",
+                "reply_to_id": source_id,
+                "reply_to_text": "要被引用的原句",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("引用了User的话", character_call.call_args.args[2])
+        self.assertIn("要被引用的原句", character_call.call_args.args[2])
+
+        history = self.client.get(
+            f"/api/messages?session_id={session_id}&character_id={character_id}&limit=20"
+        ).get_json()["messages"]
+        saved_user = next(item for item in history if item["content"] == "接着这句说")
+        self.assertEqual(saved_user["quote"]["message_id"], source_id)
+        self.assertEqual(saved_user["quote"]["character_name"], "User")
+        self.assertEqual(saved_user["quote"]["content"], "要被引用的原句")
+
+        invalid = self.client.post("/api/chat", json={
+            "session_id": session_id,
+            "character_id": character_id,
+            "message": "引用错字",
+            "reply_to_id": source_id,
+            "reply_to_text": "原消息里没有",
+        })
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_sleep_state_reconciles_after_scheduled_waketime(self):
+        char_id = "char1"
+        zone = ZoneInfo(app_module.SLEEP_TIMEZONE)
+        slept_at = datetime(2026, 7, 17, 23, 15, tzinfo=zone).timestamp()
+        try:
+            app_module._set_sleep_state(char_id, "asleep", slept_at=str(slept_at))
+            before_wake = app_module._get_sleep_state(
+                char_id, now=datetime(2026, 7, 18, 6, 30, tzinfo=zone)
+            )
+            self.assertEqual(before_wake["state"], "asleep")
+
+            with patch.object(app_module, "_clear_queued_sleep_flags") as clear_queued:
+                after_wake = app_module._get_sleep_state(
+                    char_id, now=datetime(2026, 7, 18, 14, 0, tzinfo=zone)
+                )
+            self.assertEqual(after_wake["state"], "awake")
+            clear_queued.assert_called_once_with(char_id, "default")
+        finally:
+            app_module._set_sleep_state(char_id, "awake")
+
+    def test_sleep_window_ends_at_waketime(self):
+        zone = ZoneInfo(app_module.SLEEP_TIMEZONE)
+        self.assertTrue(app_module._is_scheduled_sleep_window(
+            "char1", datetime(2026, 7, 18, 6, 59, tzinfo=zone)
+        ))
+        self.assertFalse(app_module._is_scheduled_sleep_window(
+            "char1", datetime(2026, 7, 18, 7, 0, tzinfo=zone)
+        ))
+        self.assertFalse(app_module._is_scheduled_sleep_window(
+            "char1", datetime(2026, 7, 18, 14, 0, tzinfo=zone)
+        ))
+
+    def test_sleep_check_cannot_resleep_characters_after_waketime(self):
+        zone = ZoneInfo(app_module.SLEEP_TIMEZONE)
+        afternoon = datetime(2026, 7, 18, 14, 0, tzinfo=zone)
+        with patch.object(
+            app_module, "_sleep_local_now", return_value=afternoon
+        ), patch.object(
+            app_module,
+            "_get_sleep_state",
+            return_value={"state": "awake", "slept_at": None, "woke_by_user": False},
+        ), patch.object(
+            app_module, "_is_scheduled_sleep_window", return_value=False
+        ), patch.object(
+            app_module, "_set_sleep_state"
+        ) as set_state:
+            app_module.do_sleep_check()
+
+        set_state.assert_not_called()
+
+    def test_late_message_does_not_wake_character_who_woke_on_schedule(self):
+        char_id = "char1"
+        session_id = "scheduled_wake_chat_test"
+        zone = ZoneInfo(app_module.SLEEP_TIMEZONE)
+        now = datetime(2026, 7, 18, 14, 0, tzinfo=zone)
+        slept_at = datetime(2026, 7, 17, 23, 15, tzinfo=zone).timestamp()
+        try:
+            app_module._set_sleep_state(char_id, "asleep", slept_at=str(slept_at))
+            with patch.object(
+                app_module, "_sleep_local_now", return_value=now
+            ), patch.object(
+                app_module,
+                "ask_character",
+                return_value=("下午好。", None, None, [], None),
+            ) as character_call:
+                response = self.client.post("/api/chat", json={
+                    "session_id": session_id,
+                    "character_id": char_id,
+                    "message": "下午啦",
+                })
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["reply"], "下午好。")
+            self.assertEqual(character_call.call_args.args[2], "下午啦")
+            self.assertFalse(character_call.call_args.kwargs.get("just_woke", False))
+        finally:
+            app_module._set_sleep_state(char_id, "awake")
 
     def test_character_speaker_prefix_is_removed_without_touching_body_mentions(self):
         self.assertEqual(

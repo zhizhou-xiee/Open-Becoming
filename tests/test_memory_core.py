@@ -32,7 +32,7 @@ class _LegacySession:
             ])
         if url.endswith("/api/bucket/owned"):
             return _Response(200, {
-                "content": "从旧往生道带回来的记忆",
+                "content": "从旧记忆库带回来的记忆",
                 "metadata": {
                     "name": "旧记忆",
                     "domain": ["char1"],

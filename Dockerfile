@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000 \
     DB_PATH=/data/becoming.db \
     BECOMING_MEMORY_DIR=/data/memory \
-    UPLOAD_ROOT=/data/uploads
+    UPLOAD_ROOT=/data/uploads \
+    MUSIC_LIBRARY_DIR=/data/music_library
 
 WORKDIR /app
 

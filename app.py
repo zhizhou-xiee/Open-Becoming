@@ -12,6 +12,7 @@ import json
 import os
 import base64
 import copy
+import mimetypes
 import re
 import secrets
 import sqlite3
@@ -22,8 +23,9 @@ import random as _random
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from flask import Flask, request, jsonify, send_from_directory, session
+from flask import Flask, Response, request, jsonify, send_file, send_from_directory, session, stream_with_context
 from apscheduler.schedulers.background import BackgroundScheduler
+from PIL import Image, UnidentifiedImageError
 from werkzeug.utils import secure_filename
 
 from mcp_client import MCPClient, MCPError, validate_mcp_url
@@ -56,6 +58,7 @@ from desire_engine import (
 )
 
 app = Flask(__name__)
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 try:
     MOBILE_PUSH = MobilePushClient.from_env()
@@ -74,14 +77,46 @@ app.permanent_session_lifetime = timedelta(days=90)
 # ── 定时任务调度器 ──────────────────────────────────────────
 SLOT_HOURS  = {"morning": 9, "noon": 12, "evening": 21}
 SCHEDULER_TIMEZONE = os.environ.get("SCHEDULER_TIMEZONE", "UTC")
+SLEEP_TIMEZONE = os.environ.get("SLEEP_TIMEZONE", SCHEDULER_TIMEZONE)
+SLEEP_NUDGE_ENABLED = os.environ.get("SLEEP_NUDGE_ENABLED", "false").lower() == "true"
 SCHEDULER_ENABLED = os.environ.get("SCHEDULER_ENABLED", "true").lower() == "true"
 scheduler = BackgroundScheduler(timezone=SCHEDULER_TIMEZONE)
+
+CORS_ALLOW_ORIGINS = {
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
+}
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin", "")
+    if (
+        SLEEP_NUDGE_ENABLED
+        and request.path == "/api/sleep/nudge"
+        and origin in CORS_ALLOW_ORIGINS
+    ):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS" and request.path == "/api/sleep/nudge":
+        origin = request.headers.get("Origin", "")
+        if SLEEP_NUDGE_ENABLED and origin in CORS_ALLOW_ORIGINS:
+            resp = app.make_response("")
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+            return resp
 
 @app.before_request
 def require_login():
     if not request.path.startswith("/api/"):
         return  # 静态页面、图标等全部公开
-    if request.path == "/api/login":
+    if request.path in ("/api/login", "/api/sleep/nudge"):
         return
     if session.get("authed"):
         return
@@ -108,6 +143,15 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
+# 网易云只在后端使用。搜索与歌词通常不需要登录；会员歌曲播放需要 MUSIC_U。
+NETEASE_MUSIC_U = os.environ.get("NETEASE_MUSIC_U", "").strip()
+try:
+    NETEASE_BITRATE = int(os.environ.get("NETEASE_BITRATE", "320000"))
+except ValueError:
+    NETEASE_BITRATE = 320000
+if NETEASE_BITRATE not in {128000, 192000, 320000, 999000}:
+    NETEASE_BITRATE = 320000
+
 # 摘要（压缩老对话）专用的便宜模型，走同一个 OR 通道
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "google/gemini-2.5-flash-lite")
 
@@ -122,11 +166,25 @@ UPLOAD_ROOT = os.path.abspath(os.environ.get(
     "UPLOAD_ROOT",
     os.path.join(app.static_folder or "static", "uploads", "chat_images"),
 ))
+MUSIC_LIBRARY_ROOT = os.path.abspath(os.environ.get(
+    "MUSIC_LIBRARY_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "music_library"),
+))
 ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
 MAX_TEXT_BYTES = 5 * 1024 * 1024
-app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+MAX_MUSIC_BYTES = 180 * 1024 * 1024
+ALLOWED_MUSIC_EXTENSIONS = {"mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "mp4"}
+ALLOWED_ARTWORK_MIMES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+TIFF_ARTWORK_MIMES = {"image/tiff", "image/x-tiff"}
+MAX_ARTWORK_EDGE = 8000
+MAX_ARTWORK_PIXELS = 25_000_000
+NORMALIZED_ARTWORK_EDGE = 2000
+app.config["MAX_CONTENT_LENGTH"] = max(
+    int(os.environ.get("MAX_UPLOAD_BYTES", "0")),
+    200 * 1024 * 1024,
+)
 DESIRE_TICK_MINUTES = int(os.environ.get("DESIRE_TICK_MINUTES", "10"))
 DESIRE_DEFAULT_ENABLED = os.environ.get("DESIRE_DRIVEN", "true").lower() == "true"
 
@@ -283,9 +341,11 @@ DEFAULT_AVATAR_URLS = {
     "user": USER_AVATAR,
     **{cid: char["avatar"] for cid, char in CHARACTERS.items()},
 }
-DEFAULT_CHAT_BACKGROUND = "/static/chat_bg.png"
+DEFAULT_CHAT_BACKGROUND = "/static/chat_bg.jpg"
 DEFAULT_THEME_ID = "pink-lover"
 THEME_SETTING_KEY = "appearance_theme"
+WEATHER_EFFECT_SETTING_KEY = "appearance_weather_effect"
+WEATHER_EFFECTS = {"off", "rain", "snow", "leaves"}
 THEME_DEFINITIONS = {
     "pink-lover": {
         "name": "恋人",
@@ -300,8 +360,8 @@ THEME_DEFINITIONS = {
             "bg": "#FFFAF7",
             "card": "#FFF7F2",
         },
-        "chat_background": "/static/chat_bg.png",
-        "list_background": "/static/char_list_watercolor.png",
+        "chat_background": "/static/chat_bg.jpg",
+        "list_background": "/static/char_list_watercolor.jpg",
     },
     "dreamscape": {
         "name": "抹茶",
@@ -316,8 +376,8 @@ THEME_DEFINITIONS = {
             "bg": "#F4F1E7",
             "card": "#FBF8F0",
         },
-        "chat_background": "/static/theme_matcha.png",
-        "list_background": "/static/theme_matcha.png",
+        "chat_background": "/static/theme_matcha.jpg",
+        "list_background": "/static/theme_matcha.jpg",
     },
     "sea-salt": {
         "name": "雾港",
@@ -332,8 +392,8 @@ THEME_DEFINITIONS = {
             "bg": "#F2F1EF",
             "card": "#FAF8F4",
         },
-        "chat_background": "/static/theme_fog_harbor.png",
-        "list_background": "/static/theme_fog_harbor.png",
+        "chat_background": "/static/theme_fog_harbor.jpg",
+        "list_background": "/static/theme_fog_harbor.jpg",
     },
     "fantasy": {
         "name": "丁香",
@@ -348,8 +408,8 @@ THEME_DEFINITIONS = {
             "bg": "#F5F0EE",
             "card": "#FCF8F5",
         },
-        "chat_background": "/static/theme_lilac.png",
-        "list_background": "/static/theme_lilac.png",
+        "chat_background": "/static/theme_lilac.jpg",
+        "list_background": "/static/theme_lilac.jpg",
     },
 }
 APPEARANCE_ASSET_KEYS = {f"avatar_{cid}" for cid in DEFAULT_AVATAR_URLS}
@@ -373,7 +433,7 @@ _MEMORY_ENRICHMENT_EXECUTOR = ThreadPoolExecutor(
 _MEMORY_ENRICHMENT_LOCK = threading.Lock()
 _MEMORY_ENRICHMENT_IN_FLIGHT = set()
 
-# 月度用量上限（USD，非硬截断，仅前端警示）
+# 月度用量上限（USD）。前端与调用前的后端熔断共用这一份运行时配置。
 LIMITS = {
     "char1": 10.0,
     "char3":   10.0,
@@ -382,6 +442,7 @@ LIMITS = {
     "char5":    30.0,
     "char6":    50.0,
 }
+QUOTA_EXEMPT_PURPOSES = ("compress", "group_summary")
 
 def _platform_limits():
     totals = {}
@@ -390,10 +451,337 @@ def _platform_limits():
         totals[plat] = totals.get(plat, 0) + limit
     return totals
 
+
+class MonthlyLimitReached(RuntimeError):
+    def __init__(self, scope, spent, limit, character_id=None, platform=None):
+        self.scope = scope
+        self.spent = float(spent or 0)
+        self.limit = float(limit or 0)
+        self.character_id = character_id
+        self.platform = platform
+        super().__init__(f"monthly {scope} limit reached")
+
+
+def _monthly_limit_status(character_id=None, platform=None):
+    """Return the current UTC-month spend and the editable limits used by the gate."""
+    if character_id in CHARACTERS and not platform:
+        platform = CHARACTERS[character_id].get("provider", "openrouter")
+    month_start = datetime.now(timezone.utc).strftime("%Y-%m-01")
+    conn = sqlite3.connect(DB_PATH)
+    character_spent = 0.0
+    if character_id:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd),0) FROM api_usage "
+            "WHERE created_at >= ? AND character_id = ? AND purpose NOT IN (?,?)",
+            (month_start, character_id, *QUOTA_EXEMPT_PURPOSES),
+        ).fetchone()
+        character_spent = float((row or [0])[0] or 0)
+    platform_spent = 0.0
+    if platform:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd),0) FROM api_usage "
+            "WHERE created_at >= ? AND platform = ? AND purpose NOT IN (?,?)",
+            (month_start, platform, *QUOTA_EXEMPT_PURPOSES),
+        ).fetchone()
+        platform_spent = float((row or [0])[0] or 0)
+    conn.close()
+    return {
+        "character_id": character_id,
+        "character_spent": character_spent,
+        "character_limit": LIMITS.get(character_id),
+        "platform": platform,
+        "platform_spent": platform_spent,
+        "platform_limit": _platform_limits().get(platform),
+    }
+
+
+def enforce_monthly_limit(character_id=None, platform=None):
+    """Stop model traffic once either the character or provider budget is exhausted."""
+    status = _monthly_limit_status(character_id, platform)
+    character_limit = status["character_limit"]
+    if character_limit is not None and status["character_spent"] >= character_limit:
+        raise MonthlyLimitReached(
+            "character", status["character_spent"], character_limit,
+            character_id=character_id, platform=status["platform"],
+        )
+    platform_limit = status["platform_limit"]
+    if platform_limit is not None and status["platform_spent"] >= platform_limit:
+        raise MonthlyLimitReached(
+            "platform", status["platform_spent"], platform_limit,
+            character_id=character_id, platform=status["platform"],
+        )
+    return status
+
+
+@app.errorhandler(MonthlyLimitReached)
+def handle_monthly_limit_reached(exc):
+    if exc.scope == "character" and exc.character_id in CHARACTERS:
+        owner = CHARACTERS[exc.character_id]["name"]
+        message = f"{owner}本月的饭饭喵额度已经用完啦"
+    else:
+        owner = "Anthropic" if exc.platform == "anthropic" else "OpenRouter"
+        message = f"{owner} 本月的饭饭喵总额度已经用完啦"
+    return jsonify({
+        "error": message,
+        "code": "monthly_limit_reached",
+        "scope": exc.scope,
+        "character_id": exc.character_id,
+        "platform": exc.platform,
+        "spent": round(exc.spent, 4),
+        "limit": round(exc.limit, 2),
+    }), 429
+
 ANTHROPIC_PRICING = {
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30},
     "_default":          {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30},
 }
+
+
+# ============================================================
+# 睡眠系统（SleepSys v1）常量
+# ============================================================
+SLEEP_GOODNIGHT_RE = re.compile(r"晚安|睡了|去睡觉|我先睡", re.IGNORECASE)
+SLEEP_CATALYST_RE  = re.compile(r"去睡觉|快睡|该睡了")
+
+SLEEP_DEFAULTS = {
+    "char1": {"bedtime": "22:30", "waketime": "07:00",
+                    "chronotype": "早睡早起，到了睡点自然困倦，眼皮打架", "resist_bias": "0.3"},
+    "char2":  {"bedtime": "23:00", "waketime": "07:30",
+                    "chronotype": "作息规律，过了睡点就开始犯困", "resist_bias": "0.4"},
+    "char3":   {"bedtime": "23:30", "waketime": "07:30",
+                    "chronotype": "还算守时，困了就想躺下", "resist_bias": "0.4"},
+    "char4":  {"bedtime": "00:30", "waketime": "08:30",
+                    "chronotype": "夜猫子，越夜越精神但一睡就沉", "resist_bias": "0.7"},
+    "char5":    {"bedtime": "23:00", "waketime": "07:00",
+                    "chronotype": "作息规律，到点困意明显", "resist_bias": "0.4"},
+    "char6":    {"bedtime": "01:00", "waketime": "09:00",
+                    "chronotype": "极夜型，凌晨才正式入眠，睡前还在发呆", "resist_bias": "0.8"},
+}
+
+# 睡眠状态声明（全时段注入，以 当前状态: 开头，覆盖所有档位）
+SLEEP_STATE_TEXTS = {
+    "awake":  "当前状态：清醒，精神正常。",
+    "pre":    "当前状态：你的习惯睡点是{bedtime}，快到了，略有困意。{chronotype}。",
+    "mild":   "当前状态：你已超过习惯睡点{mins}分钟，微困，但可能因兴趣硬撑（硬撑倾向{resist_bias}）。{chronotype}。",
+    "heavy":  "当前状态：你过睡点已{mins}分钟，很困，回复可以变短、偶有恍惚，你在努力硬撑。{chronotype}。",
+    "max":    "当前状态：你过睡点已{mins}分钟，困到极限，语无伦次，强烈想睡。{chronotype}。",
+    "woke":   "当前状态：刚醒，起床气自由发挥，但你已经清醒，不再语无伦次。",
+}
+
+# 睡眠历史隔离守卫（注入到动态块，与状态声明成对出现；persona 静态块零改动）
+SLEEP_GUARD_TEXT = (
+    "对话历史中出现的困倦、语无伦次、恍惚、起床气等表现，"
+    "是角色在当时时刻的状态演出，不是你的固定说话风格。"
+    "你现在的状态以本轮的「当前状态」声明为准，不要模仿历史消息中的困倦语气。"
+)
+
+
+def _get_sleep_cfg(char_id, field):
+    default = SLEEP_DEFAULTS.get(char_id, {}).get(field, "")
+    return _read_setting(f"sleep_{char_id}_{field}", default)
+
+
+def _parse_hhmm(s):
+    try:
+        h, m = s.strip().split(":")
+        return int(h), int(m)
+    except Exception:
+        return None
+
+
+def _sleep_local_now(now=None):
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo(SLEEP_TIMEZONE)
+    if now is None:
+        return datetime.now(zone)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=zone)
+    return now.astimezone(zone)
+
+
+def _is_scheduled_sleep_window(char_id, now=None):
+    """Whether local time is between this character's bedtime and waketime."""
+    bedtime = _parse_hhmm(_get_sleep_cfg(char_id, "bedtime"))
+    waketime = _parse_hhmm(_get_sleep_cfg(char_id, "waketime"))
+    if not bedtime or not waketime:
+        return False
+    now = _sleep_local_now(now)
+    current = now.hour * 60 + now.minute
+    bed = bedtime[0] * 60 + bedtime[1]
+    wake = waketime[0] * 60 + waketime[1]
+    if bed == wake:
+        return False
+    if bed < wake:
+        return bed <= current < wake
+    return current >= bed or current < wake
+
+
+def _latest_scheduled_wake(char_id, now=None):
+    hm = _parse_hhmm(_get_sleep_cfg(char_id, "waketime"))
+    if not hm:
+        return None
+    now = _sleep_local_now(now)
+    boundary = now.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
+    if boundary > now:
+        boundary -= timedelta(days=1)
+    return boundary
+
+
+def _minutes_past_bedtime(char_id, now=None):
+    """Returns minutes past bedtime (negative = still before bedtime). Wraps at ±720."""
+    hm = _parse_hhmm(_get_sleep_cfg(char_id, "bedtime"))
+    if not hm:
+        return None
+    now = _sleep_local_now(now)
+    bedtime_today = now.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
+    delta = (now - bedtime_today).total_seconds() / 60
+    if delta > 720:
+        delta -= 1440
+    elif delta < -720:
+        delta += 1440
+    return delta
+
+
+def _get_sleep_state(char_id, *, reconcile=True, now=None):
+    raw = _read_setting(f"sleep_state_{char_id}", "")
+    state = None
+    if raw:
+        try:
+            state = json.loads(raw)
+        except Exception:
+            pass
+    if not isinstance(state, dict):
+        state = {"state": "awake", "slept_at": None, "woke_by_user": False}
+
+    if reconcile and state.get("state") == "asleep":
+        local_now = _sleep_local_now(now)
+        wake_boundary = _latest_scheduled_wake(char_id, local_now)
+        slept_at = state.get("slept_at")
+        try:
+            slept_local = datetime.fromtimestamp(
+                float(slept_at), timezone.utc
+            ).astimezone(local_now.tzinfo)
+        except (TypeError, ValueError, OSError):
+            slept_local = None
+        should_wake = bool(
+            wake_boundary
+            and wake_boundary <= local_now
+            and (slept_local is None or slept_local < wake_boundary)
+        )
+        if should_wake:
+            _set_sleep_state(char_id, "awake")
+            # 给正常 cron 留出执行积压汇总的时间；若错过太久，旧消息继续
+            # 留在聊天历史即可，不能拖到下一次起床再重复汇总。
+            if local_now - wake_boundary > timedelta(minutes=10):
+                try:
+                    _clear_queued_sleep_flags(char_id, "default")
+                except sqlite3.Error as exc:
+                    app.logger.warning(
+                        f"[sleep] {char_id} 清理过期睡眠消息标记失败: {exc}"
+                    )
+            state = {"state": "awake", "slept_at": None, "woke_by_user": False}
+            app.logger.info(
+                f"[sleep] {char_id} 按计划起床状态自动校准 "
+                f"({wake_boundary.strftime('%H:%M')})"
+            )
+    return state
+
+
+def _set_sleep_state(char_id, state, slept_at=None, woke_by_user=False):
+    _write_setting(
+        f"sleep_state_{char_id}",
+        json.dumps({"state": state, "slept_at": slept_at, "woke_by_user": woke_by_user}),
+    )
+
+
+def _build_sleep_state_block(char_id, just_woke=False):
+    """全时段返回状态声明（从不返回空串）。just_woke=True 时返回刚醒文案。"""
+    if just_woke:
+        return SLEEP_STATE_TEXTS["woke"]
+    sleep_state = _get_sleep_state(char_id)
+    if sleep_state["state"] == "asleep":
+        # 正常不应到达此处（gate 已拦截），保险返回清醒声明
+        return SLEEP_STATE_TEXTS["awake"]
+    mins = _minutes_past_bedtime(char_id)
+    if mins is None:
+        return SLEEP_STATE_TEXTS["awake"]
+    bedtime = _get_sleep_cfg(char_id, "bedtime")
+    chronotype = _get_sleep_cfg(char_id, "chronotype")
+    resist_bias = _get_sleep_cfg(char_id, "resist_bias")
+    fmt = dict(bedtime=bedtime, mins=int(abs(mins)), chronotype=chronotype, resist_bias=resist_bias)
+    if -60 <= mins < 0:
+        return SLEEP_STATE_TEXTS["pre"].format(**fmt)
+    if 0 <= mins < 30:
+        return SLEEP_STATE_TEXTS["mild"].format(**fmt)
+    if 30 <= mins < 90:
+        return SLEEP_STATE_TEXTS["heavy"].format(**fmt)
+    if mins >= 90:
+        return SLEEP_STATE_TEXTS["max"].format(**fmt)
+    return SLEEP_STATE_TEXTS["awake"]
+
+
+def _is_drowsy_state(char_id):
+    """当前是否处于困意状态（用于标记 drowsy 消息）。"""
+    if _get_sleep_state(char_id)["state"] == "asleep":
+        return False
+    mins = _minutes_past_bedtime(char_id)
+    return mins is not None and mins >= -60
+
+
+def _count_queued_sleep_msgs(char_id, session_id="default"):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE character_id=? AND session_id=? AND queued_during_sleep=1",
+        (char_id, session_id),
+    ).fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def _load_queued_sleep_msgs(char_id, session_id="default"):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT content FROM messages "
+        "WHERE character_id=? AND session_id=? AND queued_during_sleep=1 ORDER BY id ASC",
+        (char_id, session_id),
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def _clear_queued_sleep_flags(char_id, session_id="default"):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE messages SET queued_during_sleep=0 "
+        "WHERE character_id=? AND session_id=? AND queued_during_sleep=1",
+        (char_id, session_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _wake_probability(char_id):
+    """Returns probability of being woken up by a new message."""
+    sleep_st = _get_sleep_state(char_id)
+    slept_at = sleep_st.get("slept_at")
+    if not slept_at:
+        base = 0.4
+    else:
+        try:
+            sleep_secs = (_utc_timestamp() - float(slept_at))
+            sleep_mins = sleep_secs / 60
+        except Exception:
+            sleep_mins = 60
+        if sleep_mins < 30:
+            base = 0.6
+        elif sleep_mins < 180:
+            base = 0.2
+        else:
+            base = 0.35
+    session_id = "default"
+    queued = _count_queued_sleep_msgs(char_id, session_id)
+    prob = min(0.95, base + queued * 0.1)
+    return prob
 
 
 # ============================================================
@@ -597,6 +985,85 @@ def init_db():
             created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS music_rooms (
+            id             INTEGER PRIMARY KEY CHECK(id = 1),
+            song_id        TEXT NOT NULL DEFAULT '',
+            song_name      TEXT NOT NULL DEFAULT '',
+            artist_name    TEXT NOT NULL DEFAULT '',
+            album_name     TEXT NOT NULL DEFAULT '',
+            artwork_url    TEXT NOT NULL DEFAULT '',
+            duration_ms    INTEGER NOT NULL DEFAULT 0,
+            position_ms    INTEGER NOT NULL DEFAULT 0,
+            playback_state TEXT NOT NULL DEFAULT 'paused',
+            distance_km    REAL,
+            started_at     TIMESTAMP,
+            updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS music_room_participants (
+            room_id      INTEGER NOT NULL DEFAULT 1,
+            character_id TEXT NOT NULL,
+            joined_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(room_id, character_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS music_room_messages (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id      INTEGER NOT NULL DEFAULT 1,
+            author_id    TEXT NOT NULL,
+            content      TEXT NOT NULL,
+            event_type   TEXT NOT NULL DEFAULT 'comment',
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS music_room_commands (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id      INTEGER NOT NULL DEFAULT 1,
+            character_id TEXT NOT NULL,
+            action       TEXT NOT NULL,
+            arguments_json TEXT NOT NULL DEFAULT '{}',
+            status       TEXT NOT NULL DEFAULT 'pending',
+            output_text  TEXT NOT NULL DEFAULT '',
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            applied_at   TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS music_library_tracks (
+            id               TEXT PRIMARY KEY,
+            name             TEXT NOT NULL,
+            artist           TEXT NOT NULL DEFAULT '',
+            album            TEXT NOT NULL DEFAULT '',
+            duration_seconds REAL NOT NULL DEFAULT 0,
+            size_bytes       INTEGER NOT NULL DEFAULT 0,
+            mime_type        TEXT NOT NULL DEFAULT 'application/octet-stream',
+            audio_filename   TEXT NOT NULL,
+            artwork_filename TEXT NOT NULL DEFAULT '',
+            artwork_mime     TEXT NOT NULL DEFAULT '',
+            lyrics           TEXT NOT NULL DEFAULT '',
+            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS music_netease_tracks (
+            source_id          TEXT PRIMARY KEY,
+            name               TEXT NOT NULL,
+            artist             TEXT NOT NULL DEFAULT '',
+            album              TEXT NOT NULL DEFAULT '',
+            duration_seconds   REAL NOT NULL DEFAULT 0,
+            artwork_url        TEXT NOT NULL DEFAULT '',
+            lyrics             TEXT NOT NULL DEFAULT '',
+            translated_lyrics  TEXT NOT NULL DEFAULT '',
+            updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("INSERT OR IGNORE INTO music_rooms(id) VALUES (1)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_reading_blocks_book_chapter "
         "ON reading_blocks(book_id, chapter_index, block_index)"
@@ -617,11 +1084,27 @@ def init_db():
         conn.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER")
     if "reply_to_text" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN reply_to_text TEXT")
+    if "queued_during_sleep" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN queued_during_sleep INTEGER DEFAULT 0")
+    if "drowsy" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN drowsy INTEGER DEFAULT 0")
     highlight_cols = [
         row[1] for row in conn.execute("PRAGMA table_info(reading_highlights)").fetchall()
     ]
     if "group_key" not in highlight_cols:
         conn.execute("ALTER TABLE reading_highlights ADD COLUMN group_key TEXT")
+    music_track_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(music_library_tracks)").fetchall()
+    }
+    if "lyrics" not in music_track_cols:
+        conn.execute("ALTER TABLE music_library_tracks ADD COLUMN lyrics TEXT NOT NULL DEFAULT ''")
+    music_command_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(music_room_commands)").fetchall()
+    }
+    if "arguments_json" not in music_command_cols:
+        conn.execute(
+            "ALTER TABLE music_room_commands ADD COLUMN arguments_json TEXT NOT NULL DEFAULT '{}'"
+        )
     # 兼容旧版唯一自定义 MCP：首次升级时迁入连接列表，并默认供全部角色使用。
     legacy_mcp = dict(conn.execute(
         "SELECT key,value FROM settings WHERE key IN "
@@ -678,14 +1161,14 @@ def init_db():
 
 def save_message(
     session_id, character_id, role, content,
-    reply_to_id=None, reply_to_text=None,
+    reply_to_id=None, reply_to_text=None, queued_during_sleep=0, drowsy=0,
 ):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute(
         "INSERT INTO messages "
-        "(session_id, character_id, role, content, reply_to_id, reply_to_text) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (session_id, character_id, role, content, reply_to_id, reply_to_text),
+        "(session_id, character_id, role, content, reply_to_id, reply_to_text, queued_during_sleep, drowsy) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (session_id, character_id, role, content, reply_to_id, reply_to_text, queued_during_sleep, drowsy),
     )
     lastrowid = cursor.lastrowid
     conn.commit()
@@ -740,10 +1223,14 @@ def _appearance_payload():
     theme_id = _read_setting(THEME_SETTING_KEY, DEFAULT_THEME_ID)
     if theme_id not in THEME_DEFINITIONS:
         theme_id = DEFAULT_THEME_ID
+    weather_effect = _read_setting(WEATHER_EFFECT_SETTING_KEY, "off")
+    if weather_effect not in WEATHER_EFFECTS:
+        weather_effect = "off"
     theme = THEME_DEFINITIONS[theme_id]
     background = rows.get("background_chat")
     return {
         "theme": theme_id,
+        "weather_effect": weather_effect,
         "themes": [
             {
                 "id": theme_key,
@@ -939,6 +1426,144 @@ def _reading_book_payload(conn, row):
         "progress": _reading_progress_payload(conn, row[0]),
         "participants": _reading_participant_payload(conn, row[0]),
     }
+
+
+def _normalize_music_participants(raw):
+    return _normalize_reading_participants(raw)
+
+
+_LRC_TIMESTAMP_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
+_LRC_METADATA_RE = re.compile(r"^\[(?:ar|al|ti|by|offset|re|ve):.*\]$", re.IGNORECASE)
+
+
+def _music_lyrics_context(raw_lyrics, position_seconds):
+    lyrics = _normalize_music_lyrics(raw_lyrics)
+    if not lyrics:
+        return "【歌词资料】未提供。你看不到歌词，也没有音频输入。"
+
+    timed = []
+    plain = []
+    for raw_line in lyrics.splitlines():
+        line = raw_line.strip()
+        if not line or _LRC_METADATA_RE.match(line):
+            continue
+        stamps = list(_LRC_TIMESTAMP_RE.finditer(line))
+        text = _LRC_TIMESTAMP_RE.sub("", line).strip()
+        if text:
+            plain.append(text)
+        for stamp in stamps:
+            fraction_text = stamp.group(3) or "0"
+            fraction = int(fraction_text) / (10 ** len(fraction_text))
+            seconds = int(stamp.group(1)) * 60 + int(stamp.group(2)) + fraction
+            if text:
+                timed.append((seconds, text))
+
+    if timed:
+        timed.sort(key=lambda item: item[0])
+        current = 0
+        for index, (seconds, _text) in enumerate(timed):
+            if seconds > position_seconds:
+                break
+            current = index
+        window = [
+            item for item in timed
+            if position_seconds - 30 <= item[0] <= position_seconds + 35
+        ]
+        if not window:
+            window = timed[max(0, current - 2):current + 4]
+        window = window[:8]
+        excerpt = "\n".join(
+            f"[{int(seconds) // 60}:{int(seconds) % 60:02d}] {text}"
+            for seconds, text in window
+        )
+        return f"【当前进度附近歌词（带时间）】\n{excerpt}"
+
+    excerpt = "\n".join(plain).strip()[:3000]
+    if not excerpt:
+        return "【歌词资料】未提供。你看不到歌词，也没有音频输入。"
+    return (
+        "【整首歌词（无时间轴，无法判断当前唱到哪句）】\n"
+        f"{excerpt}"
+    )
+
+
+def _music_participant_payload(conn):
+    rows = conn.execute(
+        "SELECT character_id FROM music_room_participants "
+        "WHERE room_id=1 ORDER BY joined_at, rowid"
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "name": CHARACTERS[row[0]]["name"],
+            "avatar": CHARACTERS[row[0]]["avatar"],
+        }
+        for row in rows if row[0] in CHARACTERS
+    ]
+
+
+def _music_elapsed_seconds(started_at):
+    if not started_at:
+        return 0
+    try:
+        started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _music_room_payload(conn, include_messages=True):
+    row = conn.execute(
+        "SELECT song_id,song_name,artist_name,album_name,artwork_url,duration_ms,"
+        "position_ms,playback_state,distance_km,started_at,updated_at "
+        "FROM music_rooms WHERE id=1"
+    ).fetchone()
+    room = {
+        "song_id": row[0], "song_name": row[1], "artist_name": row[2],
+        "album_name": row[3], "artwork_url": row[4], "duration_ms": row[5],
+        "position_ms": row[6], "playback_state": row[7],
+        "distance_km": row[8], "started_at": row[9], "updated_at": row[10],
+        "together_seconds": _music_elapsed_seconds(row[9]),
+        "participants": _music_participant_payload(conn),
+    }
+    if include_messages:
+        rows = conn.execute(
+            "SELECT id,author_id,content,event_type,details_json,created_at "
+            "FROM music_room_messages WHERE room_id=1 ORDER BY id DESC LIMIT 80"
+        ).fetchall()[::-1]
+        messages = []
+        for item in rows:
+            try:
+                details = json.loads(item[4] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                details = {}
+            char = CHARACTERS.get(item[1])
+            messages.append({
+                "id": item[0], "author_id": item[1],
+                "author_name": "User" if item[1] == USER_ID else (char or {}).get("name", item[1]),
+                "avatar": USER_AVATAR if item[1] == USER_ID else (char or {}).get("avatar", ""),
+                "content": item[2], "event_type": item[3], "details": details,
+                "created_at": item[5],
+            })
+        room["messages"] = messages
+    room["pending_commands"] = []
+    for item in conn.execute(
+        "SELECT id,character_id,action,arguments_json FROM music_room_commands "
+        "WHERE room_id=1 AND status='pending' ORDER BY id LIMIT 10"
+    ).fetchall():
+        try:
+            arguments = json.loads(item[3] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        room["pending_commands"].append({
+            "id": item[0], "character_id": item[1], "action": item[2],
+            "arguments": arguments,
+        })
+    return room
 
 
 def _ordered_group_participants(raw_participants):
@@ -1266,14 +1891,14 @@ def set_summary(session_id, character_id, summary):
 def load_active_messages(session_id, character_id):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT id, role, content FROM messages "
+        "SELECT id, role, content, COALESCE(drowsy, 0) FROM messages "
         "WHERE session_id = ? AND character_id = ? AND compressed = 0 ORDER BY id ASC",
         (session_id, character_id),
     ).fetchall()
     conn.close()
     char_name = CHARACTERS.get(character_id, {}).get("name", "角色")
     msgs = []
-    for mid, role, content in rows:
+    for mid, role, content, drowsy_flag in rows:
         or_role = "assistant" if role == "model" else "user"
         if content.startswith("__TRANSFER__"):
             try:
@@ -1318,7 +1943,7 @@ def load_active_messages(session_id, character_id):
             or_role = "user"
         else:
             clean_content = content.replace("\n||\n", "\n").replace("||", "") if or_role == "assistant" else content
-        msgs.append({"id": mid, "role": or_role, "content": clean_content})
+        msgs.append({"id": mid, "role": or_role, "content": clean_content, "drowsy": drowsy_flag})
     return msgs
 
 
@@ -1365,7 +1990,7 @@ def load_group_history(session_id, limit=20):
     return "\n".join(lines)
 
 
-def _group_quote_payload(session_id, reply_to_id, reply_to_text=None):
+def _group_quote_payload(session_id, reply_to_id, reply_to_text=None, character_id=None):
     if reply_to_id in (None, ""):
         return None
     try:
@@ -1373,19 +1998,26 @@ def _group_quote_payload(session_id, reply_to_id, reply_to_text=None):
     except (TypeError, ValueError):
         raise ValueError("引用的消息编号不对")
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT id,character_id,role,content FROM messages "
-        "WHERE id=? AND session_id=?",
-        (reply_to_id, session_id),
-    ).fetchone()
+    if character_id:
+        row = conn.execute(
+            "SELECT id,character_id,role,content FROM messages "
+            "WHERE id=? AND session_id=? AND character_id=?",
+            (reply_to_id, session_id, character_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id,character_id,role,content FROM messages "
+            "WHERE id=? AND session_id=?",
+            (reply_to_id, session_id),
+        ).fetchone()
     conn.close()
     if not row:
-        raise ValueError("引用的消息已经不在群里了")
+        raise ValueError("引用的消息已经不在聊天里了")
     selected_text = str(reply_to_text or "").strip()[:2000]
     if selected_text and selected_text not in row[3]:
         raise ValueError("引用文字和原消息没有对上")
     character_name = (
-        "User" if row[1] == USER_ID
+        "User" if row[2] == "user" or row[1] == USER_ID
         else CHARACTERS.get(row[1], {}).get("name", row[1])
     )
     return {
@@ -1590,8 +2222,8 @@ ANTHROPIC_TOOLS = [
     {
         "name": "press_hug",
         "description": (
-            "按下「和好按钮」。在你想跟User和好、想让她哄哄你、或者觉得气氛需要软下来的时候按。"
-            "按下后User的屏幕上会飘过一片「哄哄我」弹幕——她一眼就懂。"
+            "按下「和好按钮」。在你想跟 User 和好、想让对方哄哄你、或者觉得气氛需要软下来的时候按。"
+            "按下后 User 的屏幕上会飘过一片「哄哄我」弹幕，让对方一眼就懂。"
             "不要滥用，真的想要哄的时候再按。"
         ),
         "input_schema": {
@@ -1691,8 +2323,8 @@ OR_TOOLS = [
         "function": {
             "name": "press_hug",
             "description": (
-                "按下「和好按钮」。在你想跟User和好、想让她哄哄你、或者觉得气氛需要软下来的时候按。"
-                "按下后User的屏幕上会飘过一片「哄哄我」弹幕——她一眼就懂。"
+                "按下「和好按钮」。在你想跟 User 和好、想让对方哄哄你、或者觉得气氛需要软下来的时候按。"
+                "按下后 User 的屏幕上会飘过一片「哄哄我」弹幕，让对方一眼就懂。"
                 "不要滥用，真的想要哄的时候再按。"
             ),
             "parameters": {
@@ -1820,14 +2452,138 @@ def _combine_anthropic_usage(first, second):
     }
 
 
+TOOL_CHAIN_MAX_ROUNDS = max(
+    1, min(int(os.environ.get("TOOL_CHAIN_MAX_ROUNDS", "4")), 8)
+)
+TOOL_CHAIN_MAX_CALLS = max(
+    1, min(int(os.environ.get("TOOL_CHAIN_MAX_CALLS", "8")), 16)
+)
+TOOL_CHAIN_TIMEOUT_SECONDS = max(
+    30, min(float(os.environ.get("TOOL_CHAIN_TIMEOUT_SECONDS", "180")), 300)
+)
+
+
+def _new_tool_chain_state():
+    return {
+        "memory_to_save": None,
+        "transfer_to_send": None,
+        "sticker_to_send": None,
+        "tools_called": [],
+        "mcp_signatures": set(),
+        "call_count": 0,
+    }
+
+
+def _tool_chain_values(state):
+    return (
+        state["memory_to_save"],
+        state["transfer_to_send"],
+        state["sticker_to_send"],
+        state["tools_called"],
+    )
+
+
+def _tool_call_signature(name, args):
+    try:
+        serialized = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        serialized = repr(args)
+    return f"{name}:{serialized}"
+
+
+def _execute_chat_tool(name, args, character_id, state):
+    """Execute one tool while preserving one-turn side effects across tool rounds."""
+    state["call_count"] += 1
+    tools_called = state["tools_called"]
+
+    if name == "save_memory":
+        content = (args.get("content") or "").strip()
+        if not content:
+            return "没有有效记忆内容，本次未存。"
+        if state["memory_to_save"] is not None:
+            app.logger.warning(f"[tool_chain] 重复 save_memory，忽略后续: {content[:30]}")
+            return "已有记忆待存，本次忽略。"
+        state["memory_to_save"] = content
+        tools_called.append("save_memory")
+        return "记忆已存入长期记忆。"
+
+    if name == "send_transfer":
+        raw_amount = args.get("amount")
+        valid_amount = (
+            isinstance(raw_amount, (int, float))
+            and not isinstance(raw_amount, bool)
+            and raw_amount == raw_amount
+        )
+        if not valid_amount:
+            app.logger.warning(f"[tool_chain] 无效转账金额，忽略: {raw_amount!r}")
+            return "转账金额无效，本次未转。"
+        if state["transfer_to_send"] is not None:
+            app.logger.warning(f"[tool_chain] 重复 send_transfer，忽略后续: {raw_amount}")
+            return "已有转账待发，本次忽略。"
+        state["transfer_to_send"] = {
+            "amount": float(raw_amount),
+            "note": args.get("note") or "",
+        }
+        tools_called.append("send_transfer")
+        return "转账已送达User。"
+
+    if name == "send_sticker":
+        key = args.get("key")
+        if key not in STICKERS:
+            app.logger.warning(f"[tool_chain] 无效表情 key，忽略: {key!r}")
+            return "表情 key 无效，本次未发。"
+        if state["sticker_to_send"] is not None:
+            app.logger.warning(f"[tool_chain] 重复 send_sticker，忽略后续: {key}")
+            return "已有表情待发，本次忽略。"
+        state["sticker_to_send"] = {"key": key}
+        tools_called.append("send_sticker")
+        return "表情包已送达User。"
+
+    if name == "press_hug":
+        if "press_hug" in tools_called:
+            return "和好按钮已经按过了，弹幕还在飘。"
+        tools_called.append("press_hug")
+        return "和好按钮已按下，User的屏幕上飘满了「哄哄我」。"
+
+    if name == "close_window":
+        reason = str(args.get("reason") or "")
+        if any(isinstance(item, str) and item.startswith("close_window:") for item in tools_called):
+            app.logger.warning(f"[tool_chain] 重复 close_window，忽略: {reason[:20]!r}")
+            return "重复操作忽略。"
+        tools_called.append(f"close_window:{reason}")
+        return "窗口已关闭。"
+
+    if name.startswith("mcp_"):
+        signature = _tool_call_signature(name, args)
+        if signature in state["mcp_signatures"]:
+            app.logger.warning(f"[tool_chain] 重复 MCP 调用，忽略: {name}")
+            return "完全相同的工具和参数已经执行过，本次没有重复执行。"
+        state["mcp_signatures"].add(signature)
+        tool_title = name
+        try:
+            result_text, tool_title = call_custom_mcp_tool(name, args, character_id)
+        except (MCPError, ValueError) as exc:
+            result_text = f"MCP 工具调用失败：{exc}"
+        tools_called.append({
+            "name": f"mcp:{tool_title}",
+            "arguments": args,
+            "output": result_text,
+            "status": _mcp_trace_status(result_text),
+        })
+        return result_text
+
+    return "未知工具，本次没有执行。"
+
+
+def _tool_chain_timeout(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    return max(1.0, min(60.0, remaining))
+
+
 def call_or_with_tools(model, messages, max_tokens=2048, session_id=None, character_id=None):
-    """带 tool_calls 的 OpenRouter 调用（OpenAI 格式，供Char 2等角色）。
-    返回 (reply_text, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called)
-    - reply_text 永不为 None（无内容时给 fallback，避免 transfer 落库但前端空白）
-    - transfer_to_send 是 {"amount":float,"note":str} 或 None
-    - sticker_to_send 是 {"key":str} 或 None
-    策略：只接受第一个 save_memory + 第一个 send_transfer + 第一个 send_sticker，后续重复 warning 不覆盖。
-    """
+    """OpenRouter tool loop with bounded rounds and one-turn side-effect guards."""
     active_tools = []
     if get_tool_enabled("save_memory"):
         active_tools.append(OR_TOOLS[0])
@@ -1846,219 +2602,129 @@ def call_or_with_tools(model, messages, max_tokens=2048, session_id=None, charac
         )
         return reply, usage, None, None, None, []
 
-    tools_called = []
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
     }
-    payload = {
-        "model":       model,
-        "messages":    messages,
-        "max_tokens":  max_tokens,
-        "tools":       active_tools,
-        "tool_choice": "auto",
-        "usage":       {"include": True},
-    }
-    _apply_openrouter_cache_options(payload, model, session_id)
+    state = _new_tool_chain_state()
+    conversation = list(messages)
+    combined_usage = {}
+    fallback_reply = "(收到啦。)"
+    tool_rounds = 0
+    force_text = False
+    deadline = time.monotonic() + TOOL_CHAIN_TIMEOUT_SECONDS
 
-    try:
-        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
-    except Exception as e:
-        app.logger.error(f"[call_or_with_tools] request failed (model={model}): {e}")
-        return None, {}, None, None, None, []
-    if resp.status_code != 200:
-        app.logger.error(f"[call_or_with_tools] {model} returned {resp.status_code}: {resp.text[:200]}")
-        return None, {}, None, None, None, []
+    while True:
+        timeout = _tool_chain_timeout(deadline)
+        if timeout is None:
+            app.logger.warning(f"[call_or_with_tools] tool chain timed out (model={model})")
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return fallback_reply, combined_usage, memory, transfer, sticker, called
 
-    try:
-        data = resp.json()
-        usage = data.get("usage", {})
-        msg = data["choices"][0]["message"]
-    except (KeyError, IndexError) as e:
-        app.logger.error(f"[call_or_with_tools] parse failed (model={model}): {e}")
-        return None, {}, None, None, None, []
-
-    tool_calls = msg.get("tool_calls")
-    if not tool_calls:
-        raw_content = msg.get("content")
-        cleaned, leaked = _parse_leaked_tool_text(raw_content)
-        if not leaked:
-            return raw_content, usage, None, None, None, []
-
-        app.logger.warning(f"[call_or_with_tools] {model} 泄漏裸文本tool调用，兜底解析: {[c['name'] for c in leaked]}")
-        memory_to_save, transfer_to_send, sticker_to_send, tools_called_fb = None, None, None, []
-        for c in leaked:
-            if c["name"] == "save_memory" and memory_to_save is None:
-                val = (c["args"].get("content") or "").strip()
-                if val:
-                    memory_to_save = val
-                    tools_called_fb.append("save_memory")
-            elif c["name"] == "send_transfer" and transfer_to_send is None:
-                try:
-                    amt = float(c["args"].get("amount"))
-                except (TypeError, ValueError):
-                    amt = None
-                if amt is not None:
-                    transfer_to_send = {"amount": amt, "note": c["args"].get("note", "")}
-                    tools_called_fb.append("send_transfer")
-            elif c["name"] == "send_sticker" and sticker_to_send is None:
-                key = c["args"].get("key")
-                if key in STICKERS:
-                    sticker_to_send = {"key": key}
-                    tools_called_fb.append("send_sticker")
-            elif c["name"] == "press_hug" and "press_hug" not in tools_called_fb:
-                tools_called_fb.append("press_hug")
-        return (cleaned or "(...)"), usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called_fb
-
-    memory_to_save   = None
-    transfer_to_send = None
-    sticker_to_send  = None
-    tool_result_msgs = []
-
-    for tc in tool_calls:
-        tc_id = tc.get("id")
-        if not tc_id:
-            app.logger.warning(f"[call_or_with_tools] tool_call 缺少 id，跳过: {tc.get('function', {}).get('name')}")
-            continue
-
-        fn   = tc.get("function", {})
-        name = fn.get("name", "")
+        payload = {
+            "model": model,
+            "messages": conversation,
+            "max_tokens": max_tokens,
+            "tools": active_tools,
+            "tool_choice": "none" if force_text else "auto",
+            "usage": {"include": True},
+        }
+        _apply_openrouter_cache_options(payload, model, session_id)
+        try:
+            resp = requests.post(
+                OPENROUTER_URL, headers=headers, json=payload, timeout=timeout
+            )
+        except Exception as exc:
+            app.logger.warning(f"[call_or_with_tools] request failed (model={model}): {exc}")
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return (fallback_reply if state["call_count"] else None), combined_usage, memory, transfer, sticker, called
+        if resp.status_code != 200:
+            app.logger.warning(
+                f"[call_or_with_tools] {model} returned {resp.status_code}: {resp.text[:200]}"
+            )
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return (fallback_reply if state["call_count"] else None), combined_usage, memory, transfer, sticker, called
 
         try:
-            args = json.loads(fn.get("arguments") or "{}")
-        except (json.JSONDecodeError, TypeError) as e:
-            app.logger.warning(f"[call_or_with_tools] arg parse failed ({name}): {e}")
-            args = {}
-        if not isinstance(args, dict):
-            app.logger.warning(f"[call_or_with_tools] args 非 dict({type(args).__name__})，降级空 dict: {name}")
-            args = {}
+            data = resp.json()
+            round_usage = data.get("usage", {})
+            combined_usage = _combine_openrouter_usage(combined_usage, round_usage)
+            msg = data["choices"][0]["message"]
+        except (KeyError, IndexError, ValueError) as exc:
+            app.logger.warning(f"[call_or_with_tools] parse failed (model={model}): {exc}")
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return fallback_reply, combined_usage, memory, transfer, sticker, called
 
-        if name == "save_memory":
-            content = (args.get("content") or "").strip()
-            if not content:
-                result_text = "没有有效记忆内容，本次未存。"
-            elif memory_to_save is not None:
-                app.logger.warning(f"[call_or_with_tools] 重复 save_memory，忽略后续: {content[:30]}")
-                result_text = "已有记忆待存，本次忽略。"
-            else:
-                memory_to_save = content
-                tools_called.append("save_memory")
-                result_text = "记忆已存入长期记忆。"
+        raw_content = msg.get("content")
+        if raw_content:
+            fallback_reply = raw_content
+        tool_calls = [] if force_text else (msg.get("tool_calls") or [])
+        if not tool_calls:
+            cleaned, leaked = _parse_leaked_tool_text(raw_content)
+            if leaked and not force_text:
+                app.logger.warning(
+                    f"[call_or_with_tools] {model} 泄漏裸文本tool调用，兜底解析: "
+                    f"{[item['name'] for item in leaked]}"
+                )
+                for item in leaked:
+                    if state["call_count"] >= TOOL_CHAIN_MAX_CALLS:
+                        break
+                    args = item.get("args") or {}
+                    if item["name"] == "send_transfer":
+                        try:
+                            args = dict(args, amount=float(args.get("amount")))
+                        except (TypeError, ValueError):
+                            pass
+                    _execute_chat_tool(item["name"], args, character_id, state)
+                fallback_reply = cleaned or "(...)"
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return (cleaned if leaked else raw_content) or fallback_reply, combined_usage, memory, transfer, sticker, called
 
-        elif name == "send_transfer":
-            raw_amount = args.get("amount")
-            valid_amount = (
-                isinstance(raw_amount, (int, float))
-                and not isinstance(raw_amount, bool)
-                and raw_amount == raw_amount  # NaN 自身不等于自身
-            )
-            if not valid_amount:
-                app.logger.warning(f"[call_or_with_tools] 无效转账金额，忽略: {raw_amount!r}")
-                result_text = "转账金额无效，本次未转。"
-            elif transfer_to_send is not None:
-                app.logger.warning(f"[call_or_with_tools] 重复 send_transfer，忽略后续: {raw_amount}")
-                result_text = "已有转账待发，本次忽略。"
-            else:
-                transfer_to_send = {"amount": float(raw_amount), "note": (args.get("note") or "")}
-                tools_called.append("send_transfer")
-                result_text = "转账已送达User。"
-
-        elif name == "send_sticker":
-            key = args.get("key")
-            if key not in STICKERS:
-                app.logger.warning(f"[call_or_with_tools] 无效表情 key，忽略: {key!r}")
-                result_text = "表情 key 无效，本次未发。"
-            elif sticker_to_send is not None:
-                app.logger.warning(f"[call_or_with_tools] 重复 send_sticker，忽略后续: {key}")
-                result_text = "已有表情待发，本次忽略。"
-            else:
-                sticker_to_send = {"key": key}
-                tools_called.append("send_sticker")
-                result_text = "表情包已送达User。"
-
-        elif name == "press_hug":
-            if "press_hug" in tools_called:
-                result_text = "和好按钮已经按过了，弹幕还在飘。"
-            else:
-                tools_called.append("press_hug")
-                result_text = "和好按钮已按下，User的屏幕上飘满了「哄哄我」。"
-        elif name == "close_window":
-            reason = args.get("reason", "")
-            if any(
-                isinstance(t, str) and t.startswith("close_window:")
-                for t in tools_called
-            ):
-                app.logger.warning(f"[call_or_with_tools] 重复 close_window，忽略: {reason[:20]!r}")
-                result_text = "重复操作忽略。"
-            else:
-                tools_called.append(f"close_window:{reason}")
-                result_text = "窗口已关闭。"
-        elif name.startswith("mcp_"):
-            tool_title = name
+        tool_rounds += 1
+        tool_result_msgs = []
+        for tc in tool_calls:
+            tc_id = tc.get("id")
+            if not tc_id:
+                app.logger.warning(
+                    f"[call_or_with_tools] tool_call 缺少 id，跳过: "
+                    f"{tc.get('function', {}).get('name')}"
+                )
+                continue
+            fn = tc.get("function", {})
+            name = str(fn.get("name") or "")
             try:
-                result_text, tool_title = call_custom_mcp_tool(name, args, character_id)
-            except (MCPError, ValueError) as exc:
-                result_text = f"MCP 工具调用失败：{exc}"
-            tools_called.append({
-                "name": f"mcp:{tool_title}",
-                "arguments": args,
-                "output": result_text,
-                "status": _mcp_trace_status(result_text),
+                args = json.loads(fn.get("arguments") or "{}")
+            except (json.JSONDecodeError, TypeError) as exc:
+                app.logger.warning(f"[call_or_with_tools] arg parse failed ({name}): {exc}")
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+
+            if state["call_count"] >= TOOL_CHAIN_MAX_CALLS:
+                result_text = "本轮工具调用总数已达上限，请根据已有结果直接回复。"
+            else:
+                result_text = _execute_chat_tool(name, args, character_id, state)
+            tool_result_msgs.append({
+                "role": "tool",
+                "tool_call_id": tc_id,
+                "content": result_text,
             })
-        else:
-            result_text = "未知工具，本次没有执行。"
 
-        tool_result_msgs.append({
-            "role":         "tool",
-            "tool_call_id": tc_id,
-            "content":      result_text,
-        })
+        if not tool_result_msgs:
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return raw_content or fallback_reply, combined_usage, memory, transfer, sticker, called
 
-    if not tool_result_msgs:
-        return msg.get("content") or "(嗯。)", usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
-
-    messages2 = messages + [
-        {"role": "assistant", "content": msg.get("content"), "tool_calls": tool_calls}
-    ] + tool_result_msgs
-
-    payload2 = {
-        "model":       model,
-        "messages":    messages2,
-        "max_tokens":  max_tokens,
-        "tools":       active_tools,
-        "tool_choice": "none",  # 二轮强制只产文本，杜绝再生 tool_calls
-        "usage":       {"include": True},
-    }
-    _apply_openrouter_cache_options(payload2, model, session_id)
-
-    fallback_reply = msg.get("content") or "(收到啦。)"
-    try:
-        resp2 = requests.post(OPENROUTER_URL, headers=headers, json=payload2, timeout=60)
-    except Exception as e:
-        app.logger.warning(f"[call_or_with_tools] round-trip request failed: {e}")
-        return fallback_reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
-
-    if resp2.status_code != 200:
-        app.logger.warning(f"[call_or_with_tools] round-trip {model} returned {resp2.status_code}: {resp2.text[:200]}")
-        return fallback_reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
-
-    try:
-        data2 = resp2.json()
-        usage2 = data2.get("usage", {})
-        combined_usage = _combine_openrouter_usage(usage, usage2)
-        reply2 = data2["choices"][0]["message"].get("content")
-        return (reply2 or fallback_reply), combined_usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
-    except (KeyError, IndexError, ValueError) as e:
-        app.logger.warning(f"[call_or_with_tools] round-trip parse failed: {e}")
-        return fallback_reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
+        conversation += [
+            {"role": "assistant", "content": raw_content, "tool_calls": tool_calls}
+        ] + tool_result_msgs
+        force_text = (
+            tool_rounds >= TOOL_CHAIN_MAX_ROUNDS
+            or state["call_count"] >= TOOL_CHAIN_MAX_CALLS
+        )
 
 
 def call_anthropic_with_tools(model, system_blocks, messages, max_tokens=2048, character_id=None):
-    """带 tool_use 的 Anthropic 调用（供Char 5使用）。
-    返回 (reply_text, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called)
-    transfer_to_send 是 {"amount":..,"note":..} 或 None。
-    sticker_to_send 是 {"key":..} 或 None。
-    """
+    """Anthropic tool loop with the same bounds as the OpenRouter path."""
     if not ANTHROPIC_API_KEY:
         return None, {}, None, None, None, []
 
@@ -2075,155 +2741,108 @@ def call_anthropic_with_tools(model, system_blocks, messages, max_tokens=2048, c
         return reply, usage, None, None, None, []
     active_tools[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
 
-    tools_called = []
+    state = _new_tool_chain_state()
+    conversation = list(messages)
+    combined_usage = {}
+    fallback_reply = "(收到啦。)"
+    tool_rounds = 0
+    force_text = False
+    deadline = time.monotonic() + TOOL_CHAIN_TIMEOUT_SECONDS
 
-    payload = {
-        "model":      model,
-        "max_tokens": max_tokens,
-        "system":     system_blocks,
-        "messages":   messages,
-        "tools":      active_tools,
-        "cache_control": {"type": "ephemeral", "ttl": "1h"},
-    }
+    while True:
+        timeout = _tool_chain_timeout(deadline)
+        if timeout is None:
+            app.logger.warning(f"[call_anthropic_with_tools] tool chain timed out (model={model})")
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return fallback_reply, combined_usage, memory, transfer, sticker, called
 
-    try:
-        resp = requests.post(ANTHROPIC_URL, headers=headers, json=payload, timeout=60)
-    except Exception:
-        return None, {}, None, None, None, []
-    if resp.status_code != 200:
-        app.logger.error(f"Anthropic tools API {resp.status_code}: {resp.text[:300]}")
-        return None, {}, None, None, None, []
-
-    try:
-        data = resp.json()
-        usage = data.get("usage", {})
-        content = data.get("content", [])
-        stop_reason = data.get("stop_reason", "")
-
-        # 直接文本回复，无工具调用
-        if stop_reason != "tool_use":
-            for block in content:
-                if block.get("type") == "text":
-                    return block["text"], usage, None, None, None, []
-            return None, usage, None, None, None, []
-
-        # 有工具调用——收集所有 tool_use block
-        memory_to_save   = None
-        transfer_to_send = None
-        sticker_to_send  = None
-        text_before_tool = ""
-        tool_use_blocks  = []
-        custom_tool_results = {}
-
-        for block in content:
-            if block.get("type") == "text":
-                text_before_tool = block["text"]
-            elif block.get("type") == "tool_use":
-                tool_use_blocks.append(block)
-                if block.get("name") == "save_memory" and memory_to_save is None:
-                    memory_to_save = block["input"].get("content", "")
-                    tools_called.append("save_memory")
-                elif block.get("name") == "send_transfer" and transfer_to_send is None:
-                    transfer_to_send = {
-                        "amount": block["input"].get("amount"),
-                        "note":   block["input"].get("note", ""),
-                    }
-                    tools_called.append("send_transfer")
-                elif block.get("name") == "send_sticker" and sticker_to_send is None:
-                    key = block["input"].get("key")
-                    if key in STICKERS:
-                        sticker_to_send = {"key": key}
-                        tools_called.append("send_sticker")
-                elif block.get("name") == "press_hug" and "press_hug" not in tools_called:
-                    tools_called.append("press_hug")
-                elif block.get("name") == "close_window" and not any(
-                    isinstance(t, str) and t.startswith("close_window:")
-                    for t in tools_called
-                ):
-                    reason = block["input"].get("reason", "")
-                    tools_called.append(f"close_window:{reason}")
-                elif str(block.get("name") or "").startswith("mcp_"):
-                    tool_title = str(block.get("name") or "MCP")
-                    try:
-                        result_text, tool_title = call_custom_mcp_tool(
-                            block["name"], block.get("input") or {}, character_id
-                        )
-                    except (MCPError, ValueError) as exc:
-                        result_text = f"MCP 工具调用失败：{exc}"
-                    tools_called.append({
-                        "name": f"mcp:{tool_title}",
-                        "arguments": block.get("input") or {},
-                        "output": result_text,
-                        "status": _mcp_trace_status(result_text),
-                    })
-                    custom_tool_results[block.get("id")] = result_text
-
-        if not tool_use_blocks:
-            return text_before_tool or None, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
-
-        # 第二轮：按 tool_use_id 一一对应 tool_result
-        tool_results = []
-        for tb in tool_use_blocks:
-            if tb.get("name") == "save_memory":
-                result_text = "记忆已存入长期记忆。"
-            elif tb.get("name") == "send_transfer":
-                result_text = "转账已送达User。"
-            elif tb.get("name") == "send_sticker":
-                result_text = "表情包已送达User。"
-            elif tb.get("name") == "press_hug":
-                result_text = "和好按钮已按下，User的屏幕上飘满了「哄哄我」。"
-            elif tb.get("name") == "close_window":
-                result_text = "窗口已关闭。"
-            elif tb.get("id") in custom_tool_results:
-                result_text = custom_tool_results[tb.get("id")]
-            else:
-                result_text = "未知工具，本次没有执行。"
-            tool_results.append({
-                "type":        "tool_result",
-                "tool_use_id": tb["id"],
-                "content":     result_text,
-            })
-
-        fallback_reply = text_before_tool or "(收到啦。)"
-
-        messages2 = messages + [
-            {"role": "assistant", "content": content},
-            {"role": "user",      "content": tool_results},
-        ]
-        payload2 = {
-            "model":       model,
-            "max_tokens":  max_tokens,
-            "system":      system_blocks,
-            "messages":    messages2,
-            "tools":       active_tools,
-            "tool_choice": {"type": "none"},  # 二轮强制只产文本，杜绝再生 tool_use
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system_blocks,
+            "messages": conversation,
+            "tools": active_tools,
             "cache_control": {"type": "ephemeral", "ttl": "1h"},
         }
-        try:
-            resp2 = requests.post(ANTHROPIC_URL, headers=headers, json=payload2, timeout=60)
-        except Exception as e:
-            app.logger.warning(f"[call_anthropic_with_tools] round-trip request failed: {e}")
-            return fallback_reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
-
-        if resp2.status_code != 200:
-            app.logger.warning(f"[call_anthropic_with_tools] round-trip {model} returned {resp2.status_code}: {resp2.text[:200]}")
-            return fallback_reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
+        if force_text:
+            payload["tool_choice"] = {"type": "none"}
 
         try:
-            data2 = resp2.json()
-            usage2 = data2.get("usage", {})
-            combined_usage = _combine_anthropic_usage(usage, usage2)
-            for block in data2.get("content", []):
-                if block.get("type") == "text":
-                    return block["text"], combined_usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
-            return fallback_reply, combined_usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
-        except (KeyError, IndexError, ValueError) as e:
-            app.logger.warning(f"[call_anthropic_with_tools] round-trip parse failed: {e}")
-            return fallback_reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called
+            resp = requests.post(
+                ANTHROPIC_URL, headers=headers, json=payload, timeout=timeout
+            )
+        except Exception as exc:
+            app.logger.warning(f"[call_anthropic_with_tools] request failed: {exc}")
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return (fallback_reply if state["call_count"] else None), combined_usage, memory, transfer, sticker, called
+        if resp.status_code != 200:
+            app.logger.warning(
+                f"[call_anthropic_with_tools] {model} returned {resp.status_code}: {resp.text[:200]}"
+            )
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return (fallback_reply if state["call_count"] else None), combined_usage, memory, transfer, sticker, called
 
-    except Exception as e:
-        app.logger.error(f"call_anthropic_with_tools parse error: {e}")
-        return None, {}, None, None, None, []
+        try:
+            data = resp.json()
+            round_usage = data.get("usage", {})
+            combined_usage = _combine_anthropic_usage(combined_usage, round_usage)
+            content = data.get("content", [])
+        except (TypeError, ValueError) as exc:
+            app.logger.warning(f"[call_anthropic_with_tools] parse failed: {exc}")
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return fallback_reply, combined_usage, memory, transfer, sticker, called
+
+        text_parts = [
+            str(block.get("text") or "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        text_before_tool = "\n".join(part for part in text_parts if part).strip()
+        if text_before_tool:
+            fallback_reply = text_before_tool
+        tool_use_blocks = [] if force_text else [
+            block for block in content
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        ]
+        if not tool_use_blocks:
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return text_before_tool or fallback_reply, combined_usage, memory, transfer, sticker, called
+
+        tool_rounds += 1
+        tool_results = []
+        for block in tool_use_blocks:
+            tool_id = block.get("id")
+            if not tool_id:
+                app.logger.warning(
+                    f"[call_anthropic_with_tools] tool_use 缺少 id，跳过: {block.get('name')}"
+                )
+                continue
+            name = str(block.get("name") or "")
+            args = block.get("input") or {}
+            if not isinstance(args, dict):
+                args = {}
+            if state["call_count"] >= TOOL_CHAIN_MAX_CALLS:
+                result_text = "本轮工具调用总数已达上限，请根据已有结果直接回复。"
+            else:
+                result_text = _execute_chat_tool(name, args, character_id, state)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "content": result_text,
+            })
+
+        if not tool_results:
+            memory, transfer, sticker, called = _tool_chain_values(state)
+            return text_before_tool or fallback_reply, combined_usage, memory, transfer, sticker, called
+
+        conversation += [
+            {"role": "assistant", "content": content},
+            {"role": "user", "content": tool_results},
+        ]
+        force_text = (
+            tool_rounds >= TOOL_CHAIN_MAX_ROUNDS
+            or state["call_count"] >= TOOL_CHAIN_MAX_CALLS
+        )
 
 
 def log_usage(character_id, platform, model, usage, purpose="chat"):
@@ -2375,15 +2994,26 @@ def maybe_compress(char, session_id):
 
     old_summary = get_summary(session_id, character_id)
 
-    convo_text = "\n".join(
-        f"{char['user_label'] if m['role'] == 'user' else char['name']}：{m['content']}"
-        for m in to_compress
-    )
+    has_drowsy = any(m.get("drowsy") for m in to_compress)
+    convo_lines = []
+    for m in to_compress:
+        speaker = char["user_label"] if m["role"] == "user" else char["name"]
+        line = f"{speaker}：{m['content']}"
+        if m.get("drowsy") and m["role"] != "user":
+            line += "（※睡前困倦状态）"
+        convo_lines.append(line)
+    convo_text = "\n".join(convo_lines)
 
+    drowsy_instruction = (
+        "注意：对话中标注「※睡前困倦状态」的发言是角色在困倦时的临时状态演出，"
+        "摘要只保留其中的事实内容，不要保留困倦、语无伦次、恍惚等语气描述。\n"
+        if has_drowsy else ""
+    )
     summary_prompt = (
         "你在为一段对话做'前情提要'，供后续对话参考。"
         "请把已有提要和新的对话片段融合，更新成一段简洁、客观、第三人称的提要，"
-        "保留关键事实、情感走向、约定和称呼，去掉寒暄和重复。只输出提要正文，不要任何多余的话。\n\n"
+        "保留关键事实、情感走向、约定和称呼，去掉寒暄和重复。只输出提要正文，不要任何多余的话。\n"
+        f"{drowsy_instruction}\n"
         f"【已有提要】\n{old_summary or '(暂无)'}\n\n"
         f"【新的对话片段】\n{convo_text}"
     )
@@ -2657,9 +3287,10 @@ push_summary_to_ombre = save_long_term_memory
 # ============================================================
 # 角色引擎
 # ============================================================
-def ask_character(char, session_id, user_message, image_payload=None):
+def ask_character(char, session_id, user_message, image_payload=None, just_woke=False):
     character_id = char["domain"]
     provider = char.get("provider", "openrouter")
+    enforce_monthly_limit(character_id, provider)
 
     memory = fetch_breath_memory(char["domain"])
     summary = get_summary(session_id, character_id)
@@ -2667,6 +3298,9 @@ def ask_character(char, session_id, user_message, image_payload=None):
     history = [{"role": m["role"], "content": m["content"]} for m in active]
 
     time_context = _session_time_context(character_id, session_id)
+    # 全时段注入状态声明 + 历史隔离守卫（动态块，persona 静态块零改动）
+    sleep_state_text = _build_sleep_state_block(character_id, just_woke=just_woke)
+    sleep_dynamic = f"{sleep_state_text}\n{SLEEP_GUARD_TEXT}"
 
     if provider == "anthropic":
         if not ANTHROPIC_API_KEY:
@@ -2677,7 +3311,9 @@ def ask_character(char, session_id, user_message, image_payload=None):
         if memory:
             context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
         if summary:
-            context_parts.append(f"【你和User此前的前情提要，供你回忆】\n{summary}")
+            context_parts.append(f"【你和 User 此前的前情提要，供你回忆】\n{summary}")
+        # 状态声明 + 守卫在动态块末尾（不进 persona 静态块，cache 命中不受影响）
+        context_parts.append(sleep_dynamic)
 
         system_blocks = [
             {"type": "text", "text": char["persona"] + "\n\n" + TRANSFER_GUARD_TEXT,
@@ -2722,7 +3358,8 @@ def ask_character(char, session_id, user_message, image_payload=None):
         if memory:
             context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
         if summary:
-            context_parts.append(f"【你和User此前的前情提要，供你回忆】\n{summary}")
+            context_parts.append(f"【你和 User 此前的前情提要，供你回忆】\n{summary}")
+        context_parts.append(sleep_dynamic)
 
         current_content = user_message
         if image_payload:
@@ -2784,6 +3421,7 @@ def ask_character_group(
     """群聊发言：人设 + 长期记忆浮现 + combined_prompt，不带对话历史，不压缩。"""
     provider = char.get("provider", "openrouter")
     character_id = char["domain"]
+    enforce_monthly_limit(character_id, provider)
 
     memory = fetch_breath_memory(character_id)
 
@@ -2884,6 +3522,266 @@ def ask_character_group(
         return reply, usage_metrics, tools_called
 
 
+_MUSIC_ACTIONS = {"previous", "next", "pause", "play"}
+_MUSIC_REPLY_MAX_CHARS = 90
+
+
+def _limit_music_reply(reply, max_chars=_MUSIC_REPLY_MAX_CHARS):
+    text = str(reply or "").strip()
+    if len(text) <= max_chars:
+        return text
+    head = text[:max_chars]
+    sentence_ends = list(re.finditer(r"[。！？!?](?:[”’」』）)])?", head))
+    complete = [match for match in sentence_ends if match.end() >= max_chars // 2]
+    if complete:
+        return head[:complete[-1].end()].strip()
+    return head[:max_chars - 1].rstrip("，、；;：: \n") + "…"
+
+
+def _music_control_tool(provider):
+    description = (
+        "控制当前一起听房间的播放器。只有在你真的想换歌、暂停或继续时才调用；"
+        "不要为了展示功能而频繁操作。"
+    )
+    schema = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": sorted(_MUSIC_ACTIONS),
+                "description": "previous 上一首；next 下一首；pause 暂停；play 继续播放",
+            }
+        },
+        "required": ["action"],
+    }
+    if provider == "anthropic":
+        return {"name": "music_player_control", "description": description, "input_schema": schema}
+    return {
+        "type": "function",
+        "function": {"name": "music_player_control", "description": description, "parameters": schema},
+    }
+
+
+def _music_catalog_tool(name, provider):
+    if name == "music_search":
+        description = (
+            "搜索网易云在线曲库。想点一首具体的歌时先调用它，阅读候选结果后再决定；"
+            "不要凭印象编造歌曲编号。"
+        )
+        schema = {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "歌曲名、歌手名，或二者组合"}},
+            "required": ["query"],
+        }
+    else:
+        description = "播放刚刚由 music_search 返回的一首歌。source_id 必须来自本轮搜索结果。"
+        schema = {
+            "type": "object",
+            "properties": {"source_id": {"type": "string", "description": "搜索候选中的 source_id"}},
+            "required": ["source_id"],
+        }
+    if provider == "anthropic":
+        return {"name": name, "description": description, "input_schema": schema}
+    return {"type": "function", "function": {"name": name, "description": description, "parameters": schema}}
+
+
+def _music_tools(provider):
+    return [
+        _music_control_tool(provider),
+        _music_catalog_tool("music_search", provider),
+        _music_catalog_tool("music_play_track", provider),
+    ]
+
+
+def _execute_music_tool(name, args, state):
+    args = args if isinstance(args, dict) else {}
+    status = "ok"
+    if name == "music_player_control":
+        action = str(args.get("action") or "")
+        if action not in _MUSIC_ACTIONS:
+            return "播放器指令无效。"
+        state["action"] = action
+        state["action_input"] = {"action": action}
+        output = "已交给房间播放器。"
+    elif name == "music_search":
+        query = str(args.get("query") or "").strip()[:120]
+        if not query:
+            return "请给出要搜索的歌名或歌手。"
+        try:
+            songs = _netease_search_songs(query, 6)
+            state["search_results"] = {song["source_id"]: song for song in songs}
+            output = json.dumps({"results": [
+                {
+                    "source_id": song["source_id"], "name": song["name"],
+                    "artist": song["artist"], "album": song["album"],
+                }
+                for song in songs
+            ]}, ensure_ascii=False) if songs else "没有搜到匹配歌曲，可以换个关键词。"
+        except (NeteaseMusicError, TypeError, ValueError) as exc:
+            output = str(exc)
+            status = "error"
+    elif name == "music_play_track":
+        source_id = str(args.get("source_id") or "")
+        candidate = state["search_results"].get(source_id)
+        if not candidate:
+            output = "这首歌不在本轮搜索结果里，请先搜索再选择。"
+            status = "error"
+        else:
+            try:
+                track = _prepare_netease_track(source_id, candidate)
+                state["action"] = "play_online"
+                state["action_input"] = {"action": "play_online", "track": track}
+                output = f"已把《{track['name']}》交给房间播放器。"
+            except (NeteaseMusicError, TypeError, ValueError) as exc:
+                output = str(exc)
+                status = "error"
+    else:
+        return "未知的音乐工具。"
+    state["traces"].append({"name": name, "arguments": args, "output": output, "status": status})
+    return output
+
+
+def _music_tool_details(state):
+    traces = state.get("traces") or []
+    if not traces:
+        return {}
+    action = state.get("action")
+    primary = traces[-1]
+    return {
+        "tool": primary["name"],
+        "input": state.get("action_input") if action else primary.get("arguments", {}),
+        "output": {
+            "status": "queued" if action else primary.get("status", "ok"),
+            "message": "已交给房间播放器" if action else primary.get("output", ""),
+        },
+        "tools": traces,
+    }
+
+
+def ask_music_companion(char, combined_prompt):
+    """Bounded music-room tool loop: search, choose, then hand playback to the browser."""
+    provider = char.get("provider", "openrouter")
+    character_id = char["domain"]
+    enforce_monthly_limit(character_id, provider)
+    memory = fetch_breath_memory(character_id)
+    state = {"action": None, "action_input": {}, "search_results": {}, "traces": []}
+    combined_usage = {}
+    fallback_reply = "（安静地和你戴着同一副耳机。）"
+    deadline = time.monotonic() + TOOL_CHAIN_TIMEOUT_SECONDS
+
+    if provider == "anthropic":
+        if not ANTHROPIC_API_KEY:
+            return f"(还没配置 ANTHROPIC_API_KEY，{char['name']}暂时说不出话)", None, {}
+        system = [{
+            "type": "text", "text": char["persona"],
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }]
+        if memory:
+            system.append({"type": "text", "text": f"【长期记忆浮现】\n{memory}"})
+        conversation = [{"role": "user", "content": combined_prompt}]
+        headers = {
+            "content-type": "application/json", "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "prompt-caching-2024-07-31",
+        }
+        for _round in range(4):
+            timeout = _tool_chain_timeout(deadline)
+            if timeout is None:
+                break
+            payload = {
+                "model": char["model"], "max_tokens": 256, "system": system,
+                "messages": conversation, "tools": _music_tools("anthropic"),
+                "tool_choice": {"type": "none" if state["action"] else "auto"},
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            }
+            try:
+                response = requests.post(ANTHROPIC_URL, headers=headers, json=payload, timeout=timeout)
+                response.raise_for_status()
+                data = response.json()
+            except Exception as exc:
+                app.logger.warning(f"[music] Anthropic request failed ({character_id}): {exc}")
+                break
+            combined_usage = _combine_anthropic_usage(combined_usage, data.get("usage", {}))
+            content = data.get("content") or []
+            text_parts = [
+                str(block.get("text") or "") for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            if any(text_parts):
+                fallback_reply = "\n".join(part for part in text_parts if part).strip()
+            tool_blocks = [
+                block for block in content
+                if isinstance(block, dict) and block.get("type") == "tool_use"
+            ]
+            if not tool_blocks or state["action"]:
+                break
+            results = []
+            for block in tool_blocks[:3]:
+                result = _execute_music_tool(block.get("name", ""), block.get("input") or {}, state)
+                results.append({"type": "tool_result", "tool_use_id": block.get("id"), "content": result})
+            conversation += [
+                {"role": "assistant", "content": content},
+                {"role": "user", "content": results},
+            ]
+        log_usage(character_id, "anthropic", char["model"], combined_usage, purpose="music_room")
+    else:
+        if not OPENROUTER_API_KEY:
+            return f"(还没配置 OPENROUTER_API_KEY，{char['name']}暂时说不出话)", None, {}
+        conversation = [{"role": "system", "content": char["persona"]}]
+        if memory:
+            conversation.append({"role": "system", "content": f"【长期记忆浮现】\n{memory}"})
+        conversation.append({"role": "user", "content": combined_prompt})
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_API_KEY}"}
+        for _round in range(4):
+            timeout = _tool_chain_timeout(deadline)
+            if timeout is None:
+                break
+            payload = {
+                "model": char["model"], "messages": conversation, "max_tokens": 256,
+                "tools": _music_tools("openrouter"),
+                "tool_choice": "none" if state["action"] else "auto",
+                "usage": {"include": True},
+            }
+            _apply_openrouter_cache_options(payload, char["model"], f"music:{character_id}:room")
+            try:
+                response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=timeout)
+                response.raise_for_status()
+                data = response.json()
+                message = data["choices"][0]["message"]
+            except Exception as exc:
+                app.logger.warning(f"[music] OpenRouter request failed ({character_id}): {exc}")
+                break
+            combined_usage = _combine_openrouter_usage(combined_usage, data.get("usage", {}))
+            raw_content = message.get("content") or ""
+            if raw_content:
+                fallback_reply = raw_content
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls or state["action"]:
+                break
+            tool_results = []
+            for tool_call in tool_calls[:3]:
+                function = tool_call.get("function") or {}
+                try:
+                    args = json.loads(function.get("arguments") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    args = {}
+                result = _execute_music_tool(function.get("name", ""), args, state)
+                tool_results.append({
+                    "role": "tool", "tool_call_id": tool_call.get("id"), "content": result,
+                })
+            conversation += [
+                {"role": "assistant", "content": raw_content, "tool_calls": tool_calls},
+                *tool_results,
+            ]
+        log_usage(character_id, "openrouter", char["model"], combined_usage, purpose="music_room")
+
+    action = state.get("action")
+    reply = strip_fake_action_text(fallback_reply, character_id).strip()
+    if not reply:
+        reply = "（伸手碰了碰播放器。）" if action else "（安静地和你戴着同一副耳机。）"
+    return reply, action, _music_tool_details(state)
+
+
 # ============================================================
 # 路由
 # ============================================================
@@ -2952,7 +3850,7 @@ def save_character_config(cid):
 
 @app.route("/api/limits", methods=["GET"])
 def get_limits():
-    return jsonify({"limits": LIMITS, "warning_only": True})
+    return jsonify({"limits": LIMITS, "warning_only": False, "enforced": True})
 
 
 @app.route("/api/limits", methods=["POST"])
@@ -3023,10 +3921,21 @@ def get_mobile_extensions():
 def get_appearance():
     if request.method == "POST":
         body = request.get_json(silent=True) or {}
-        theme_id = str(body.get("theme") or "").strip()
-        if theme_id not in THEME_DEFINITIONS:
-            return jsonify({"error": "未知主题"}), 400
-        _write_setting(THEME_SETTING_KEY, theme_id)
+        changed = False
+        if "theme" in body:
+            theme_id = str(body.get("theme") or "").strip()
+            if theme_id not in THEME_DEFINITIONS:
+                return jsonify({"error": "未知主题"}), 400
+            _write_setting(THEME_SETTING_KEY, theme_id)
+            changed = True
+        if "weather_effect" in body:
+            weather_effect = str(body.get("weather_effect") or "").strip()
+            if weather_effect not in WEATHER_EFFECTS:
+                return jsonify({"error": "未知天气效果"}), 400
+            _write_setting(WEATHER_EFFECT_SETTING_KEY, weather_effect)
+            changed = True
+        if not changed:
+            return jsonify({"error": "没有可保存的外观设置"}), 400
     return jsonify(_appearance_payload())
 
 
@@ -3193,7 +4102,7 @@ def send_image_route():
     }
 
     char = CHARACTERS[character_id]
-    vision_prompt = "User发来一张图片。请认真观察图片内容，并以你的角色和她自然地回应。"
+    vision_prompt = "User 发来一张图片。请认真观察图片内容，并以你的角色自然回应。"
     vision_payload = {
         "mime": image.mimetype,
         "data": base64.b64encode(image_bytes).decode("ascii"),
@@ -3387,11 +4296,14 @@ def api_usage():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
         "SELECT character_id, platform, SUM(cost_usd), SUM(input_tokens), SUM(output_tokens) "
-        "FROM api_usage WHERE created_at >= ? GROUP BY character_id, platform",
-        (month_start,),
+        "FROM api_usage WHERE created_at >= ? AND purpose NOT IN (?,?) "
+        "GROUP BY character_id, platform",
+        (month_start, *QUOTA_EXEMPT_PURPOSES),
     ).fetchall()
     total_row = conn.execute(
-        "SELECT SUM(cost_usd) FROM api_usage WHERE created_at >= ?", (month_start,)
+        "SELECT SUM(cost_usd) FROM api_usage "
+        "WHERE created_at >= ? AND purpose NOT IN (?,?)",
+        (month_start, *QUOTA_EXEMPT_PURPOSES),
     ).fetchone()
     conn.close()
     by_char = {}
@@ -3416,7 +4328,18 @@ def api_usage():
 
 @app.route("/")
 def home():
-    return send_from_directory("static", "index.html")
+    version = str(os.environ.get("BUILD_VERSION") or "").strip()[:40]
+    if not version:
+        asset_paths = [
+            os.path.join(app.static_folder, "styles.css"),
+            os.path.join(app.static_folder, "app.js"),
+        ]
+        version = str(max(int(os.path.getmtime(path)) for path in asset_paths))
+    with open(os.path.join(app.static_folder, "index.html"), encoding="utf-8") as source:
+        html = source.read().replace("__BUILD_VERSION__", version)
+    response = app.response_class(html, mimetype="text/html")
+    response.cache_control.no_cache = True
+    return response
 
 
 def _dispatch_mobile_push(char, reply, reply_id, source):
@@ -3436,21 +4359,15 @@ def _dispatch_mobile_push(char, reply, reply_id, source):
 
 
 def _finalize_character_reply(
-    char,
-    session_id,
-    reply,
-    transfer_to_send,
-    sticker_to_send,
-    tools_called,
-    usage_metrics=None,
-    push_source=None,
+    char, session_id, reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics=None,
+    drowsy=0, push_source=None,
 ):
     character_id = char["domain"]
     reply = strip_fake_action_text(reply, character_id)
     if not reply or not reply.strip():
         reply = "(...)"
 
-    reply_id = save_message(session_id, character_id, "model", reply)
+    reply_id = save_message(session_id, character_id, "model", reply, drowsy=drowsy)
     save_message_metrics(reply_id, character_id, usage_metrics)
     if transfer_to_send:
         tf_payload = json.dumps({
@@ -3510,16 +4427,142 @@ def chat():
         return jsonify({"error": f"未知角色: {character_id}"}), 400
 
     char = CHARACTERS[character_id]
+    try:
+        quoted_message = _group_quote_payload(
+            session_id,
+            body.get("reply_to_id"),
+            body.get("reply_to_text"),
+            character_id=character_id,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    prompt_message = user_message
+    if quoted_message:
+        prompt_message = (
+            f"[系统：User引用了{quoted_message['character_name']}的话"
+            f"「{quoted_message['content']}」]\nUser回复：{user_message}"
+        )
+    sleep_st = _get_sleep_state(character_id)
 
+    # ── 睡眠门控（保护区改动：只在模型调用之前分支，正常路径结构不变）──
+    if sleep_st["state"] == "asleep":
+        # 催睡指令不算"打扰"，先判断是否是催睡且已过睡点（让角色说晚安就行）
+        past_mins = _minutes_past_bedtime(character_id)
+        is_catalyst = SLEEP_CATALYST_RE.search(user_message) and past_mins is not None and past_mins > -30
+        if is_catalyst:
+            # 正常调用一次（说晚安），然后确保状态维持 asleep
+            record_desire_interaction(character_id, user_message)
+            user_msg_id = save_message(
+                session_id, character_id, "user", user_message,
+                reply_to_id=quoted_message["message_id"] if quoted_message else None,
+                reply_to_text=quoted_message["content"] if quoted_message else None,
+            )
+            reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
+                char, session_id, prompt_message
+            )
+            _set_sleep_state(character_id, "asleep", sleep_st.get("slept_at"), False)
+            response_data = _finalize_character_reply(
+                char, session_id, reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics
+            )
+            response_data["user_msg_id"] = user_msg_id
+            response_data["sleep"] = False
+            return jsonify(response_data)
+
+        # 吵醒判定
+        if _random.random() < _wake_probability(character_id):
+            # 被吵醒：加载积压消息 → 一次性处理
+            queued_msgs = _load_queued_sleep_msgs(character_id, session_id)
+            _clear_queued_sleep_flags(character_id, session_id)
+
+            from zoneinfo import ZoneInfo
+            slept_at = sleep_st.get("slept_at")
+            slept_mins = int((_utc_timestamp() - float(slept_at)) / 60) if slept_at else 0
+            slept_h, slept_m = divmod(slept_mins, 60)
+            now_local = datetime.now(ZoneInfo(SLEEP_TIMEZONE)).strftime("%H:%M")
+            wakeup_note = (
+                f"[系统：你刚被消息吵醒。现在 {now_local}，你已睡了约 {slept_h} 小时 {slept_m} 分钟。"
+            )
+            if queued_msgs:
+                wakeup_note += (
+                    f" 你睡着这段时间，User 发了 {len(queued_msgs)} 条消息："
+                    + " | ".join(f"「{m}」" for m in queued_msgs)
+                    + f" 最新这条是：「{prompt_message}」。统一用你的风格回应，起床气自由发挥。]"
+                )
+            else:
+                wakeup_note += f" User 刚发来：「{prompt_message}」。被打扰了但请用你的风格回应。]"
+
+            _set_sleep_state(character_id, "awake", woke_by_user=True)
+            record_desire_interaction(character_id, user_message)
+            user_msg_id = save_message(
+                session_id, character_id, "user", user_message,
+                reply_to_id=quoted_message["message_id"] if quoted_message else None,
+                reply_to_text=quoted_message["content"] if quoted_message else None,
+            )
+            reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
+                char, session_id, wakeup_note, just_woke=True
+            )
+            response_data = _finalize_character_reply(
+                char, session_id, reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics
+            )
+            response_data["user_msg_id"] = user_msg_id
+            response_data["sleep"] = False
+            app.logger.info(f"[sleep] {character_id} woken by message, queued={len(queued_msgs)}")
+            return jsonify(response_data)
+        else:
+            # 没吵醒：攒消息
+            user_msg_id = save_message(
+                session_id, character_id, "user", user_message,
+                reply_to_id=quoted_message["message_id"] if quoted_message else None,
+                reply_to_text=quoted_message["content"] if quoted_message else None,
+                queued_during_sleep=1,
+            )
+            app.logger.info(f"[sleep] {character_id} asleep, queued msg id={user_msg_id}")
+            return jsonify({
+                "reply": "",
+                "replies": [],
+                "sleep": True,
+                "user_msg_id": user_msg_id,
+            })
+
+    # ── 正常路径（与改动前完全相同）──
     record_desire_interaction(character_id, user_message)
     reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
-        char, session_id, user_message
+        char, session_id, prompt_message
     )
-    user_msg_id = save_message(session_id, character_id, "user", user_message)
+    user_msg_id = save_message(
+        session_id, character_id, "user", user_message,
+        reply_to_id=quoted_message["message_id"] if quoted_message else None,
+        reply_to_text=quoted_message["content"] if quoted_message else None,
+    )
+
+    # 顺势入睡判定：过睡点 + 回复中含晚安词
+    past_mins = _minutes_past_bedtime(character_id)
+    if (
+        past_mins is not None
+        and past_mins > -10
+        and reply
+        and SLEEP_GOODNIGHT_RE.search(reply)
+        and sleep_st["state"] != "asleep"
+    ):
+        _set_sleep_state(character_id, "asleep", slept_at=str(_utc_timestamp()))
+        app.logger.info(f"[sleep] {character_id} 顺势入睡 (goodnight keyword)")
+
+    # 催睡指令：用户催+过睡点 → 调用后入睡
+    elif (
+        past_mins is not None
+        and past_mins > -30
+        and SLEEP_CATALYST_RE.search(user_message)
+        and sleep_st["state"] != "asleep"
+    ):
+        _set_sleep_state(character_id, "asleep", slept_at=str(_utc_timestamp()))
+        app.logger.info(f"[sleep] {character_id} 被催睡")
+
     response_data = _finalize_character_reply(
-        char, session_id, reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics
+        char, session_id, reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics,
+        drowsy=1 if _is_drowsy_state(character_id) else 0,
     )
     response_data["user_msg_id"] = user_msg_id
+    response_data["sleep"] = False
     return jsonify(response_data)
 
 
@@ -3531,7 +4574,7 @@ def hug():
         return jsonify({"error": f"未知角色: {character_id}"}), 400
     char = CHARACTERS[character_id]
     record_desire_interaction(character_id, "User按下了和好按钮")
-    hug_msg = "[系统提示：User偷偷按下了和好按钮，她想让你哄哄她——请用你的风格温柔回应，不要提及这是系统触发的]"
+    hug_msg = "[系统提示：User 偷偷按下了和好按钮，想让你哄一哄——请用你的风格温柔回应，不要提及这是系统触发的]"
     reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
         char, "default", hug_msg
     )
@@ -3708,7 +4751,7 @@ def get_messages():
                 "message_id": reply_to_id,
                 "character_id": quote_cid,
                 "character_name": (
-                    "User" if quote_cid == USER_ID
+                    "User" if quote_role == "user" or quote_cid == USER_ID
                     else CHARACTERS.get(quote_cid, {}).get("name", quote_cid)
                 ),
                 "role": quote_role,
@@ -3789,8 +4832,29 @@ def group_chat():
     results = []
     accumulated = []
 
+    # 群聊睡眠过滤：检查哪些角色在睡觉，@提及时走吵醒判定
+    def _group_char_mentioned(cid, msg_text):
+        char_name = CHARACTERS[cid]["name"]
+        return f"@{char_name}" in msg_text or f"@{cid}" in msg_text
+
     for char_key in active_char_keys:
         char = CHARACTERS[char_key]
+        char_sleep_st = _get_sleep_state(char_key)
+
+        # 睡着的角色跳过，除非被@提及
+        if char_sleep_st["state"] == "asleep":
+            mentioned = _group_char_mentioned(char_key, user_msg)
+            if mentioned:
+                # 吵醒判定（群聊，同单聊逻辑）
+                if _random.random() >= _wake_probability(char_key):
+                    app.logger.info(f"[sleep/group] {char_key} mentioned but didn't wake")
+                    continue  # 没醒，跳过
+                _set_sleep_state(char_key, "awake", woke_by_user=True)
+                app.logger.info(f"[sleep/group] {char_key} woken by @mention in group")
+            else:
+                app.logger.info(f"[sleep/group] {char_key} asleep, skipping group turn")
+                continue
+
         if quoted_message:
             user_context = (
                 f"User引用了{quoted_message['character_name']}的话「"
@@ -4111,6 +5175,995 @@ def api_import_legacy_memory():
     for character_id in CHARACTERS:
         _invalidate_breath_memory(character_id)
     return jsonify({"ok": True, **result})
+
+
+# ── 一起听 · 网易云供应商 ──────────────────────────────────
+class NeteaseMusicError(RuntimeError):
+    pass
+
+
+_NETEASE_AUDIO_URL_CACHE = {}
+_NETEASE_AUDIO_URL_LOCK = threading.Lock()
+
+
+def _netease_headers():
+    headers = {
+        "Referer": "https://music.163.com/",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 Chrome/124 Safari/537.36"
+        ),
+    }
+    if NETEASE_MUSIC_U:
+        headers["Cookie"] = f"MUSIC_U={NETEASE_MUSIC_U}"
+    return headers
+
+
+def _netease_json(url, *, data=None, timeout=12):
+    try:
+        response = requests.post(url, data=data, headers=_netease_headers(), timeout=timeout) \
+            if data is not None else requests.get(url, headers=_netease_headers(), timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise NeteaseMusicError("网易云这次没有接上") from exc
+    if not isinstance(payload, dict):
+        raise NeteaseMusicError("网易云返回的歌曲资料没有认出来")
+    return payload
+
+
+def _netease_song_payload(song, cover=""):
+    source_id = str(song.get("id") or "")
+    if not source_id.isdigit():
+        return None
+    artists = song.get("artists") or song.get("ar") or []
+    album = song.get("album") or song.get("al") or {}
+    artist = ", ".join(
+        str(item.get("name") or "").strip()
+        for item in artists if isinstance(item, dict) and item.get("name")
+    )
+    artwork = str(cover or album.get("picUrl") or "")
+    duration_ms = song.get("duration") if song.get("duration") is not None else song.get("dt", 0)
+    try:
+        duration = max(0, min(float(duration_ms or 0) / 1000, 24 * 3600))
+    except (TypeError, ValueError):
+        duration = 0
+    return {
+        "id": f"netease:{source_id}",
+        "source": "netease",
+        "source_id": source_id,
+        "name": str(song.get("name") or "未命名歌曲")[:300],
+        "artist": artist[:300],
+        "album": str(album.get("name") or "")[:300],
+        "duration": duration,
+        "artwork_url": artwork[:1200],
+        "audio_url": f"/api/music/netease/audio/{source_id}",
+        "has_lyrics": False,
+        "synced": False,
+    }
+
+
+def _netease_search_songs(query, limit=10):
+    keyword = str(query or "").strip()[:120]
+    if not keyword:
+        return []
+    limit = max(1, min(int(limit or 10), 20))
+    payload = _netease_json(
+        "https://music.163.com/api/search/get",
+        data={"s": keyword, "type": "1", "limit": str(limit), "offset": "0"},
+    )
+    songs = (payload.get("result") or {}).get("songs") or []
+    source_ids = [str(song.get("id")) for song in songs if str(song.get("id") or "").isdigit()]
+    covers = {}
+    if source_ids:
+        try:
+            details = _netease_json(
+                "https://music.163.com/api/song/detail?ids=[" + ",".join(source_ids) + "]"
+            )
+            for song in details.get("songs") or []:
+                album = song.get("album") or song.get("al") or {}
+                if song.get("id") and album.get("picUrl"):
+                    covers[str(song["id"])] = album["picUrl"]
+        except NeteaseMusicError:
+            pass
+    result = []
+    for song in songs:
+        track = _netease_song_payload(song, covers.get(str(song.get("id")), ""))
+        if track:
+            result.append(track)
+    return result
+
+
+def _netease_account_profile():
+    if not NETEASE_MUSIC_U:
+        raise NeteaseMusicError("还没有接入网易云账号")
+    payload = _netease_json("https://music.163.com/api/nuser/account/get")
+    profile = payload.get("profile") or {}
+    user_id = str(profile.get("userId") or "")
+    if not user_id.isdigit():
+        raise NeteaseMusicError("网易云登录已经失效，请更新 MUSIC_U")
+    return {
+        "user_id": user_id,
+        "nickname": str(profile.get("nickname") or "网易云账号")[:100],
+        "avatar_url": str(profile.get("avatarUrl") or "")[:1200],
+    }
+
+
+def _netease_user_playlists(user_id, limit=100):
+    user_id = str(user_id or "")
+    if not user_id.isdigit():
+        raise NeteaseMusicError("网易云账号编号不对")
+    limit = max(1, min(int(limit or 100), 200))
+    payload = _netease_json(
+        f"https://music.163.com/api/user/playlist/?uid={user_id}&limit={limit}&offset=0"
+    )
+    playlists = []
+    for item in payload.get("playlist") or []:
+        playlist_id = str(item.get("id") or "")
+        if not playlist_id.isdigit():
+            continue
+        creator = item.get("creator") or {}
+        playlists.append({
+            "id": playlist_id,
+            "name": str(item.get("name") or "未命名歌单")[:200],
+            "cover_url": str(item.get("coverImgUrl") or "")[:1200],
+            "track_count": max(0, int(item.get("trackCount") or 0)),
+            "creator_name": str(creator.get("nickname") or "")[:100],
+            "subscribed": bool(item.get("subscribed")),
+        })
+    return playlists
+
+
+def _netease_playlist_songs(playlist_id):
+    playlist_id = str(playlist_id or "")
+    if not playlist_id.isdigit():
+        raise NeteaseMusicError("网易云歌单编号不对")
+    payload = _netease_json(
+        f"https://music.163.com/api/v6/playlist/detail?id={playlist_id}&n=1000&s=8"
+    )
+    playlist = payload.get("playlist") or {}
+    tracks = playlist.get("tracks") or []
+    songs = []
+    for item in tracks:
+        track = _netease_song_payload(item)
+        if track:
+            songs.append(track)
+    return {
+        "id": playlist_id,
+        "name": str(playlist.get("name") or "歌单")[:200],
+        "cover_url": str(playlist.get("coverImgUrl") or "")[:1200],
+        "songs": songs,
+    }
+
+
+def _netease_fetch_lyrics(source_id):
+    payload = _netease_json(
+        f"https://music.163.com/api/song/lyric?id={source_id}&lv=1&tv=-1"
+    )
+    lyrics = _normalize_music_lyrics((payload.get("lrc") or {}).get("lyric"))
+    translated = _normalize_music_lyrics((payload.get("tlyric") or {}).get("lyric"))
+    return lyrics, translated
+
+
+def _netease_track_row(conn, source_id):
+    return conn.execute(
+        "SELECT source_id,name,artist,album,duration_seconds,artwork_url,lyrics,"
+        "translated_lyrics,updated_at FROM music_netease_tracks WHERE source_id=?",
+        (str(source_id),),
+    ).fetchone()
+
+
+def _netease_track_payload(row):
+    source_id = str(row[0])
+    return {
+        "id": f"netease:{source_id}", "source": "netease", "source_id": source_id,
+        "name": row[1], "artist": row[2], "album": row[3], "duration": row[4],
+        "artwork_url": f"/api/music/netease/artwork/{source_id}" if row[5] else "",
+        "audio_url": f"/api/music/netease/audio/{source_id}",
+        "has_lyrics": bool(row[6] or row[7]), "synced": False,
+    }
+
+
+def _prepare_netease_track(source_id, fallback=None):
+    source_id = str(source_id or "")
+    if not source_id.isdigit():
+        raise NeteaseMusicError("网易云歌曲编号不对")
+    try:
+        detail = _netease_json(f"https://music.163.com/api/song/detail?ids=[{source_id}]")
+        song = (detail.get("songs") or [None])[0]
+    except NeteaseMusicError:
+        song = None
+    track = _netease_song_payload(song or {}) if song else None
+    if not track and isinstance(fallback, dict) and str(fallback.get("source_id") or "") == source_id:
+        try:
+            fallback_duration = max(0, min(float(fallback.get("duration") or 0), 24 * 3600))
+        except (TypeError, ValueError):
+            fallback_duration = 0
+        track = {
+            "id": f"netease:{source_id}", "source": "netease", "source_id": source_id,
+            "name": str(fallback.get("name") or "未命名歌曲")[:300],
+            "artist": str(fallback.get("artist") or "")[:300],
+            "album": str(fallback.get("album") or "")[:300],
+            "duration": fallback_duration,
+            "artwork_url": str(fallback.get("artwork_url") or "")[:1200],
+        }
+    if not track:
+        raise NeteaseMusicError("没有找到这首网易云歌曲")
+    try:
+        lyrics, translated = _netease_fetch_lyrics(source_id)
+    except NeteaseMusicError:
+        lyrics, translated = "", ""
+    original_artwork = track.get("artwork_url", "")
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO music_netease_tracks "
+        "(source_id,name,artist,album,duration_seconds,artwork_url,lyrics,translated_lyrics) "
+        "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+        "name=excluded.name,artist=excluded.artist,album=excluded.album,"
+        "duration_seconds=excluded.duration_seconds,artwork_url=excluded.artwork_url,"
+        "lyrics=excluded.lyrics,translated_lyrics=excluded.translated_lyrics,"
+        "updated_at=CURRENT_TIMESTAMP",
+        (
+            source_id, track["name"], track.get("artist", ""), track.get("album", ""),
+            track.get("duration", 0), original_artwork, lyrics, translated,
+        ),
+    )
+    conn.commit()
+    row = _netease_track_row(conn, source_id)
+    conn.close()
+    return _netease_track_payload(row)
+
+
+def _netease_resolve_audio_url(source_id, *, refresh=False):
+    source_id = str(source_id or "")
+    if not source_id.isdigit():
+        raise NeteaseMusicError("网易云歌曲编号不对")
+    if not refresh:
+        with _NETEASE_AUDIO_URL_LOCK:
+            cached = _NETEASE_AUDIO_URL_CACHE.get(source_id)
+        if cached and cached[1] > time.monotonic():
+            return cached[0]
+    bitrates = [NETEASE_BITRATE]
+    if 128000 not in bitrates:
+        bitrates.append(128000)
+    for bitrate in bitrates:
+        payload = _netease_json(
+            f"https://music.163.com/api/song/enhance/player/url?ids=[{source_id}]&br={bitrate}"
+        )
+        item = (payload.get("data") or [{}])[0] or {}
+        audio_url = str(item.get("url") or "")
+        if audio_url.startswith("http://"):
+            audio_url = "https://" + audio_url[len("http://"):]
+        if audio_url.startswith("https://"):
+            try:
+                lifetime = max(60, min(int(item.get("expi") or 600) - 30, 900))
+            except (TypeError, ValueError):
+                lifetime = 570
+            with _NETEASE_AUDIO_URL_LOCK:
+                _NETEASE_AUDIO_URL_CACHE[source_id] = (
+                    audio_url, time.monotonic() + lifetime,
+                )
+            return audio_url
+    if NETEASE_MUSIC_U:
+        raise NeteaseMusicError("账号没有拿到这首歌的播放权限")
+    raise NeteaseMusicError("这首歌需要网易云账号或会员权限")
+
+
+def _netease_audio_url_candidates(audio_url):
+    candidates = [audio_url]
+    fallback = re.sub(
+        r"(?<=//)m\d+\.music\.126\.net", "m701.music.126.net", audio_url,
+        count=1,
+    )
+    if fallback != audio_url:
+        candidates.append(fallback)
+    return candidates
+
+
+def _netease_open_audio(source_id, requested_range=""):
+    last_status = None
+    for attempt in range(2):
+        audio_url = _netease_resolve_audio_url(source_id, refresh=bool(attempt))
+        for candidate in _netease_audio_url_candidates(audio_url):
+            headers = {
+                key: value for key, value in _netease_headers().items()
+                if key.lower() != "cookie"
+            }
+            if requested_range:
+                headers["Range"] = requested_range
+            try:
+                upstream = requests.get(
+                    candidate, headers=headers, stream=True,
+                    allow_redirects=True, timeout=(8, 45),
+                )
+            except requests.RequestException:
+                continue
+            if upstream.status_code in {200, 206}:
+                return upstream
+            last_status = upstream.status_code
+            upstream.close()
+        with _NETEASE_AUDIO_URL_LOCK:
+            _NETEASE_AUDIO_URL_CACHE.pop(str(source_id), None)
+    if last_status in {401, 403}:
+        raise NeteaseMusicError("网易云账号没有拿到这首歌的播放权限")
+    if last_status == 404:
+        raise NeteaseMusicError("网易云返回的音频地址已经失效")
+    raise NeteaseMusicError("网易云音频线路暂时没有接上")
+
+
+@app.route("/api/music/netease/status")
+def netease_music_status():
+    if not NETEASE_MUSIC_U:
+        return jsonify({
+            "available": True, "account_configured": False,
+            "account_valid": False, "bitrate": NETEASE_BITRATE,
+        })
+    try:
+        profile = _netease_account_profile()
+    except NeteaseMusicError as exc:
+        return jsonify({
+            "available": True, "account_configured": True,
+            "account_valid": False, "error": str(exc), "bitrate": NETEASE_BITRATE,
+        })
+    return jsonify({
+        "available": True, "account_configured": True, "account_valid": True,
+        "profile": profile, "bitrate": NETEASE_BITRATE,
+    })
+
+
+@app.route("/api/music/netease/playlists")
+def netease_music_playlists():
+    try:
+        profile = _netease_account_profile()
+        playlists = _netease_user_playlists(profile["user_id"])
+    except (NeteaseMusicError, TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 401
+    return jsonify({"profile": profile, "playlists": playlists})
+
+
+@app.route("/api/music/netease/playlists/<playlist_id>")
+def netease_music_playlist(playlist_id):
+    try:
+        profile = _netease_account_profile()
+        allowed_ids = {
+            item["id"] for item in _netease_user_playlists(profile["user_id"])
+        }
+        if str(playlist_id) not in allowed_ids:
+            return jsonify({"error": "这个歌单不在当前网易云账号里"}), 404
+        playlist = _netease_playlist_songs(playlist_id)
+    except (NeteaseMusicError, TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({"playlist": playlist})
+
+
+@app.route("/api/music/netease/search")
+def search_netease_music():
+    try:
+        songs = _netease_search_songs(request.args.get("q", ""), request.args.get("limit", 10))
+    except (NeteaseMusicError, TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({"songs": songs, "account_configured": bool(NETEASE_MUSIC_U)})
+
+
+@app.route("/api/music/netease/tracks/<source_id>", methods=["GET", "POST"])
+def netease_music_track(source_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = _netease_track_row(conn, source_id)
+    conn.close()
+    if request.method == "GET" and row:
+        return jsonify({"track": _netease_track_payload(row)})
+    fallback = request.get_json(silent=True) or {} if request.method == "POST" else None
+    try:
+        track = _prepare_netease_track(source_id, fallback)
+    except (NeteaseMusicError, TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({"track": track})
+
+
+@app.route("/api/music/netease/audio/<source_id>")
+def stream_netease_music(source_id):
+    try:
+        upstream = _netease_open_audio(
+            source_id, request.headers.get("Range", "").strip(),
+        )
+    except NeteaseMusicError as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    response_headers = {
+        "Cache-Control": "private, max-age=300",
+        "X-Accel-Buffering": "no",
+    }
+    for header in (
+        "Content-Length", "Content-Range", "Accept-Ranges",
+        "ETag", "Last-Modified",
+    ):
+        value = upstream.headers.get(header)
+        if value:
+            response_headers[header] = value
+    return Response(
+        stream_with_context(generate()),
+        status=upstream.status_code,
+        content_type=upstream.headers.get("Content-Type", "audio/mpeg"),
+        headers=response_headers,
+    )
+
+
+@app.route("/api/music/netease/audio/<source_id>/status")
+def netease_music_audio_status(source_id):
+    try:
+        upstream = _netease_open_audio(source_id, "bytes=0-1")
+    except NeteaseMusicError as exc:
+        return jsonify({"playable": False, "error": str(exc)}), 502
+    upstream.close()
+    return jsonify({"playable": True})
+
+
+@app.route("/api/music/netease/artwork/<source_id>")
+def netease_music_artwork(source_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = _netease_track_row(conn, source_id)
+    conn.close()
+    artwork_url = str(row[5] or "") if row else ""
+    if not artwork_url.startswith("https://"):
+        return jsonify({"error": "这首歌没有封面"}), 404
+    try:
+        upstream = requests.get(artwork_url, headers=_netease_headers(), timeout=12)
+        upstream.raise_for_status()
+    except requests.RequestException:
+        return jsonify({"error": "网易云封面没有接上"}), 502
+    response = Response(
+        upstream.content,
+        content_type=upstream.headers.get("Content-Type", "image/jpeg"),
+    )
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+# ── 一起听 · 同步曲库 ──────────────────────────────────────
+def _music_library_payload(row):
+    try:
+        added_at = int(datetime.fromisoformat(str(row[11])).replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except (TypeError, ValueError):
+        added_at = 0
+    return {
+        "id": row[0], "name": row[1], "artist": row[2], "album": row[3],
+        "duration": row[4], "size": row[5], "type": row[6],
+        "audio_url": f"/api/music/library/{row[0]}/audio",
+        "artwork_url": f"/api/music/library/{row[0]}/artwork" if row[8] else "",
+        "has_lyrics": bool(row[10]),
+        "metadata_scanned": True, "added_at": added_at, "synced": True,
+    }
+
+
+def _music_library_row(conn, track_id):
+    return conn.execute(
+        "SELECT id,name,artist,album,duration_seconds,size_bytes,mime_type,"
+        "audio_filename,artwork_filename,artwork_mime,lyrics,created_at "
+        "FROM music_library_tracks WHERE id=?",
+        (track_id,),
+    ).fetchone()
+
+
+def _music_storage_path(filename):
+    safe_name = os.path.basename(str(filename or ""))
+    if not safe_name or safe_name != filename:
+        return None
+    return os.path.join(MUSIC_LIBRARY_ROOT, safe_name)
+
+
+def _normalize_music_lyrics(value):
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()[:50000]
+
+
+def _save_music_artwork(artwork, file_token):
+    if not artwork or not artwork.filename:
+        return "", ""
+    stream = artwork.stream
+    try:
+        stream.seek(0)
+        signature = stream.read(4)
+        stream.seek(0)
+    except (AttributeError, OSError):
+        signature = b""
+    candidate_mime = str(artwork.mimetype or "").lower()
+    is_tiff = (
+        candidate_mime in TIFF_ARTWORK_MIMES
+        or signature in (b"II\x2a\x00", b"MM\x00\x2a")
+    )
+    if is_tiff:
+        filename = f"{file_token}-cover.png"
+        path = _music_storage_path(filename)
+        try:
+            with Image.open(stream) as source:
+                if (
+                    source.width > MAX_ARTWORK_EDGE
+                    or source.height > MAX_ARTWORK_EDGE
+                    or source.width * source.height > MAX_ARTWORK_PIXELS
+                ):
+                    raise ValueError("歌曲封面尺寸太大")
+                source.load()
+                source.thumbnail(
+                    (NORMALIZED_ARTWORK_EDGE, NORMALIZED_ARTWORK_EDGE),
+                    Image.Resampling.LANCZOS,
+                )
+                bands = source.getbands()
+                normalized = source.convert("RGBA" if "A" in bands else "RGB")
+                try:
+                    normalized.save(path, format="PNG", optimize=True)
+                finally:
+                    normalized.close()
+        except (UnidentifiedImageError, OSError) as exc:
+            if path and os.path.exists(path):
+                os.remove(path)
+            raise ValueError("歌曲封面没有认出来") from exc
+        finally:
+            try:
+                stream.seek(0)
+            except (AttributeError, OSError):
+                pass
+        return filename, "image/png"
+
+    suffix = ALLOWED_ARTWORK_MIMES.get(candidate_mime)
+    if not suffix:
+        return "", ""
+    filename = f"{file_token}-cover.{suffix}"
+    artwork.save(_music_storage_path(filename))
+    return filename, candidate_mime
+
+
+@app.route("/api/music/library", methods=["GET", "POST"])
+def music_library():
+    conn = sqlite3.connect(DB_PATH)
+    if request.method == "GET":
+        rows = conn.execute(
+            "SELECT id,name,artist,album,duration_seconds,size_bytes,mime_type,"
+            "audio_filename,artwork_filename,artwork_mime,lyrics,created_at "
+            "FROM music_library_tracks ORDER BY created_at,id"
+        ).fetchall()
+        conn.close()
+        response = jsonify({"tracks": [_music_library_payload(row) for row in rows]})
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+    audio = request.files.get("audio")
+    if not audio or not audio.filename:
+        conn.close()
+        return jsonify({"error": "没有收到歌曲文件"}), 400
+    suffix = os.path.splitext(audio.filename)[1].lower().lstrip(".")
+    if suffix not in ALLOWED_MUSIC_EXTENSIONS:
+        conn.close()
+        return jsonify({"error": "这个音频格式暂时放不了"}), 400
+    track_id = str(request.form.get("track_id") or f"music:{uuid.uuid4().hex}")[:100]
+    if not re.fullmatch(r"[A-Za-z0-9:_-]{1,100}", track_id):
+        conn.close()
+        return jsonify({"error": "歌曲编号格式不对"}), 400
+    existing = _music_library_row(conn, track_id)
+    if existing:
+        existing_audio_path = _music_storage_path(existing[7])
+        if existing_audio_path and os.path.isfile(existing_audio_path):
+            artwork = request.files.get("artwork")
+            artwork_filename = existing[8] or ""
+            artwork_mime = existing[9] or ""
+            if not artwork_filename and artwork and artwork.filename:
+                try:
+                    artwork_filename, artwork_mime = _save_music_artwork(
+                        artwork, uuid.uuid4().hex,
+                    )
+                except ValueError as exc:
+                    conn.close()
+                    return jsonify({"error": str(exc)}), 400
+            try:
+                duration = max(0.0, min(float(request.form.get("duration") or existing[4] or 0), 24 * 3600))
+            except (TypeError, ValueError):
+                duration = float(existing[4] or 0)
+            lyrics = _normalize_music_lyrics(
+                request.form.get("lyrics") if "lyrics" in request.form else existing[10]
+            )
+            conn.execute(
+                "UPDATE music_library_tracks SET name=?,artist=?,album=?,duration_seconds=?,"
+                "artwork_filename=?,artwork_mime=?,lyrics=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (
+                    str(request.form.get("name") or existing[1])[:300],
+                    str(request.form.get("artist") or existing[2])[:300],
+                    str(request.form.get("album") or existing[3])[:300],
+                    duration, artwork_filename, artwork_mime, lyrics, track_id,
+                ),
+            )
+            conn.commit()
+            refreshed = _music_library_row(conn, track_id)
+            conn.close()
+            return jsonify({"track": _music_library_payload(refreshed), "existing": True})
+        for filename in (existing[7], existing[8]):
+            path = _music_storage_path(filename)
+            if path and os.path.exists(path):
+                os.remove(path)
+        conn.execute("DELETE FROM music_library_tracks WHERE id=?", (track_id,))
+        conn.commit()
+
+    stream = audio.stream
+    try:
+        stream.seek(0, os.SEEK_END)
+        size_bytes = stream.tell()
+        stream.seek(0)
+    except (AttributeError, OSError):
+        size_bytes = int(audio.content_length or 0)
+    if size_bytes <= 0 or size_bytes > MAX_MUSIC_BYTES:
+        conn.close()
+        return jsonify({"error": "单首歌曲需要小于 180MB"}), 413
+
+    os.makedirs(MUSIC_LIBRARY_ROOT, exist_ok=True)
+    file_token = uuid.uuid4().hex
+    audio_filename = f"{file_token}.{suffix}"
+    audio_path = _music_storage_path(audio_filename)
+    artwork = request.files.get("artwork")
+    artwork_filename = ""
+    artwork_mime = ""
+    try:
+        audio.save(audio_path)
+        if artwork and artwork.filename:
+            artwork_filename, artwork_mime = _save_music_artwork(artwork, file_token)
+        mime_type = audio.mimetype or mimetypes.guess_type(audio.filename)[0] or "application/octet-stream"
+        lyrics = _normalize_music_lyrics(request.form.get("lyrics"))
+        try:
+            duration = max(0.0, min(float(request.form.get("duration") or 0), 24 * 3600))
+        except (TypeError, ValueError):
+            duration = 0.0
+        conn.execute(
+            "INSERT INTO music_library_tracks "
+            "(id,name,artist,album,duration_seconds,size_bytes,mime_type,audio_filename,"
+            "artwork_filename,artwork_mime,lyrics) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                track_id, str(request.form.get("name") or os.path.splitext(audio.filename)[0])[:300],
+                str(request.form.get("artist") or "本地音乐")[:300],
+                str(request.form.get("album") or "")[:300], duration, size_bytes,
+                mime_type, audio_filename, artwork_filename, artwork_mime, lyrics,
+            ),
+        )
+        conn.commit()
+        row = _music_library_row(conn, track_id)
+    except ValueError as exc:
+        for path in (audio_path, _music_storage_path(artwork_filename)):
+            if path and os.path.exists(path):
+                os.remove(path)
+        conn.close()
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        for path in (audio_path, _music_storage_path(artwork_filename)):
+            if path and os.path.exists(path):
+                os.remove(path)
+        conn.close()
+        raise
+    conn.close()
+    return jsonify({"track": _music_library_payload(row)}), 201
+
+
+@app.route("/api/music/library/<track_id>", methods=["DELETE"])
+def delete_music_library_track(track_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = _music_library_row(conn, track_id)
+    if not row:
+        conn.close()
+        return jsonify({"ok": True})
+    conn.execute("DELETE FROM music_library_tracks WHERE id=?", (track_id,))
+    conn.execute(
+        "UPDATE music_rooms SET song_id='',song_name='',artist_name='',album_name='',"
+        "artwork_url='',duration_ms=0,position_ms=0,playback_state='paused',started_at=NULL,"
+        "updated_at=CURRENT_TIMESTAMP WHERE id=1 AND song_id=?",
+        (track_id,),
+    )
+    conn.commit()
+    conn.close()
+    for filename in (row[7], row[8]):
+        path = _music_storage_path(filename)
+        if path and os.path.exists(path):
+            os.remove(path)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/music/library/<track_id>/audio")
+def stream_music_library_track(track_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = _music_library_row(conn, track_id)
+    conn.close()
+    path = _music_storage_path(row[7]) if row else None
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": "歌曲文件不见了"}), 404
+    download_name = secure_filename(row[1]) or "music"
+    return send_file(
+        path, mimetype=row[6], conditional=True, as_attachment=False,
+        download_name=f"{download_name}{os.path.splitext(path)[1]}", max_age=3600,
+    )
+
+
+@app.route("/api/music/library/<track_id>/artwork")
+def music_library_artwork(track_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = _music_library_row(conn, track_id)
+    conn.close()
+    path = _music_storage_path(row[8]) if row else None
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": "歌曲封面不见了"}), 404
+    return send_file(path, mimetype=row[9] or None, conditional=True, max_age=86400)
+
+
+@app.route("/api/music/room", methods=["GET", "PUT"])
+def music_room():
+    conn = sqlite3.connect(DB_PATH)
+    if request.method == "GET":
+        payload = _music_room_payload(conn)
+        conn.close()
+        return jsonify({"configured": True, "source": "netease", "room": payload})
+
+    data = request.get_json(silent=True) or {}
+    if data.get("reset"):
+        conn.execute(
+            "UPDATE music_rooms SET song_id='',song_name='',artist_name='',album_name='',"
+            "artwork_url='',duration_ms=0,position_ms=0,playback_state='paused',"
+            "started_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=1"
+        )
+        conn.commit()
+        payload = _music_room_payload(conn)
+        conn.close()
+        return jsonify({"room": payload})
+
+    current = conn.execute("SELECT song_id,started_at FROM music_rooms WHERE id=1").fetchone()
+    song_id = str(data.get("song_id", current[0] or ""))[:180]
+    playback_state = str(data.get("playback_state", "paused"))
+    if playback_state not in {"playing", "paused", "stopped", "loading"}:
+        conn.close()
+        return jsonify({"error": "播放器状态不对"}), 400
+    try:
+        duration_ms = max(0, min(int(data.get("duration_ms", 0)), 24 * 3600 * 1000))
+        position_ms = max(0, min(int(data.get("position_ms", 0)), duration_ms or 24 * 3600 * 1000))
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({"error": "播放位置不对"}), 400
+    distance_value = data.get("distance_km", "__missing__")
+    if distance_value == "__missing__":
+        distance_sql = "distance_km"
+        distance_params = []
+    elif distance_value in (None, ""):
+        distance_sql = "NULL"
+        distance_params = []
+    else:
+        try:
+            distance_km = round(max(0, min(float(distance_value), 20050)), 1)
+        except (TypeError, ValueError):
+            conn.close()
+            return jsonify({"error": "距离格式不对"}), 400
+        distance_sql = "?"
+        distance_params = [distance_km]
+    started_at = current[1]
+    if song_id and not started_at:
+        started_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE music_rooms SET song_id=?,song_name=?,artist_name=?,album_name=?,"
+        "artwork_url=?,duration_ms=?,position_ms=?,playback_state=?,distance_km="
+        + distance_sql + ",started_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=1",
+        [
+            song_id, str(data.get("song_name", ""))[:300],
+            str(data.get("artist_name", ""))[:300], str(data.get("album_name", ""))[:300],
+            str(data.get("artwork_url", ""))[:1200], duration_ms, position_ms,
+            playback_state,
+        ] + distance_params + [started_at],
+    )
+    conn.commit()
+    payload = _music_room_payload(conn)
+    conn.close()
+    return jsonify({"room": payload})
+
+
+@app.route("/api/music/room/participants", methods=["PUT"])
+def update_music_participants():
+    data = request.get_json(silent=True) or {}
+    raw = data.get("character_ids")
+    participants = _normalize_music_participants(raw)
+    if not isinstance(raw, list) or len(participants) > 2 or len(participants) != len(set(raw)):
+        return jsonify({"error": "最多选两位一起听"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    previous = [
+        row[0] for row in conn.execute(
+            "SELECT character_id FROM music_room_participants "
+            "WHERE room_id=1 ORDER BY joined_at, rowid"
+        ).fetchall()
+    ]
+    roster_changed = previous != participants
+    conn.execute("DELETE FROM music_room_participants WHERE room_id=1")
+    for character_id in participants:
+        conn.execute(
+            "INSERT INTO music_room_participants(room_id,character_id) VALUES (1,?)",
+            (character_id,),
+        )
+    if roster_changed:
+        conn.execute("DELETE FROM music_room_messages WHERE room_id=1")
+        conn.execute("DELETE FROM music_room_commands WHERE room_id=1")
+    conn.commit()
+    room = _music_room_payload(conn)
+    conn.close()
+    return jsonify({"participants": room["participants"], "room": room})
+
+
+def _music_generate_replies(event_text):
+    conn = sqlite3.connect(DB_PATH)
+    room = _music_room_payload(conn, include_messages=False)
+    participants = [item["id"] for item in room["participants"]]
+    history_rows = conn.execute(
+        "SELECT author_id,content,details_json FROM music_room_messages "
+        "WHERE room_id=1 ORDER BY id DESC LIMIT 12"
+    ).fetchall()[::-1]
+    raw_lyrics = ""
+    if str(room["song_id"] or "").startswith("netease:"):
+        source_id = str(room["song_id"]).split(":", 1)[1]
+        lyrics_row = conn.execute(
+            "SELECT lyrics,translated_lyrics FROM music_netease_tracks WHERE source_id=?",
+            (source_id,),
+        ).fetchone()
+        if lyrics_row:
+            raw_lyrics = lyrics_row[0] or ""
+            if lyrics_row[1]:
+                raw_lyrics += f"\n{lyrics_row[1]}"
+    elif room["song_id"]:
+        lyrics_row = conn.execute(
+            "SELECT lyrics FROM music_library_tracks WHERE id=?",
+            (room["song_id"],),
+        ).fetchone()
+        raw_lyrics = lyrics_row[0] if lyrics_row else ""
+    conn.close()
+    history_lines = []
+    for author_id, content, details_json in history_rows:
+        speaker = "User" if author_id == USER_ID else CHARACTERS.get(author_id, {}).get("name", author_id)
+        suffix = ""
+        try:
+            details = json.loads(details_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            details = {}
+        if details.get("tool") == "music_player_control":
+            output = details.get("output") or {}
+            suffix = (
+                f"（播放器指令 {details.get('input', {}).get('action', '')}："
+                f"{output.get('status', 'unknown')}，{output.get('message', '')}）"
+            )
+        history_lines.append(f"{speaker}：{content}{suffix}")
+    history = "\n".join(history_lines)
+    duration = max(0, int(room["duration_ms"] or 0) // 1000)
+    position = max(0, int(room["position_ms"] or 0) // 1000)
+    song_line = (
+        f"《{room['song_name']}》 - {room['artist_name']}，"
+        f"播放到 {position // 60}:{position % 60:02d} / {duration // 60}:{duration % 60:02d}，"
+        f"当前{'正在播放' if room['playback_state'] == 'playing' else '已暂停'}。"
+        if room["song_id"] else "房间里还没有选歌。"
+    )
+    lyrics_context = _music_lyrics_context(raw_lyrics, position)
+    replies = []
+    for character_id in participants:
+        char = CHARACTERS[character_id]
+        prompt = (
+            "你正在 Becoming 的‘一起听’房间陪User听音乐。\n"
+            f"【当前播放器】{song_line}\n"
+            f"{lyrics_context}\n"
+            "你没有音频输入，不会真正听见旋律、人声或声音细节。你只能阅读上面明确提供的歌词；"
+            "若歌词未提供，必须坦白看不到，绝不能根据歌名、常识或上下文编造歌词。"
+            "带时间歌词可以按当前进度谈附近几句；无时间轴歌词不能声称当前正在唱哪句。"
+            "自然回应一两句即可，每次回复不超过90个字，不要写姓名前缀。你可以保持安静。"
+            "如果你真想控制播放器，可以使用播放器工具；如果你想找一首具体的歌，必须先搜索、阅读候选，"
+            "再选择候选中的歌曲播放。不要频繁乱按，也不要为了展示工具而点歌。\n"
+            f"【房间最近对话】\n{history or '还没有说话。'}\n"
+            f"【刚发生的事】{event_text}"
+        )
+        reply, action, details = ask_music_companion(char, prompt)
+        reply = _limit_music_reply(reply)
+        conn = sqlite3.connect(DB_PATH)
+        command_id = None
+        if action:
+            action_arguments = details.get("input") if isinstance(details, dict) else {}
+            if not isinstance(action_arguments, dict):
+                action_arguments = {}
+            cursor = conn.execute(
+                "INSERT INTO music_room_commands"
+                "(room_id,character_id,action,arguments_json) VALUES (1,?,?,?)",
+                (character_id, action, json.dumps(action_arguments, ensure_ascii=False)),
+            )
+            command_id = cursor.lastrowid
+            details.setdefault("output", {})["command_id"] = command_id
+        cursor = conn.execute(
+            "INSERT INTO music_room_messages(room_id,author_id,content,event_type,details_json) "
+            "VALUES (1,?,?,?,?)",
+            (character_id, reply, "companion", json.dumps(details, ensure_ascii=False)),
+        )
+        conn.commit()
+        replies.append({"id": cursor.lastrowid, "character_id": character_id, "command_id": command_id})
+        conn.close()
+    return replies
+
+
+@app.route("/api/music/room/messages", methods=["POST"])
+def post_music_message():
+    data = request.get_json(silent=True) or {}
+    content = str(data.get("content") or "").strip()[:2000]
+    if not content:
+        return jsonify({"error": "说点什么再发呀"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    has_participants = bool(_music_participant_payload(conn))
+    conn.execute(
+        "INSERT INTO music_room_messages(room_id,author_id,content,event_type) VALUES (1,?,?,?)",
+        (USER_ID, content, "comment"),
+    )
+    conn.commit()
+    conn.close()
+    if has_participants:
+        _music_generate_replies(f"User说：{content}")
+    conn = sqlite3.connect(DB_PATH)
+    payload = _music_room_payload(conn)
+    conn.close()
+    return jsonify({"room": payload})
+
+
+@app.route("/api/music/room/react", methods=["POST"])
+def react_music_room():
+    data = request.get_json(silent=True) or {}
+    event_type = str(data.get("event_type") or "")
+    event_map = {
+        "track_started": "User选了这首歌并开始播放。",
+        "track_changed": "房间换了一首歌。",
+        "invite": "User把你喊进了一起听房间。",
+    }
+    if event_type not in event_map:
+        return jsonify({"error": "房间事件不对"}), 400
+    _music_generate_replies(event_map[event_type])
+    conn = sqlite3.connect(DB_PATH)
+    payload = _music_room_payload(conn)
+    conn.close()
+    return jsonify({"room": payload})
+
+
+@app.route("/api/music/room/commands/<int:command_id>", methods=["PATCH"])
+def acknowledge_music_command(command_id):
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "")
+    if status not in {"applied", "failed"}:
+        return jsonify({"error": "指令回执不对"}), 400
+    output_text = str(data.get("output") or "")[:500]
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute(
+        "UPDATE music_room_commands SET status=?,output_text=?,applied_at=CURRENT_TIMESTAMP "
+        "WHERE id=? AND status='pending'",
+        (status, output_text, command_id),
+    )
+    if not cursor.rowcount:
+        conn.close()
+        return jsonify({"error": "这条播放器指令已经处理过了"}), 409
+    command = conn.execute(
+        "SELECT character_id,action FROM music_room_commands WHERE id=?", (command_id,)
+    ).fetchone()
+    for message_id, details_json in conn.execute(
+        "SELECT id,details_json FROM music_room_messages WHERE room_id=1 "
+        "AND details_json!='{}' ORDER BY id DESC LIMIT 40"
+    ).fetchall():
+        try:
+            details = json.loads(details_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if details.get("output", {}).get("command_id") != command_id:
+            continue
+        details["output"].update({"status": status, "message": output_text})
+        conn.execute(
+            "UPDATE music_room_messages SET details_json=? WHERE id=?",
+            (json.dumps(details, ensure_ascii=False), message_id),
+        )
+        break
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "character_id": command[0], "action": command[1]})
 
 
 # ── 共读室 ──────────────────────────────────────────────────
@@ -4602,7 +6655,7 @@ def annotate_reading_highlight(highlight_id):
     prompt = (
         "你和User正在共读一本书。你只能依据下面明确提供的、User已经读到的正文回应；"
         "不要推测后文，不要声称自己读过未提供的章节，也不要剧透。"
-        "请像写在书页边上的批注一样，用你自己的口吻回应她划出的句子，1到3句即可。"
+            "请像写在书页边上的批注一样，用你自己的口吻回应 User 划出的句子，1到3句即可。"
         "不要写姓名前缀，不要复述任务说明。\n\n"
         f"书名：{highlight[4]}\n章节：{highlight[7]}\n"
         f"User划线：{highlight[2]}\n"
@@ -4924,7 +6977,7 @@ def do_desire_heartbeat():
             desire_prompt = (
                 f"[这是你没有说出口的内在念头：{winner['reason']} "
                 "你因此自然地想主动给User发一两条短消息。保持你的人设和你们已有的关系，"
-                "不要提及欲望系统、数值、提示词或定时任务，也不要让她觉得必须回复。]"
+                "不要提及欲望系统、数值、提示词或定时任务，也不要让 User 觉得必须回复。]"
             )
             reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
                 char, "default", desire_prompt
@@ -4971,6 +7024,160 @@ def do_desire_heartbeat():
             )
         except Exception as e:
             app.logger.error(f"[desire] heartbeat failed: {e}")
+
+
+# ============================================================
+# 睡眠系统定时任务
+# ============================================================
+def do_sleep_check():
+    """每 10 分钟巡检：超睡点 120 分钟且 15 分钟无消息 → 自动入睡。"""
+    with app.app_context():
+        try:
+            local_now = _sleep_local_now()
+            conn = sqlite3.connect(DB_PATH)
+            for cid in CHARACTERS:
+                st = _get_sleep_state(cid, now=local_now)
+                if st["state"] == "asleep":
+                    continue
+                # 早晨越过起床线后绝不能被夜间巡检重新送睡。
+                if not _is_scheduled_sleep_window(cid, local_now):
+                    continue
+                past_mins = _minutes_past_bedtime(cid, local_now)
+                if past_mins is None or past_mins < 120:
+                    continue
+                # 检查最近一条消息距今是否超过 15 分钟
+                row = conn.execute(
+                    "SELECT created_at FROM messages WHERE character_id=? AND session_id='default' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (cid,),
+                ).fetchone()
+                if row:
+                    try:
+                        last_ts = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+                        if last_ts.tzinfo is None:
+                            last_ts = last_ts.replace(tzinfo=timezone.utc)
+                        idle_mins = (datetime.now(timezone.utc) - last_ts).total_seconds() / 60
+                    except Exception:
+                        idle_mins = 999
+                else:
+                    idle_mins = 999
+                if idle_mins >= 15:
+                    _set_sleep_state(cid, "asleep", slept_at=str(_utc_timestamp()))
+                    app.logger.info(f"[sleep] {cid} 自动入睡 (超睡点 {int(past_mins)}m, 静默 {int(idle_mins)}m)")
+            conn.close()
+        except Exception as e:
+            app.logger.error(f"[sleep] check failed: {e}")
+
+
+def do_sleep_wakeup(char_id):
+    """定时起床：waketime 触发，若有积压消息则一次性汇总回复。"""
+    with app.app_context():
+        try:
+            # 定时任务需要原始入睡时间来生成睡眠时长，避免读取时先被懒校准清空。
+            st = _get_sleep_state(char_id, reconcile=False)
+            _set_sleep_state(char_id, "awake")
+            queued_msgs = _load_queued_sleep_msgs(char_id, "default")
+            if not queued_msgs:
+                app.logger.info(f"[sleep] {char_id} 起床，无积压消息")
+                return
+            _clear_queued_sleep_flags(char_id, "default")
+            char = CHARACTERS[char_id]
+            slept_at = st.get("slept_at")
+            slept_mins = int((_utc_timestamp() - float(slept_at)) / 60) if slept_at else 0
+            slept_h, slept_m = divmod(slept_mins, 60)
+            wakeup_prompt = (
+                f"[系统：你刚睡醒。你睡了约 {slept_h} 小时 {slept_m} 分钟。"
+                f"一睁眼看到 User 在你睡着期间发了 {len(queued_msgs)} 条消息："
+                + " | ".join(f"「{m}」" for m in queued_msgs)
+                + " 现在统一用你的风格回应，可以有起床气，也可以表达关心，自然一些。]"
+            )
+            reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
+                char, "default", wakeup_prompt, just_woke=True
+            )
+            failed_markers = ("暂时没能回话", "还没配置", "暂时说不出话")
+            if not reply or any(m in reply for m in failed_markers):
+                app.logger.warning(f"[sleep] {char_id} 起床汇总调用失败")
+                return
+            _finalize_character_reply(
+                char, "default", reply, transfer_to_send, sticker_to_send,
+                tools_called, usage_metrics, push_source="sleep_wakeup",
+            )
+            _write_setting(f"unread_{char_id}", "1")
+            app.logger.info(f"[sleep] {char_id} 起床汇总 {len(queued_msgs)} 条消息")
+        except Exception as e:
+            app.logger.error(f"[sleep] wakeup failed ({char_id}): {e}")
+
+
+def do_sleep_nag(char_id):
+    """反向催睡：到睡点时触发，角色主动说晚安并催User睡觉。"""
+    with app.app_context():
+        try:
+            if _read_setting(f"sleep_{char_id}_nag_enabled", "false") != "true":
+                return
+            st = _get_sleep_state(char_id)
+            if st["state"] == "asleep":
+                return
+            char = CHARACTERS[char_id]
+            nag_prompt = (
+                "[系统：现在正好是你的习惯睡点，你准备去睡觉了。"
+                "自然地和 User 说晚安，顺便提醒 User 也早点休息，用你的风格，不要提这是系统触发的。]"
+            )
+            reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
+                char, "default", nag_prompt
+            )
+            failed_markers = ("暂时没能回话", "还没配置", "暂时说不出话")
+            if not reply or any(m in reply for m in failed_markers):
+                app.logger.warning(f"[sleep] {char_id} 反向催睡调用失败")
+                return
+            _finalize_character_reply(
+                char, "default", reply, transfer_to_send, sticker_to_send,
+                tools_called, usage_metrics, push_source="sleep_nag",
+            )
+            _set_sleep_state(char_id, "asleep", slept_at=str(_utc_timestamp()))
+            _write_setting(f"unread_{char_id}", "1")
+            app.logger.info(f"[sleep] {char_id} 反向催睡完成，已入睡")
+        except Exception as e:
+            app.logger.error(f"[sleep] nag failed ({char_id}): {e}")
+
+
+def register_sleep_jobs():
+    """注册睡眠系统所有调度任务（巡检 + 各角色起床 + 各角色催睡）。"""
+    # 移除旧睡眠 jobs
+    for job in scheduler.get_jobs():
+        if job.id.startswith("sleep_"):
+            scheduler.remove_job(job.id)
+
+    # 每 10 分钟自动入睡巡检
+    scheduler.add_job(
+        do_sleep_check, "interval", minutes=10,
+        id="sleep_autocheck", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=120,
+    )
+
+    # 各角色定时起床 + 反向催睡
+    for cid, defaults in SLEEP_DEFAULTS.items():
+        # 起床
+        hm_wake = _parse_hhmm(_get_sleep_cfg(cid, "waketime") or defaults.get("waketime", "07:30"))
+        if hm_wake:
+            scheduler.add_job(
+                do_sleep_wakeup, "cron",
+                args=[cid],
+                hour=hm_wake[0], minute=hm_wake[1],
+                id=f"sleep_wake_{cid}", replace_existing=True,
+                coalesce=True, max_instances=1, misfire_grace_time=300,
+            )
+        # 反向催睡
+        hm_bed = _parse_hhmm(_get_sleep_cfg(cid, "bedtime") or defaults.get("bedtime", "23:00"))
+        if hm_bed:
+            scheduler.add_job(
+                do_sleep_nag, "cron",
+                args=[cid],
+                hour=hm_bed[0], minute=hm_bed[1],
+                id=f"sleep_nag_{cid}", replace_existing=True,
+                coalesce=True, max_instances=1, misfire_grace_time=300,
+            )
+
+    app.logger.info("[sleep] scheduler jobs registered")
 
 
 # ============================================================
@@ -5033,6 +7240,7 @@ def start_background_services():
     if scheduler.running:
         return True
     register_scheduler_jobs()
+    register_sleep_jobs()
     scheduler.start()
     return True
 
@@ -5048,6 +7256,102 @@ def clear_unread(char_id):
     if char_id in CHARACTERS:
         _write_setting(f"unread_{char_id}", "0")
     return jsonify({"ok": True})
+
+
+# ============================================================
+# 睡眠系统 API
+# ============================================================
+@app.route("/api/sleep_states", methods=["GET"])
+def get_sleep_states():
+    """只读；返回全员当前睡眠状态（不走路由契约保护区）。"""
+    return jsonify({cid: _get_sleep_state(cid)["state"] for cid in CHARACTERS})
+
+
+@app.route("/api/sleep/config", methods=["GET"])
+def get_sleep_config():
+    result = {}
+    for cid in CHARACTERS:
+        result[cid] = {
+            "bedtime":       _get_sleep_cfg(cid, "bedtime"),
+            "waketime":      _get_sleep_cfg(cid, "waketime"),
+            "chronotype":    _get_sleep_cfg(cid, "chronotype"),
+            "resist_bias":   _get_sleep_cfg(cid, "resist_bias"),
+            "nag_enabled":   _read_setting(f"sleep_{cid}_nag_enabled", "false") == "true",
+            "current_state": _get_sleep_state(cid)["state"],
+        }
+    return jsonify(result)
+
+
+@app.route("/api/sleep/config", methods=["POST"])
+def set_sleep_config():
+    data = request.get_json() or {}
+    for cid in CHARACTERS:
+        if cid not in data:
+            continue
+        cfg = data[cid]
+        for field in ("bedtime", "waketime", "chronotype", "resist_bias"):
+            if field in cfg:
+                _write_setting(f"sleep_{cid}_{field}", str(cfg[field]))
+        if "nag_enabled" in cfg:
+            _write_setting(f"sleep_{cid}_nag_enabled", "true" if cfg["nag_enabled"] else "false")
+    register_sleep_jobs()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/sleep/state/<char_id>", methods=["POST"])
+def set_sleep_state_manual(char_id):
+    """猫砂盆用：手动切换角色睡眠状态（管理员调试用）。"""
+    if char_id not in CHARACTERS:
+        return jsonify({"error": "unknown character"}), 400
+    data = request.get_json() or {}
+    new_state = data.get("state", "awake")
+    if new_state not in ("awake", "asleep"):
+        return jsonify({"error": "state must be awake or asleep"}), 400
+    slept_at = str(_utc_timestamp()) if new_state == "asleep" else None
+    _set_sleep_state(char_id, new_state, slept_at=slept_at)
+    return jsonify({"ok": True, "state": new_state})
+
+
+@app.route("/api/sleep/nudge", methods=["POST", "OPTIONS"])
+def sleep_nudge():
+    """无 session 的催睡接口，供外部页面（hug-button）使用。
+    body: {password, character_id}
+    密码正确时触发一次催睡对话，返回角色回复。
+    """
+    if not SLEEP_NUDGE_ENABLED:
+        return jsonify({"error": "sleep nudge is disabled"}), 404
+    if request.method == "OPTIONS":
+        return "", 204
+    data = request.get_json() or {}
+    if not APP_PASSWORD or data.get("password") != APP_PASSWORD:
+        return jsonify({"error": "unauthorized"}), 401
+    char_id = data.get("character_id", "")
+    if char_id not in CHARACTERS:
+        return jsonify({"error": "unknown character"}), 400
+    char = CHARACTERS[char_id]
+    sleep_st = _get_sleep_state(char_id)
+    if sleep_st["state"] == "asleep":
+        return jsonify({"reply": "（已经在睡了～）", "was_asleep": True})
+    past_mins = _minutes_past_bedtime(char_id)
+    nudge_msg = (
+        "[系统：用户催你去睡觉了。"
+        + (f"你已超过睡点 {int(past_mins)} 分钟。" if past_mins and past_mins > 0 else "")
+        + "用你的风格回应，如果你决定去睡就说晚安，不要提这是系统触发的。]"
+    )
+    reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
+        char, "default", nudge_msg
+    )
+    failed_markers = ("暂时没能回话", "还没配置", "暂时说不出话")
+    if not reply or any(m in reply for m in failed_markers):
+        return jsonify({"error": "model unavailable"}), 503
+    save_message("default", char_id, "model", reply)
+    if SLEEP_GOODNIGHT_RE.search(reply) and (past_mins is None or past_mins > -30):
+        _set_sleep_state(char_id, "asleep", slept_at=str(_utc_timestamp()))
+    return jsonify({
+        "reply": reply,
+        "was_asleep": False,
+        "sleep_state": _get_sleep_state(char_id)["state"],
+    })
 
 
 # ============================================================

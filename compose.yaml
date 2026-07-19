@@ -9,7 +9,9 @@ services:
       DB_PATH: /data/becoming.db
       BECOMING_MEMORY_DIR: /data/memory
       UPLOAD_ROOT: /data/uploads
+      MUSIC_LIBRARY_DIR: /data/music_library
       WEB_CONCURRENCY: "1"
+      GUNICORN_THREADS: "8"
     ports:
       - "${BECOMING_HOST_PORT:-8000}:8000"
     volumes:
