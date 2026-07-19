@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
@@ -81,6 +82,17 @@ class AppControlsTests(unittest.TestCase):
                 "daily_cost_usd": 1,
             },
         }
+
+    def test_group_send_uses_documented_long_press_participant_picker(self):
+        static_dir = Path(app_module.__file__).with_name("static")
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+        markup = (static_dir / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('groupSendBtn.addEventListener("pointerdown"', script)
+        self.assertIn('openCharPicker("online", null, [...onlineCharacters])', script)
+        self.assertIn("长按群聊发送爪", script)
+        self.assertNotIn("双击（250ms 内两次 tap）", script)
+        self.assertIn('aria-label="发送；长按选择在线角色"', markup)
 
     def test_voice_config_tokens_are_server_only(self):
         response = self.client.post("/api/voice/config", json=self._voice_payload())

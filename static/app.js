@@ -2808,17 +2808,35 @@
     }
   }
 
-  // groupSend：单击发送，双击（250ms 内两次 tap）弹选角色
-  let _gsTaps = 0, _gsTimer = null;
-  groupSendBtn.addEventListener("click", () => {
-    _gsTaps++;
-    if (_gsTaps === 1) {
-      _gsTimer = setTimeout(() => { _gsTaps = 0; sendGroup(); }, 250);
-    } else {
-      clearTimeout(_gsTimer);
-      _gsTaps = 0;
+  // groupSend：单击立即发送，长按选择在线角色。
+  let _groupSendPressTimer = null;
+  let _groupSendSuppressClickUntil = 0;
+
+  function cancelGroupSendPress() {
+    clearTimeout(_groupSendPressTimer);
+    _groupSendPressTimer = null;
+  }
+
+  groupSendBtn.addEventListener("pointerdown", () => {
+    if (groupSendBtn.disabled) return;
+    cancelGroupSendPress();
+    _groupSendPressTimer = setTimeout(() => {
+      _groupSendPressTimer = null;
+      _groupSendSuppressClickUntil = Date.now() + 800;
+      navigator.vibrate?.(18);
       openCharPicker("online", null, [...onlineCharacters]);
+    }, 500);
+  });
+  ["pointerup", "pointermove", "pointercancel", "pointerleave"].forEach(type => {
+    groupSendBtn.addEventListener(type, cancelGroupSendPress);
+  });
+  groupSendBtn.addEventListener("contextmenu", event => event.preventDefault());
+  groupSendBtn.addEventListener("click", event => {
+    if (Date.now() < _groupSendSuppressClickUntil) {
+      event.preventDefault();
+      return;
     }
+    sendGroup();
   });
   groupInputEl.addEventListener("keydown", e => { if (e.key === "Enter") sendGroup(); });
 
@@ -4585,7 +4603,8 @@
         </div>
         <div class="gesture-help-list">
           <div class="gesture-help-item"><span class="material-symbols-outlined">swipe_right</span><div><strong>从屏幕左边缘向右滑</strong><small>单聊里返回角色列表。</small></div></div>
-          <div class="gesture-help-item"><span class="material-symbols-outlined">touch_app</span><div><strong>长按发送爪</strong><small>打开图片、表情包、转账和补记入口。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">touch_app</span><div><strong>长按单聊发送爪</strong><small>打开图片、表情包、转账和补记入口。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">group</span><div><strong>长按群聊发送爪</strong><small>调整群聊里当前在线的角色。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">chat</span><div><strong>长按单聊消息</strong><small>删除这一条及它之后的本轮消息。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">format_quote</span><div><strong>长按群聊消息</strong><small>复制、引用，或删除这一条及后续群聊。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">edit</span><div><strong>长按聊天标题或角色名</strong><small>给角色或群聊改一个昵称。</small></div></div>
