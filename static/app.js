@@ -1348,6 +1348,7 @@
   const singleListView = document.getElementById("singleListView");
   const singleChatView = document.getElementById("singleChatView");
   const swipeBackHint = document.getElementById("swipeBackHint");
+  const SWIPE_BACK_EDGE_RATIO = 0.6;
   let swipeBackState = null;
   let swipeBackTimer = null;
 
@@ -1393,7 +1394,7 @@
     if (singleView.classList.contains("swipe-settling")) return;
     if (event.target.closest("input, textarea, button, select, [contenteditable='true']")) return;
     const touch = event.touches[0];
-    if (touch.clientX > 56) return;
+    if (touch.clientX > singleChatView.clientWidth * SWIPE_BACK_EDGE_RATIO) return;
     singleListView.style.display = "flex";
     singleView.classList.add("swipe-peeking");
     singleView.style.setProperty("--swipe-panel-x", "0px");
