@@ -17,10 +17,12 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY . .
 RUN mkdir -p /data \
-    && chown -R becoming:becoming /app /data
+    && chown -R becoming:becoming /app /data \
+    && chmod +x /app/docker-entrypoint.sh
 
-USER becoming
-VOLUME ["/data"]
+# No VOLUME declaration — Railway mounts volumes externally with root ownership,
+# which breaks the non-root user. The entrypoint fixes /data permissions at startup.
 EXPOSE 8000
 
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["gunicorn", "-c", "gunicorn.conf.py", "wsgi:app"]
