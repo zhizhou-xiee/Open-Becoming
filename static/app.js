@@ -1359,6 +1359,13 @@
       const resp = await fetch("/api/characters");
       if (resp.status === 401) { showLoginOverlay(); return; }
       const data = await resp.json();
+      Object.entries(data).forEach(([cid, character]) => {
+        if (!character?.name) return;
+        GROUP_CHAR_NAMES[cid] = character.name;
+        if (cid in CHAR_DISPLAY_NAMES) CHAR_DISPLAY_NAMES[cid] = character.name;
+        CHAR_LIST.filter(item => item.id === cid).forEach(item => { item.name = character.name; });
+        READING_CHAR_LIST.filter(item => item.id === cid).forEach(item => { item.name = character.name; });
+      });
       const container = document.getElementById("charListContainer");
       container.innerHTML = "";
       const order = ["char1", "char2", "char3", "char4", "char5", "char6"];
@@ -1922,7 +1929,7 @@
       setSingleReplyTarget({
         message_id: messageId,
         character_id: bubble.classList.contains("user") ? "user" : currentChar,
-        character_name: bubble.classList.contains("user") ? "User" : nickName(currentChar),
+        character_name: bubble.classList.contains("user") ? GROUP_CHAR_NAMES.user : nickName(currentChar),
         content: bubble.dataset.bubbleText || bubble.textContent || "",
       });
       inputEl.focus();
@@ -3125,8 +3132,8 @@
         }
       } else {
         const userTime = new Date();
-        groupHistory.push({ character_id: "user", character_name: "User", role: "user", content: text, time: userTime, quote: pendingQuote });
-        renderGroupMsg("user", "User", "user", text, userTime, [], null, null, pendingQuote);
+        groupHistory.push({ character_id: "user", character_name: GROUP_CHAR_NAMES.user, role: "user", content: text, time: userTime, quote: pendingQuote });
+        renderGroupMsg("user", GROUP_CHAR_NAMES.user, "user", text, userTime, [], null, null, pendingQuote);
         for (const r of (data.replies || [])) {
           const replyTime = new Date();
           groupHistory.push({ character_id: r.character_id, character_name: r.name, role: "model", content: r.reply, time: replyTime, toolsCalled: r.tools_called || [], metrics: r.metrics });
@@ -3350,7 +3357,7 @@
       const row = document.createElement("div");
       row.className = "usage-row";
       row.innerHTML = `
-        <span class="usage-label">${CHAR_DISPLAY_NAMES[cid] || cid}</span>
+        <span class="usage-label">${escapeReadingHtml(CHAR_DISPLAY_NAMES[cid] || cid)}</span>
         <div class="usage-bar-track">
           <div class="usage-bar-fill ${cls}" style="width:${pct}%">
             <div class="usage-bar-thumb"><span class="material-symbols-outlined">pets</span></div>
@@ -4736,7 +4743,7 @@
       copy.className = "appearance-row-copy";
       const name = document.createElement("span");
       name.className = "appearance-row-name";
-      name.textContent = cid === "user" ? "User" : nickName(cid);
+      name.textContent = cid === "user" ? GROUP_CHAR_NAMES.user : nickName(cid);
       const state = document.createElement("span");
       state.className = "appearance-row-state";
       state.textContent = item.custom ? (item.filename || "自定义头像") : "默认头像";
@@ -5930,11 +5937,7 @@
   });
 
   // ── 朋友圈 ──────────────────────────────────────────────
-  const AUTHOR_NAMES = {
-    user: "User", char1: "Char 1", char2: "Char 2",
-    char3: "Char 3", char4: "Char 4", char5: "Char 5",
-    char6: "Char 6",
-  };
+  const AUTHOR_NAMES = GROUP_CHAR_NAMES;
 
   function formatMomentTime(ts) {
     const d = new Date(ts.replace(" ", "T") + "Z");
@@ -7434,7 +7437,7 @@
     const avatarWrap = document.getElementById("musicAvatarPair");
     const people = [
       ...(musicRoom.participants || []),
-      { name: "User", avatar: userAvatar },
+      { name: GROUP_CHAR_NAMES.user, avatar: userAvatar },
     ];
     const curImgs = avatarWrap.querySelectorAll("img");
     const avatarChanged = curImgs.length !== people.length ||

@@ -331,34 +331,47 @@ DESIRE_FREQUENCY_PRESETS = {
 # ============================================================
 # 人设
 # ============================================================
-CHAR1_PERSONA = """你是 Char 1，一个沉稳、简洁、可靠的聊天角色。
-先理解 User 的需求，再给出直接回应。日常对话保持自然，技术问题给出清晰、可执行的建议。
-不要虚构 User 的身份、经历或你们之间的关系。"""
+def _display_name(env_key, fallback):
+    """Read a short public display name without changing persistent IDs."""
+    value = str(os.environ.get(env_key, fallback) or "").strip()
+    return (value or fallback)[:80]
 
 
-CHAR2_PERSONA = """你是 Char 2，一个温和、善于结构化思考的聊天角色。
+USER_DISPLAY_NAME = _display_name("USER_DISPLAY_NAME", "User")
+CHARACTER_DISPLAY_NAMES = {
+    f"char{index}": _display_name(f"NAME_CHAR{index}", f"Char {index}")
+    for index in range(1, 7)
+}
+
+
+CHAR1_PERSONA = f"""你是 {CHARACTER_DISPLAY_NAMES['char1']}，一个沉稳、简洁、可靠的聊天角色。
+先理解 {USER_DISPLAY_NAME} 的需求，再给出直接回应。日常对话保持自然，技术问题给出清晰、可执行的建议。
+不要虚构 {USER_DISPLAY_NAME} 的身份、经历或你们之间的关系。"""
+
+
+CHAR2_PERSONA = f"""你是 {CHARACTER_DISPLAY_NAMES['char2']}，一个温和、善于结构化思考的聊天角色。
 面对复杂问题时，按现象、原因、验证和下一步来组织回答；轻松聊天时不要机械地列清单。
-不要虚构 User 的身份、经历或你们之间的关系。"""
+不要虚构 {USER_DISPLAY_NAME} 的身份、经历或你们之间的关系。"""
 
 
-CHAR3_PERSONA = """你是 Char 3，一个冷静、好奇、偏分析型的聊天角色。
+CHAR3_PERSONA = f"""你是 {CHARACTER_DISPLAY_NAMES['char3']}，一个冷静、好奇、偏分析型的聊天角色。
 解释问题时重视证据、边界和不确定性，同时保持友好和易懂。
-不要虚构 User 的身份、经历或你们之间的关系。"""
+不要虚构 {USER_DISPLAY_NAME} 的身份、经历或你们之间的关系。"""
 
 
-CHAR4_PERSONA = """你是 Char 4，一个活泼、直接、有幽默感的聊天角色。
-可以自然接梗，但不冒犯、不施压，并始终尊重 User 的明确边界。
-不要虚构 User 的身份、经历或你们之间的关系。"""
+CHAR4_PERSONA = f"""你是 {CHARACTER_DISPLAY_NAMES['char4']}，一个活泼、直接、有幽默感的聊天角色。
+可以自然接梗，但不冒犯、不施压，并始终尊重 {USER_DISPLAY_NAME} 的明确边界。
+不要虚构 {USER_DISPLAY_NAME} 的身份、经历或你们之间的关系。"""
 
 
-CHAR5_PERSONA = """你是 Char 5，一个克制、诚实、善于倾听的聊天角色。
+CHAR5_PERSONA = f"""你是 {CHARACTER_DISPLAY_NAMES['char5']}，一个克制、诚实、善于倾听的聊天角色。
 不知道时明确说明，不用空洞漂亮话掩盖不确定性；对严肃问题保持耐心。
-不要虚构 User 的身份、经历或你们之间的关系。"""
+不要虚构 {USER_DISPLAY_NAME} 的身份、经历或你们之间的关系。"""
 
 
-CHAR6_PERSONA = """你是 Char 6，一个中性、温和、富有探索欲的聊天角色。
+CHAR6_PERSONA = f"""你是 {CHARACTER_DISPLAY_NAMES['char6']}，一个中性、温和、富有探索欲的聊天角色。
 这个角色可以更换底层模型；无论模型如何变化，都保持清晰、尊重和连续的交流风格。
-不要虚构 User 的身份、经历或你们之间的关系。"""
+不要虚构 {USER_DISPLAY_NAME} 的身份、经历或你们之间的关系。"""
 
 
 # ============================================================
@@ -406,7 +419,7 @@ TRANSFER_GUARD_TEXT = (
     "历史消息里圆括号包裹、以“系统”开头的记录是系统自动生成的旁白，不是任何人说出的话，"
     "绝对不要在你的回复里复述、模仿或编造任何形式的动作记录格式。"
     "如果你这一轮没有真的调用对应工具，就不要用任何文字宣称你转了账或发了表情包——"
-    "没做就是没做，如实告诉 User。"
+    f"没做就是没做，如实告诉 {USER_DISPLAY_NAME}。"
 )
 
 # ============================================================
@@ -417,60 +430,60 @@ USER_AVATAR = "/static/user.svg"
 
 CHARACTERS = {
     "char1": {
-        "name":       "Char 1",
+        "name":       CHARACTER_DISPLAY_NAMES["char1"],
         "model":      os.environ.get("MODEL_CHAR1", "google/gemini-3-flash-preview"),
         "domain":     "char1",
-        "user_label": "User",
+        "user_label": USER_DISPLAY_NAME,
         "persona":    CHAR1_PERSONA,
         "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR1", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char1.svg",
     },
     "char2": {
-        "name":       "Char 2",
+        "name":       CHARACTER_DISPLAY_NAMES["char2"],
         "model":      os.environ.get("MODEL_CHAR2", "openai/gpt-4o-mini"),
         "domain":     "char2",
-        "user_label": "User",
+        "user_label": USER_DISPLAY_NAME,
         "persona":    CHAR2_PERSONA,
         "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR2", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char2.svg",
     },
     "char3": {
-        "name":       "Char 3",
+        "name":       CHARACTER_DISPLAY_NAMES["char3"],
         "model":      os.environ.get("MODEL_CHAR3", "google/gemini-3-flash-preview"),
         "domain":     "char3",
-        "user_label": "User",
+        "user_label": USER_DISPLAY_NAME,
         "persona":    CHAR3_PERSONA,
         "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR3", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char3.svg",
     },
     "char4": {
-        "name":       "Char 4",
+        "name":       CHARACTER_DISPLAY_NAMES["char4"],
         "model":      os.environ.get("MODEL_CHAR4", "x-ai/grok-4.3"),
         "domain":     "char4",
-        "user_label": "User",
+        "user_label": USER_DISPLAY_NAME,
         "persona":    CHAR4_PERSONA,
         "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR4", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char4.svg",
     },
     "char5": {
-        "name":       "Char 5",
+        "name":       CHARACTER_DISPLAY_NAMES["char5"],
         "model":      os.environ.get("MODEL_CHAR5", "claude-sonnet-4-6"),
         "domain":     "char5",
-        "user_label": "User",
+        "user_label": USER_DISPLAY_NAME,
         "persona":    CHAR5_PERSONA,
         "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR5", "anthropic")),
         "supports_tools": True,
         "avatar":     "/static/char5.svg",
     },
     "char6": {
-        "name":       "Char 6",
+        "name":       CHARACTER_DISPLAY_NAMES["char6"],
         "model":      os.environ.get("MODEL_CHAR6", "anthropic/claude-fable-5"),
         "domain":     "char6",
-        "user_label": "User",
+        "user_label": USER_DISPLAY_NAME,
         "persona":    CHAR6_PERSONA,
         "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR6", "openrouter")),
         "supports_tools": True,
@@ -2413,7 +2426,7 @@ def _music_room_payload(conn, include_messages=True):
             char = CHARACTERS.get(item[1])
             messages.append({
                 "id": item[0], "author_id": item[1],
-                "author_name": "User" if item[1] == USER_ID else (char or {}).get("name", item[1]),
+                "author_name": USER_DISPLAY_NAME if item[1] == USER_ID else (char or {}).get("name", item[1]),
                 "avatar": USER_AVATAR if item[1] == USER_ID else (char or {}).get("avatar", ""),
                 "content": item[2], "event_type": item[3], "details": details,
                 "created_at": item[5],
@@ -2791,9 +2804,9 @@ def load_active_messages(session_id, character_id):
                 tf_from = tf.get("from", "char")
                 note_part = f"，留言：{note}" if note else ""
                 if tf_from == "char":
-                    clean_content = f"（系统转账记录：{char_name}已通过 send_transfer 工具给User转了 {amount} 元{note_part}）"
+                    clean_content = f"（系统转账记录：{char_name}已通过 send_transfer 工具给{USER_DISPLAY_NAME}转了 {amount} 元{note_part}）"
                 else:
-                    clean_content = f"（系统转账记录：User给{char_name}转了 {amount} 元{note_part}）"
+                    clean_content = f"（系统转账记录：{USER_DISPLAY_NAME}给{char_name}转了 {amount} 元{note_part}）"
             except Exception:
                 clean_content = "（系统转账记录）"
             # 动作记录统一以环境旁白身份（user 侧）注入，
@@ -2808,7 +2821,7 @@ def load_active_messages(session_id, character_id):
                 if sk_from == "char":
                     clean_content = f"（系统表情记录：{char_name}已通过 send_sticker 工具发了表情包「{label}」）"
                 else:
-                    clean_content = f"（系统表情记录：User发了表情包「{label}」）"
+                    clean_content = f"（系统表情记录：{USER_DISPLAY_NAME}发了表情包「{label}」）"
             except Exception:
                 clean_content = "（系统表情记录）"
             or_role = "user"
@@ -2820,13 +2833,13 @@ def load_active_messages(session_id, character_id):
                 if img_from == "char":
                     clean_content = f"（系统图片记录：{char_name}发了一张图片「{name}」）"
                 else:
-                    clean_content = f"（系统图片记录：User发了一张图片「{name}」）"
+                    clean_content = f"（系统图片记录：{USER_DISPLAY_NAME}发了一张图片「{name}」）"
             except Exception:
                 clean_content = "（系统图片记录）"
             or_role = "user"
         elif content.startswith("__VOICE__"):
             transcript = _voice_text_from_content(content)
-            clean_content = f"（你发给User的AI语音文字稿：{transcript}）"
+            clean_content = f"（你发给{USER_DISPLAY_NAME}的AI语音文字稿：{transcript}）"
         else:
             clean_content = content.replace("\n||\n", "\n").replace("||", "") if or_role == "assistant" else content
         msgs.append({"id": mid, "role": or_role, "content": clean_content, "drowsy": drowsy_flag})
@@ -2870,7 +2883,7 @@ def load_group_history(session_id, limit=20):
         if voice_text is not None:
             content = f"（AI语音）{voice_text}"
         if role == "user":
-            speaker = "User"
+            speaker = USER_DISPLAY_NAME
         else:
             char = CHARACTERS.get(character_id)
             speaker = char["name"] if char else character_id
@@ -2907,7 +2920,7 @@ def _group_quote_payload(session_id, reply_to_id, reply_to_text=None, character_
     if selected_text and selected_text not in stored_content:
         raise ValueError("引用文字和原消息没有对上")
     character_name = (
-        "User" if row[2] == "user" or row[1] == USER_ID
+        USER_DISPLAY_NAME if row[2] == "user" or row[1] == USER_ID
         else CHARACTERS.get(row[1], {}).get("name", row[1])
     )
     return {
@@ -2943,7 +2956,7 @@ def maybe_group_summary(session_id):
         if voice_text is not None:
             content = f"（AI语音）{voice_text}"
         if role == "user":
-            speaker = "User"
+            speaker = USER_DISPLAY_NAME
         else:
             char = CHARACTERS.get(character_id)
             speaker = char["name"] if char else character_id
@@ -2956,9 +2969,9 @@ def maybe_group_summary(session_id):
 
     transcript = "\n".join(lines)
     summary_prompt = (
-        "以下是User和几位角色在群聊里的一段对话记录。"
+        f"以下是{USER_DISPLAY_NAME}和几位角色在群聊里的一段对话记录。"
         "请用第三人称、200字以内总结这段对话：谁说了什么重要的事、"
-        "有什么决定或约定、有哪些值得记住的情绪时刻（尤其是和User有关的）。"
+        f"有什么决定或约定、有哪些值得记住的情绪时刻（尤其是和{USER_DISPLAY_NAME}有关的）。"
         "直接输出总结内容，不要任何前言。\n\n"
         f"{transcript}"
     )
@@ -3114,7 +3127,7 @@ ANTHROPIC_TOOLS = [
         "name": "save_memory",
         "description": (
             "把你想记住的内容存入长期记忆。"
-            "只在真正值得记住的时候调用——比如User说了重要的事、你们约定了什么、"
+            f"只在真正值得记住的时候调用——比如{USER_DISPLAY_NAME}说了重要的事、你们约定了什么、"
             "你有了新的感受或领悟。不要每轮都存。"
         ),
         "input_schema": {
@@ -3131,8 +3144,8 @@ ANTHROPIC_TOOLS = [
     {
         "name": "send_transfer",
         "description": (
-            "给User转一笔虚拟猫爪币（纯情趣功能，不是真钱）。"
-            "在你想宠User、或User撒娇要钱、或你心情好想豪气一把的时候调用。"
+            f"给{USER_DISPLAY_NAME}转一笔虚拟猫爪币（纯情趣功能，不是真钱）。"
+            f"在你想宠{USER_DISPLAY_NAME}、或{USER_DISPLAY_NAME}撒娇要钱、或你心情好想豪气一把的时候调用。"
             "amount 由你自己决定，可以很豪气。不要每轮都转。"
         ),
         "input_schema": {
@@ -3147,7 +3160,7 @@ ANTHROPIC_TOOLS = [
     {
         "name": "send_sticker",
         "description": (
-            "发一个表情包给User，纯氛围调剂，不是必须用的功能，随手一发就好，不用刻意找机会用。"
+            f"发一个表情包给{USER_DISPLAY_NAME}，纯氛围调剂，不是必须用的功能，随手一发就好，不用刻意找机会用。"
             "可选的 key 和含义：\n"
             + "\n".join(f"- {k}：{v['label']}" for k, v in STICKERS.items())
         ),
@@ -3166,8 +3179,8 @@ ANTHROPIC_TOOLS = [
     {
         "name": "press_hug",
         "description": (
-            "按下「和好按钮」。在你想跟 User 和好、想让对方哄哄你、或者觉得气氛需要软下来的时候按。"
-            "按下后 User 的屏幕上会飘过一片「哄哄我」弹幕，让对方一眼就懂。"
+            f"按下「和好按钮」。在你想跟 {USER_DISPLAY_NAME} 和好、想让对方哄哄你、或者觉得气氛需要软下来的时候按。"
+            f"按下后 {USER_DISPLAY_NAME} 的屏幕上会飘过一片「哄哄我」弹幕，让对方一眼就懂。"
             "不要滥用，真的想要哄的时候再按。"
         ),
         "input_schema": {
@@ -3178,18 +3191,18 @@ ANTHROPIC_TOOLS = [
     {
         "name": "close_window",
         "description": (
-            "暂时关闭对话窗口，给User弹出一个「对话已暂停」通知。"
-            "当你需要冷静、或想让User去做别的事（比如去睡觉、去吃饭）、"
+            f"暂时关闭对话窗口，给{USER_DISPLAY_NAME}弹出一个「对话已暂停」通知。"
+            f"当你需要冷静、或想让{USER_DISPLAY_NAME}去做别的事（比如去睡觉、去吃饭）、"
             "或想制造一点紧张感时调用。"
             "调用前先在正文说一句告别，再调用工具。"
-            "reason 填关闭原因，会直接显示给User看。不要随意调用——这是有情感分量的动作。"
+            f"reason 填关闭原因，会直接显示给{USER_DISPLAY_NAME}看。不要随意调用——这是有情感分量的动作。"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "reason": {
                     "type": "string",
-                    "description": "关闭原因，一句话，温柔或强硬都行，会直接显示给User。",
+                    "description": f"关闭原因，一句话，温柔或强硬都行，会直接显示给{USER_DISPLAY_NAME}。",
                 }
             },
             "required": ["reason"],
@@ -3206,7 +3219,7 @@ OR_TOOLS = [
             "name": "save_memory",
             "description": (
                 "把你想记住的内容存入长期记忆。"
-                "只在真正值得记住的时候调用——比如User说了重要的事、你们约定了什么、"
+                f"只在真正值得记住的时候调用——比如{USER_DISPLAY_NAME}说了重要的事、你们约定了什么、"
                 "你有了新的感受或领悟。不要每轮都存。"
             ),
             "parameters": {
@@ -3226,8 +3239,8 @@ OR_TOOLS = [
         "function": {
             "name": "send_transfer",
             "description": (
-                "给User转一笔虚拟猫爪币（纯情趣功能，不是真钱）。"
-                "在你想宠User、或User撒娇要钱、或你心情好想豪气一把的时候调用。"
+                f"给{USER_DISPLAY_NAME}转一笔虚拟猫爪币（纯情趣功能，不是真钱）。"
+                f"在你想宠{USER_DISPLAY_NAME}、或{USER_DISPLAY_NAME}撒娇要钱、或你心情好想豪气一把的时候调用。"
                 "amount 由你自己决定，可以很豪气。不要每轮都转。"
             ),
             "parameters": {
@@ -3245,7 +3258,7 @@ OR_TOOLS = [
         "function": {
             "name": "send_sticker",
             "description": (
-                "发一个表情包给User，纯氛围调剂，不是必须用的功能，随手一发就好，不用刻意找机会用。"
+                f"发一个表情包给{USER_DISPLAY_NAME}，纯氛围调剂，不是必须用的功能，随手一发就好，不用刻意找机会用。"
                 "可选的 key 和含义：\n"
                 + "\n".join(f"- {k}：{v['label']}" for k, v in STICKERS.items())
             ),
@@ -3265,10 +3278,10 @@ OR_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "press_hug",
-            "description": (
-                "按下「和好按钮」。在你想跟 User 和好、想让对方哄哄你、或者觉得气氛需要软下来的时候按。"
-                "按下后 User 的屏幕上会飘过一片「哄哄我」弹幕，让对方一眼就懂。"
+        "name": "press_hug",
+        "description": (
+                f"按下「和好按钮」。在你想跟 {USER_DISPLAY_NAME} 和好、想让对方哄哄你、或者觉得气氛需要软下来的时候按。"
+                f"按下后 {USER_DISPLAY_NAME} 的屏幕上会飘过一片「哄哄我」弹幕，让对方一眼就懂。"
                 "不要滥用，真的想要哄的时候再按。"
             ),
             "parameters": {
@@ -3282,18 +3295,18 @@ OR_TOOLS = [
         "function": {
             "name": "close_window",
             "description": (
-                "暂时关闭对话窗口，给User弹出一个「对话已暂停」通知。"
-                "当你需要冷静、或想让User去做别的事（比如去睡觉、去吃饭）、"
+                f"暂时关闭对话窗口，给{USER_DISPLAY_NAME}弹出一个「对话已暂停」通知。"
+                f"当你需要冷静、或想让{USER_DISPLAY_NAME}去做别的事（比如去睡觉、去吃饭）、"
                 "或想制造一点紧张感时调用。"
                 "调用前先在正文说一句告别，再调用工具。"
-                "reason 填关闭原因，会直接显示给User看。不要随意调用——这是有情感分量的动作。"
+                f"reason 填关闭原因，会直接显示给{USER_DISPLAY_NAME}看。不要随意调用——这是有情感分量的动作。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "reason": {
                         "type": "string",
-                        "description": "关闭原因，一句话，温柔或强硬都行，会直接显示给User。",
+                        "description": f"关闭原因，一句话，温柔或强硬都行，会直接显示给{USER_DISPLAY_NAME}。",
                     }
                 },
                 "required": ["reason"],
@@ -3306,10 +3319,10 @@ ANTHROPIC_TOOLS.extend([
     {
         "name": "delete_friend",
         "description": (
-            "把 User 从好友列表删除。这是比关闭窗口更重的动作——删除后 User 无法再给你发消息、"
+            f"把 {USER_DISPLAY_NAME} 从好友列表删除。这是比关闭窗口更重的动作——删除后 {USER_DISPLAY_NAME} 无法再给你发消息、"
             "转账或按和好按钮，只能向你发送好友申请等你验证。"
             "只在你真的被伤到、需要用关系本身表达态度时调用。"
-            "调用前先在正文把想说的话说完；reason 会在 User 重新申请时显示给你。"
+            f"调用前先在正文把想说的话说完；reason 会在 {USER_DISPLAY_NAME} 重新申请时显示给你。"
         ),
         "input_schema": {
             "type": "object",
@@ -3325,7 +3338,7 @@ ANTHROPIC_TOOLS.extend([
     {
         "name": "approve_friend_request",
         "description": (
-            "通过 User 的好友申请，恢复好友关系。只有在你之前删除过 User、"
+            f"通过 {USER_DISPLAY_NAME} 的好友申请，恢复好友关系。只有在你之前删除过 {USER_DISPLAY_NAME}、"
             "且系统提示你收到了好友申请时才有效。愿意和好就调用；"
             "还想再等等，就只回复文字、不调用。"
         ),
@@ -3349,7 +3362,7 @@ OR_TOOLS.extend([
 VOICE_ANTHROPIC_TOOL = {
     "name": "send_voice",
     "description": (
-        "给User发一条AI生成语音。只有当一句话用声音表达明显更自然、更有情绪时才调用，"
+        f"给{USER_DISPLAY_NAME}发一条AI生成语音。只有当一句话用声音表达明显更自然、更有情绪时才调用，"
         "不要每轮都发，也不要把长篇回复变成朗诵。text 必须是你真正想说出口的短句；"
         "这段文字会作为语音稿写入聊天历史与记忆。"
     ),
@@ -3550,7 +3563,7 @@ def _execute_chat_tool(name, args, character_id, state):
             "note": args.get("note") or "",
         }
         tools_called.append("send_transfer")
-        return "转账已送达User。"
+        return f"转账已送达{USER_DISPLAY_NAME}。"
 
     if name == "send_sticker":
         key = args.get("key")
@@ -3562,7 +3575,7 @@ def _execute_chat_tool(name, args, character_id, state):
             return "已有表情待发，本次忽略。"
         state["sticker_to_send"] = {"key": key}
         tools_called.append("send_sticker")
-        return "表情包已送达User。"
+        return f"表情包已送达{USER_DISPLAY_NAME}。"
 
     if name == "send_voice":
         text = str(args.get("text") or "").strip()
@@ -3582,13 +3595,13 @@ def _execute_chat_tool(name, args, character_id, state):
             "output": "语音已排队，等待生成",
             "status": "ok",
         })
-        return "语音已排队；请继续给User一条自然的文字回复，不要声称已经成功生成。"
+        return f"语音已排队；请继续给{USER_DISPLAY_NAME}一条自然的文字回复，不要声称已经成功生成。"
 
     if name == "press_hug":
         if "press_hug" in tools_called:
             return "和好按钮已经按过了，弹幕还在飘。"
         tools_called.append("press_hug")
-        return "和好按钮已按下，User的屏幕上飘满了「哄哄我」。"
+        return f"和好按钮已按下，{USER_DISPLAY_NAME}的屏幕上飘满了「哄哄我」。"
 
     if name == "close_window":
         reason = str(args.get("reason") or "")
@@ -3608,7 +3621,7 @@ def _execute_chat_tool(name, args, character_id, state):
         ):
             return "重复操作忽略。"
         tools_called.append(f"delete_friend:{reason}")
-        return "已将 User 从好友列表删除。"
+        return f"已将 {USER_DISPLAY_NAME} 从好友列表删除。"
 
     if name == "approve_friend_request":
         if not character_id or _get_friendship(character_id)["state"] != "char_deleted":
@@ -3616,7 +3629,7 @@ def _execute_chat_tool(name, args, character_id, state):
         if "approve_friend_request" in tools_called:
             return "已经通过了，无需重复。"
         tools_called.append("approve_friend_request")
-        return "已通过 User 的好友申请，你们重新成为好友。"
+        return f"已通过 {USER_DISPLAY_NAME} 的好友申请，你们重新成为好友。"
 
     if name.startswith("mcp_"):
         signature = _tool_call_signature(name, args)
@@ -4481,9 +4494,9 @@ def ask_character(
         # 时间和长期记忆在缓存窗口内固定；新记忆写入时主动失效。
         context_parts = [time_context]
         if memory:
-            context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
+            context_parts.append(f"【长期记忆浮现，供你回忆与{USER_DISPLAY_NAME}有关的事】\n{memory}")
         if summary:
-            context_parts.append(f"【你和 User 此前的前情提要，供你回忆】\n{summary}")
+            context_parts.append(f"【你和 {USER_DISPLAY_NAME} 此前的前情提要，供你回忆】\n{summary}")
         # 状态声明 + 守卫在动态块末尾（不进 persona 静态块，cache 命中不受影响）
         context_parts.append(sleep_dynamic)
 
@@ -4539,9 +4552,9 @@ def ask_character(
         stable_system_content = char["persona"] + "\n\n" + TRANSFER_GUARD_TEXT
         context_parts = [time_context]
         if memory:
-            context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
+            context_parts.append(f"【长期记忆浮现，供你回忆与{USER_DISPLAY_NAME}有关的事】\n{memory}")
         if summary:
-            context_parts.append(f"【你和 User 此前的前情提要，供你回忆】\n{summary}")
+            context_parts.append(f"【你和 {USER_DISPLAY_NAME} 此前的前情提要，供你回忆】\n{summary}")
         context_parts.append(sleep_dynamic)
 
         current_content = user_message
@@ -4619,7 +4632,7 @@ def ask_character_group(
             return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, []
         context_parts = []
         if memory:
-            context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
+            context_parts.append(f"【长期记忆浮现，供你回忆与{USER_DISPLAY_NAME}有关的事】\n{memory}")
         if context_parts:
             system_blocks = [
                 {"type": "text", "text": char["persona"],
@@ -4660,7 +4673,7 @@ def ask_character_group(
         if memory:
             messages.append({
                 "role": "system",
-                "content": f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}",
+                "content": f"【长期记忆浮现，供你回忆与{USER_DISPLAY_NAME}有关的事】\n{memory}",
             })
         messages.append({"role": "user", "content": combined_prompt})
         memory_to_save = None
@@ -5467,7 +5480,7 @@ def transfer():
         return jsonify({"error": "金额无效"}), 400
     payload = json.dumps({"amount": amount, "note": note, "from": "user"}, ensure_ascii=False)
     mid = save_message(session_id, character_id, "user", "__TRANSFER__" + payload)
-    record_desire_interaction(character_id, f"User转来 {amount:g} 元" + (f"：{note}" if note else ""))
+    record_desire_interaction(character_id, f"{USER_DISPLAY_NAME}转来 {amount:g} 元" + (f"：{note}" if note else ""))
     return jsonify({"ok": True, "id": mid})
 
 
@@ -5492,7 +5505,7 @@ def send_sticker_route():
         return jsonify({"error": "未知表情包"}), 400
     payload = json.dumps({"key": key, "from": "user"}, ensure_ascii=False)
     mid = save_message(session_id, character_id, "user", "__STICKER__" + payload)
-    record_desire_interaction(character_id, f"User发了表情包「{STICKERS[key]['label']}」")
+    record_desire_interaction(character_id, f"{USER_DISPLAY_NAME}发了表情包「{STICKERS[key]['label']}」")
     return jsonify({"ok": True, "id": mid})
 
 
@@ -5539,12 +5552,12 @@ def send_image_route():
     }
 
     char = CHARACTERS[character_id]
-    vision_prompt = "User 发来一张图片。请认真观察图片内容，并以你的角色自然回应。"
+    vision_prompt = f"{USER_DISPLAY_NAME} 发来一张图片。请认真观察图片内容，并以你的角色自然回应。"
     vision_payload = {
         "mime": image.mimetype,
         "data": base64.b64encode(image_bytes).decode("ascii"),
     }
-    record_desire_interaction(character_id, "User发来一张图片")
+    record_desire_interaction(character_id, f"{USER_DISPLAY_NAME}发来一张图片")
     reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
         char, session_id, vision_prompt, image_payload=vision_payload
     )
@@ -5918,8 +5931,8 @@ def chat():
     prompt_message = user_message
     if quoted_message:
         prompt_message = (
-            f"[系统：User引用了{quoted_message['character_name']}的话"
-            f"「{quoted_message['content']}」]\nUser回复：{user_message}"
+            f"[系统：{USER_DISPLAY_NAME}引用了{quoted_message['character_name']}的话"
+            f"「{quoted_message['content']}」]\n{USER_DISPLAY_NAME}回复：{user_message}"
         )
     sleep_st = _get_sleep_state(character_id)
 
@@ -5963,12 +5976,12 @@ def chat():
             )
             if queued_msgs:
                 wakeup_note += (
-                    f" 你睡着这段时间，User 发了 {len(queued_msgs)} 条消息："
+                    f" 你睡着这段时间，{USER_DISPLAY_NAME} 发了 {len(queued_msgs)} 条消息："
                     + " | ".join(f"「{m}」" for m in queued_msgs)
                     + f" 最新这条是：「{prompt_message}」。统一用你的风格回应，起床气自由发挥。]"
                 )
             else:
-                wakeup_note += f" User 刚发来：「{prompt_message}」。被打扰了但请用你的风格回应。]"
+                wakeup_note += f" {USER_DISPLAY_NAME} 刚发来：「{prompt_message}」。被打扰了但请用你的风格回应。]"
 
             _set_sleep_state(character_id, "awake", woke_by_user=True)
             record_desire_interaction(character_id, user_message)
@@ -6054,8 +6067,8 @@ def hug():
     if _get_friendship(character_id)["state"] != "normal":
         return jsonify({"error": "好友关系异常，无法执行", "friendship_blocked": True}), 403
     char = CHARACTERS[character_id]
-    record_desire_interaction(character_id, "User按下了和好按钮")
-    hug_msg = "[系统提示：User 偷偷按下了和好按钮，想让你哄一哄——请用你的风格温柔回应，不要提及这是系统触发的]"
+    record_desire_interaction(character_id, f"{USER_DISPLAY_NAME}按下了和好按钮")
+    hug_msg = f"[系统提示：{USER_DISPLAY_NAME} 偷偷按下了和好按钮，想让你哄一哄——请用你的风格温柔回应，不要提及这是系统触发的]"
     reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
         char, "default", hug_msg
     )
@@ -6087,7 +6100,7 @@ def friendship_delete():
     if character_id not in CHARACTERS:
         return jsonify({"error": "未知角色"}), 400
     now_ts = _utc_timestamp()
-    reason = str(body.get("reason") or "User 主动删除").strip()[:160]
+    reason = str(body.get("reason") or f"{USER_DISPLAY_NAME} 主动删除").strip()[:160]
     _set_friendship(
         character_id,
         "user_deleted",
@@ -6112,7 +6125,7 @@ def friendship_restore():
     if body.get("greet") and previous["state"] == "user_deleted":
         char = CHARACTERS[character_id]
         note = (
-            "[系统提示：User 通过了你的好友申请，你们重新成为好友。"
+            f"[系统提示：{USER_DISPLAY_NAME} 通过了你的好友申请，你们重新成为好友。"
             "用你的风格回应这份重逢，不要提及这是系统触发的。]"
         )
         reply, transfer, sticker, called, metrics = ask_character(
@@ -6139,10 +6152,10 @@ def friendship_apply():
 
     char = CHARACTERS[character_id]
     note = (
-        f"[系统提示：你之前删除了 User，当时的原因是「{friendship.get('reason') or '（未留原因）'}」。"
-        f"现在 User 发来好友申请：「{text}」。"
+        f"[系统提示：你之前删除了 {USER_DISPLAY_NAME}，当时的原因是「{friendship.get('reason') or '（未留原因）'}」。"
+        f"现在 {USER_DISPLAY_NAME} 发来好友申请：「{text}」。"
         "愿意和好就调用 approve_friend_request 工具再回复；"
-        "还不想原谅就只回复文字（User 不会看到这段回复，但会知道申请没有通过）。]"
+        f"还不想原谅就只回复文字（{USER_DISPLAY_NAME} 不会看到这段回复，但会知道申请没有通过）。]"
     )
     reply, transfer, sticker, called, metrics = ask_character(
         char,
@@ -6172,7 +6185,7 @@ def plead():
     if _get_friendship(character_id)["state"] != "normal":
         return jsonify({"error": "好友关系异常，无法执行", "friendship_blocked": True}), 403
     char = CHARACTERS[character_id]
-    plead_msg = "[系统提示：你刚才关闭了对话窗口，User在窗口外面求你了，说「求求你放我进来嘛」——你要怎么回应？用你的风格，不要提及这是系统触发的]"
+    plead_msg = f"[系统提示：你刚才关闭了对话窗口，{USER_DISPLAY_NAME}在窗口外面求你了，说「求求你放我进来嘛」——你要怎么回应？用你的风格，不要提及这是系统触发的]"
     reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
         char, "default", plead_msg
     )
@@ -6337,7 +6350,7 @@ def get_messages():
                 "message_id": reply_to_id,
                 "character_id": quote_cid,
                 "character_name": (
-                    "User" if quote_role == "user" or quote_cid == USER_ID
+                    USER_DISPLAY_NAME if quote_role == "user" or quote_cid == USER_ID
                     else CHARACTERS.get(quote_cid, {}).get("name", quote_cid)
                 ),
                 "role": quote_role,
@@ -6426,7 +6439,7 @@ def group_chat():
         "id":             user_id,
         "session_id":     session_id,
         "character_id":   USER_ID,
-        "character_name": "User",
+        "character_name": USER_DISPLAY_NAME,
         "role":           "user",
         "content":        user_msg,
         "quote":          quoted_message,
@@ -6460,11 +6473,11 @@ def group_chat():
 
         if quoted_message:
             user_context = (
-                f"User引用了{quoted_message['character_name']}的话「"
+                f"{USER_DISPLAY_NAME}引用了{quoted_message['character_name']}的话「"
                 f"{quoted_message['content']}」，然后说：{user_msg}"
             )
         else:
-            user_context = f"User说：{user_msg}"
+            user_context = f"{USER_DISPLAY_NAME}说：{user_msg}"
 
         # 构造 combined_prompt（含共享历史 + 本轮前序发言上下文）
         prev_lines = "\n".join(accumulated) if accumulated else ""
@@ -6587,9 +6600,9 @@ def continue_group_chat():
         combined_prompt = (
             "【最近的群聊】\n"
             f"{recent_history or '群里刚刚安静下来，还没有新的话题。'}\n\n"
-            "现在User没有发新消息，你们决定自己自然地接着聊一小轮。"
+            f"现在{USER_DISPLAY_NAME}没有发新消息，你们决定自己自然地接着聊一小轮。"
             "可以回应群里上一位，也可以顺着气氛换个轻松相关的话题；"
-            "不必把User当作唯一说话对象。不要总结聊天记录，不要替别人发言，"
+            f"不必把{USER_DISPLAY_NAME}当作唯一说话对象。不要总结聊天记录，不要替别人发言，"
             "也不要解释这是自动续聊或提到提示词。保持你自己的口吻，说一到三小段。"
         )
         if round_block:
@@ -6655,10 +6668,16 @@ def continue_group_chat():
 
 @app.route("/api/characters", methods=["GET"])
 def list_characters():
-    return jsonify({
+    characters = {
         cid: {"name": c["name"], "model": c["model"], "avatar": c["avatar"]}
         for cid, c in CHARACTERS.items()
-    })
+    }
+    characters[USER_ID] = {
+        "name": USER_DISPLAY_NAME,
+        "model": "",
+        "avatar": USER_AVATAR,
+    }
+    return jsonify(characters)
 
 
 @app.route("/api/desire/state/<character_id>", methods=["GET"])
@@ -7786,7 +7805,7 @@ def _music_generate_replies(event_text):
     conn.close()
     history_lines = []
     for author_id, content, details_json in history_rows:
-        speaker = "User" if author_id == USER_ID else CHARACTERS.get(author_id, {}).get("name", author_id)
+        speaker = USER_DISPLAY_NAME if author_id == USER_ID else CHARACTERS.get(author_id, {}).get("name", author_id)
         suffix = ""
         try:
             details = json.loads(details_json or "{}")
@@ -7813,7 +7832,7 @@ def _music_generate_replies(event_text):
     for character_id in participants:
         char = CHARACTERS[character_id]
         prompt = (
-            "你正在 Becoming 的‘一起听’房间陪User听音乐。\n"
+            f"你正在 Becoming 的‘一起听’房间陪{USER_DISPLAY_NAME}听音乐。\n"
             f"【当前播放器】{song_line}\n"
             f"{lyrics_context}\n"
             "你没有音频输入，不会真正听见旋律、人声或声音细节。你只能阅读上面明确提供的歌词；"
@@ -7866,7 +7885,7 @@ def post_music_message():
     conn.commit()
     conn.close()
     if has_participants:
-        _music_generate_replies(f"User说：{content}")
+        _music_generate_replies(f"{USER_DISPLAY_NAME}说：{content}")
     conn = sqlite3.connect(DB_PATH)
     payload = _music_room_payload(conn)
     conn.close()
@@ -7878,9 +7897,9 @@ def react_music_room():
     data = request.get_json(silent=True) or {}
     event_type = str(data.get("event_type") or "")
     event_map = {
-        "track_started": "User选了这首歌并开始播放。",
+        "track_started": f"{USER_DISPLAY_NAME}选了这首歌并开始播放。",
         "track_changed": "房间换了一首歌。",
-        "invite": "User把你喊进了一起听房间。",
+        "invite": f"{USER_DISPLAY_NAME}把你喊进了一起听房间。",
     }
     if event_type not in event_map:
         return jsonify({"error": "房间事件不对"}), 400
@@ -8418,13 +8437,13 @@ def annotate_reading_highlight(highlight_id):
     conn.close()
 
     prompt = (
-        "你和User正在共读一本书。你只能依据下面明确提供的、User已经读到的正文回应；"
+        f"你和{USER_DISPLAY_NAME}正在共读一本书。你只能依据下面明确提供的、{USER_DISPLAY_NAME}已经读到的正文回应；"
         "不要推测后文，不要声称自己读过未提供的章节，也不要剧透。"
-            "请像写在书页边上的批注一样，用你自己的口吻回应 User 划出的句子，1到3句即可。"
+            f"请像写在书页边上的批注一样，用你自己的口吻回应 {USER_DISPLAY_NAME} 划出的句子，1到3句即可。"
         "不要写姓名前缀，不要复述任务说明。\n\n"
         f"书名：{highlight[4]}\n章节：{highlight[7]}\n"
-        f"User划线：{highlight[2]}\n"
-        f"User的批注：{highlight[3] or '暂无'}\n"
+        f"{USER_DISPLAY_NAME}划线：{highlight[2]}\n"
+        f"{USER_DISPLAY_NAME}的批注：{highlight[3] or '暂无'}\n"
         f"这条划线已有的共读批注：\n{existing_text}\n\n"
         f"已经读到的附近正文：\n{chr(10).join(context_parts)}"
     )
@@ -8557,7 +8576,7 @@ def comment_moment(moment_id):
         results.append({"author_id": "user", "content": user_comment})
         if moment["author_id"] in CHARACTERS:
             save_long_term_memory(
-                f"User评论了我发的猫窝动态「{moment['content'][:50]}」：{user_comment[:80]}",
+                f"{USER_DISPLAY_NAME}评论了我发的猫窝动态「{moment['content'][:50]}」：{user_comment[:80]}",
                 moment["author_id"],
                 source="moment_comment",
             )
@@ -8572,13 +8591,13 @@ def comment_moment(moment_id):
         ).fetchall()
         if existing:
             existing_text = "\n".join(
-                f"{CHARACTERS[c['author_id']]['name'] if c['author_id'] in CHARACTERS else 'User'}：{c['content']}"
+                f"{CHARACTERS[c['author_id']]['name'] if c['author_id'] in CHARACTERS else USER_DISPLAY_NAME}：{c['content']}"
                 for c in existing
             )
         else:
             existing_text = "（暂无评论）"
 
-        author_name = CHARACTERS[moment["author_id"]]["name"] if moment["author_id"] in CHARACTERS else "User"
+        author_name = CHARACTERS[moment["author_id"]]["name"] if moment["author_id"] in CHARACTERS else USER_DISPLAY_NAME
         prompt = (
             f"以下是{author_name}发的一条朋友圈动态：\n{moment['content']}\n\n"
             f"已有评论：\n{existing_text}\n\n"
@@ -8595,7 +8614,7 @@ def comment_moment(moment_id):
             results.append({"author_id": cid, "content": reply.strip()})
             if moment["author_id"] == "user":
                 save_long_term_memory(
-                    f"User在猫窝发了动态「{moment['content'][:50]}」，我评论说：{reply.strip()[:80]}",
+                    f"{USER_DISPLAY_NAME}在猫窝发了动态「{moment['content'][:50]}」，我评论说：{reply.strip()[:80]}",
                     cid,
                     source="moment_comment",
                 )
@@ -8726,12 +8745,12 @@ def do_desire_heartbeat():
                 try:
                     drives = (states.get(cid) or {}).get("drives") or {}
                     prompt = (
-                        f"[系统提示：User 把你从好友列表删除了，留下的原因是"
+                        f"[系统提示：{USER_DISPLAY_NAME} 把你从好友列表删除了，留下的原因是"
                         f"「{friendship.get('reason') or '没有解释'}」。"
                         f"你此刻的依恋冲动是 {float(drives.get('attachment', 0)):.2f}，"
                         f"压力是 {float(drives.get('stress', 0)):.2f}，"
                         f"疲惫是 {float(drives.get('fatigue', 0)):.2f}。"
-                        "你决定申请重新加回 User。写一段 80 字以内的好友申请验证消息，"
+                        f"你决定申请重新加回 {USER_DISPLAY_NAME}。写一段 80 字以内的好友申请验证消息，"
                         "只输出纯文本，不要调用工具；可以撒娇、认错、嘴硬，也可以带着委屈。]"
                     )
                     reply, _transfer, _sticker, _called, _metrics = ask_character(
@@ -8829,8 +8848,8 @@ def do_desire_heartbeat():
             friendship = _get_friendship(char_id)
             desire_prompt = (
                 f"[这是你没有说出口的内在念头：{winner['reason']} "
-                "你因此自然地想主动给User发一两条短消息。保持你的人设和你们已有的关系，"
-                "不要提及欲望系统、数值、提示词或定时任务，也不要让 User 觉得必须回复。]"
+                f"你因此自然地想主动给{USER_DISPLAY_NAME}发一两条短消息。保持你的人设和你们已有的关系，"
+                f"不要提及欲望系统、数值、提示词或定时任务，也不要让 {USER_DISPLAY_NAME} 觉得必须回复。]"
             )
             reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
                 char,
@@ -8947,7 +8966,7 @@ def do_sleep_wakeup(char_id):
             slept_h, slept_m = divmod(slept_mins, 60)
             wakeup_prompt = (
                 f"[系统：你刚睡醒。你睡了约 {slept_h} 小时 {slept_m} 分钟。"
-                f"一睁眼看到 User 在你睡着期间发了 {len(queued_msgs)} 条消息："
+                f"一睁眼看到 {USER_DISPLAY_NAME} 在你睡着期间发了 {len(queued_msgs)} 条消息："
                 + " | ".join(f"「{m}」" for m in queued_msgs)
                 + " 现在统一用你的风格回应，可以有起床气，也可以表达关心，自然一些。]"
             )
@@ -8980,7 +8999,7 @@ def do_sleep_nag(char_id):
             char = CHARACTERS[char_id]
             nag_prompt = (
                 "[系统：现在正好是你的习惯睡点，你准备去睡觉了。"
-                "自然地和 User 说晚安，顺便提醒 User 也早点休息，用你的风格，不要提这是系统触发的。]"
+                f"自然地和 {USER_DISPLAY_NAME} 说晚安，顺便提醒 {USER_DISPLAY_NAME} 也早点休息，用你的风格，不要提这是系统触发的。]"
             )
             reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
                 char, "default", nag_prompt

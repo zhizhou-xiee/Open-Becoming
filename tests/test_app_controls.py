@@ -729,6 +729,8 @@ class AppControlsTests(unittest.TestCase):
 
             characters = self.client.get("/api/characters").get_json()
             self.assertEqual(characters["char3"]["avatar"], avatar["url"])
+            self.assertEqual(characters["user"]["name"], app_module.USER_DISPLAY_NAME)
+            self.assertEqual(characters["char1"]["name"], app_module.CHARACTERS["char1"]["name"])
             served = self.client.get(avatar["url"])
             self.assertEqual(served.status_code, 200)
             self.assertEqual(served.data, png)
