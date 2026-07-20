@@ -96,6 +96,23 @@ class AppControlsTests(unittest.TestCase):
         self.assertNotIn("双击（250ms 内两次 tap）", script)
         self.assertIn('aria-label="发送；长按选择在线角色"', markup)
 
+    def test_single_chat_swipe_back_does_not_capture_vertical_scroll(self):
+        script = (
+            Path(app_module.__file__).with_name("static") / "app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("const SWIPE_BACK_EDGE_WIDTH = 28;", script)
+        self.assertIn("const SWIPE_BACK_LOCK_DISTANCE = 5;", script)
+        self.assertIn("const SWIPE_BACK_READY_DISTANCE = 72;", script)
+        self.assertIn("if (touch.clientX > SWIPE_BACK_EDGE_WIDTH) return;", script)
+        self.assertIn("if (absDy > 12 && absDy > dx * 1.35)", script)
+        self.assertIn('singleView.classList.add("swipe-peeking");', script)
+        self.assertLess(
+            script.index('singleChatView.addEventListener("touchmove"'),
+            script.index('singleView.classList.add("swipe-peeking");'),
+        )
+        self.assertNotIn("SWIPE_BACK_EDGE_RATIO", script)
+
     def test_memory_overview_keeps_backend_and_character_payload(self):
         script = (
             Path(app_module.__file__).with_name("static") / "app.js"

@@ -1348,7 +1348,9 @@
   const singleListView = document.getElementById("singleListView");
   const singleChatView = document.getElementById("singleChatView");
   const swipeBackHint = document.getElementById("swipeBackHint");
-  const SWIPE_BACK_EDGE_RATIO = 0.6;
+  const SWIPE_BACK_EDGE_WIDTH = 28;
+  const SWIPE_BACK_LOCK_DISTANCE = 5;
+  const SWIPE_BACK_READY_DISTANCE = 72;
   let swipeBackState = null;
   let swipeBackTimer = null;
 
@@ -1394,12 +1396,7 @@
     if (singleView.classList.contains("swipe-settling")) return;
     if (event.target.closest("input, textarea, button, select, [contenteditable='true']")) return;
     const touch = event.touches[0];
-    if (touch.clientX > singleChatView.clientWidth * SWIPE_BACK_EDGE_RATIO) return;
-    singleListView.style.display = "flex";
-    singleView.classList.add("swipe-peeking");
-    singleView.style.setProperty("--swipe-panel-x", "0px");
-    singleView.style.setProperty("--swipe-list-x", "-18px");
-    singleView.style.setProperty("--swipe-list-opacity", "0.76");
+    if (touch.clientX > SWIPE_BACK_EDGE_WIDTH) return;
     swipeBackState = {
       startX: touch.clientX,
       startY: touch.clientY,
@@ -1413,19 +1410,30 @@
   singleChatView.addEventListener("touchmove", event => {
     if (!swipeBackState || event.touches.length !== 1) return;
     const touch = event.touches[0];
-    const dx = Math.max(0, touch.clientX - swipeBackState.startX);
+    const rawDx = touch.clientX - swipeBackState.startX;
+    const dx = Math.max(0, rawDx);
     const dy = touch.clientY - swipeBackState.startY;
-    if (!swipeBackState.horizontal && Math.abs(dy) > 18 && Math.abs(dy) > dx) {
-      resetSwipeBack();
-      return;
+    const absDy = Math.abs(dy);
+
+    if (!swipeBackState.horizontal) {
+      if (rawDx < -SWIPE_BACK_LOCK_DISTANCE) {
+        resetSwipeBack();
+        return;
+      }
+      if (absDy > 12 && absDy > dx * 1.35) {
+        resetSwipeBack();
+        return;
+      }
+      if (dx < SWIPE_BACK_LOCK_DISTANCE || dx < absDy * 0.72) return;
+      swipeBackState.horizontal = true;
+      singleListView.style.display = "flex";
+      singleView.classList.add("swipe-peeking");
     }
-    if (dx < 8 || dx < Math.abs(dy) * 1.15) return;
 
     event.preventDefault();
     swipeBackState.dx = dx;
-    swipeBackState.horizontal = true;
-    swipeBackState.ready = dx >= 86;
-    const progress = Math.min(dx / 108, 1);
+    swipeBackState.ready = dx >= SWIPE_BACK_READY_DISTANCE;
+    const progress = Math.min(dx / 96, 1);
     singleView.style.setProperty("--swipe-panel-x", `${dx}px`);
     singleView.style.setProperty("--swipe-list-x", `${-18 + progress * 18}px`);
     singleView.style.setProperty("--swipe-list-opacity", String(0.76 + progress * 0.24));
@@ -1444,8 +1452,8 @@
     }
     const elapsed = Math.max(Date.now() - swipeBackState.startedAt, 1);
     const fastFlick = swipeBackState.horizontal
-      && swipeBackState.dx >= 44
-      && swipeBackState.dx / elapsed >= 0.42;
+      && swipeBackState.dx >= 32
+      && swipeBackState.dx / elapsed >= 0.3;
     const shouldReturn = swipeBackState.ready || fastFlick;
     settleSwipeBack(shouldReturn);
   });
