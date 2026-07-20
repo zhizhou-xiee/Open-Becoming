@@ -149,10 +149,110 @@ def api_logout():
     session.clear()
     return jsonify({"ok": True})
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_URL = os.environ.get(
+    "OPENROUTER_BASE_URL",
+    "https://openrouter.ai/api/v1/chat/completions",
+).strip()
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_URL = os.environ.get(
+    "ANTHROPIC_BASE_URL",
+    "https://api.anthropic.com/v1/messages",
+).strip()
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_BASE_URL = os.environ.get(
+    "DEEPSEEK_BASE_URL",
+    "https://api.deepseek.com",
+).strip()
+CUSTOM_OPENAI_API_KEY = os.environ.get("CUSTOM_OPENAI_API_KEY", "").strip()
+CUSTOM_OPENAI_BASE_URL = os.environ.get("CUSTOM_OPENAI_BASE_URL", "").strip()
+CUSTOM_OPENAI_ALLOW_NO_KEY = (
+    os.environ.get("CUSTOM_OPENAI_ALLOW_NO_KEY", "false").lower() == "true"
+)
+
+
+def _chat_completion_url(value):
+    url = str(value or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/chat/completions"):
+        return url
+    return f"{url}/chat/completions"
+
+
+MODEL_PROVIDERS = {
+    "openrouter": {
+        "label": "OpenRouter",
+        "api_style": "openai",
+        "url": _chat_completion_url(OPENROUTER_URL),
+        "api_key": OPENROUTER_API_KEY,
+        "default_model": "google/gemini-3-flash-preview",
+    },
+    "anthropic": {
+        "label": "Anthropic 官方",
+        "api_style": "anthropic",
+        "url": ANTHROPIC_URL,
+        "api_key": ANTHROPIC_API_KEY,
+        "default_model": "claude-sonnet-4-6",
+    },
+    "deepseek": {
+        "label": "DeepSeek 官方",
+        "api_style": "openai",
+        "url": _chat_completion_url(DEEPSEEK_BASE_URL),
+        "api_key": DEEPSEEK_API_KEY,
+        "default_model": "deepseek-v4-flash",
+    },
+    "custom_openai": {
+        "label": "自定义 OpenAI-compatible",
+        "api_style": "openai",
+        "url": _chat_completion_url(CUSTOM_OPENAI_BASE_URL),
+        "api_key": CUSTOM_OPENAI_API_KEY,
+        "allow_no_key": CUSTOM_OPENAI_ALLOW_NO_KEY,
+        "default_model": "",
+    },
+}
+
+
+def _valid_provider(value, fallback="openrouter"):
+    provider = str(value or "").strip().lower()
+    return provider if provider in MODEL_PROVIDERS else fallback
+
+
+def _provider_spec(provider):
+    provider = _valid_provider(provider)
+    spec = dict(MODEL_PROVIDERS[provider])
+    if provider == "openrouter":
+        spec.update(api_key=OPENROUTER_API_KEY, url=_chat_completion_url(OPENROUTER_URL))
+    elif provider == "anthropic":
+        spec.update(api_key=ANTHROPIC_API_KEY, url=ANTHROPIC_URL)
+    elif provider == "deepseek":
+        spec.update(api_key=DEEPSEEK_API_KEY, url=_chat_completion_url(DEEPSEEK_BASE_URL))
+    elif provider == "custom_openai":
+        spec.update(
+            api_key=CUSTOM_OPENAI_API_KEY,
+            url=_chat_completion_url(CUSTOM_OPENAI_BASE_URL),
+            allow_no_key=CUSTOM_OPENAI_ALLOW_NO_KEY,
+        )
+    return spec
+
+
+def _provider_configured(provider):
+    spec = _provider_spec(provider)
+    if not spec.get("url"):
+        return False
+    return bool(spec.get("api_key") or spec.get("allow_no_key"))
+
+
+def _provider_label(provider):
+    return _provider_spec(provider).get("label") or str(provider)
+
+
+def _openai_provider_headers(provider):
+    spec = _provider_spec(provider)
+    headers = {"Content-Type": "application/json"}
+    if spec.get("api_key"):
+        headers["Authorization"] = f"Bearer {spec['api_key']}"
+    return headers
 
 # 网易云只在后端使用。搜索与歌词通常不需要登录；会员歌曲播放需要 MUSIC_U。
 NETEASE_MUSIC_U = os.environ.get("NETEASE_MUSIC_U", "").strip()
@@ -163,7 +263,8 @@ except ValueError:
 if NETEASE_BITRATE not in {128000, 192000, 320000, 999000}:
     NETEASE_BITRATE = 320000
 
-# 摘要（压缩老对话）专用的便宜模型，走同一个 OR 通道
+# 摘要（压缩老对话）专用模型，也可从前端切换供应商。
+SUMMARY_PROVIDER = _valid_provider(os.environ.get("SUMMARY_PROVIDER", "openrouter"))
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "google/gemini-2.5-flash-lite")
 
 GROUP_SUMMARY_THRESHOLD = int(os.environ.get("GROUP_SUMMARY_THRESHOLD", "40"))
@@ -321,7 +422,7 @@ CHARACTERS = {
         "domain":     "char1",
         "user_label": "User",
         "persona":    CHAR1_PERSONA,
-        "provider":   "openrouter",
+        "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR1", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char1.svg",
     },
@@ -331,7 +432,7 @@ CHARACTERS = {
         "domain":     "char2",
         "user_label": "User",
         "persona":    CHAR2_PERSONA,
-        "provider":   "openrouter",
+        "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR2", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char2.svg",
     },
@@ -341,7 +442,7 @@ CHARACTERS = {
         "domain":     "char3",
         "user_label": "User",
         "persona":    CHAR3_PERSONA,
-        "provider":   "openrouter",
+        "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR3", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char3.svg",
     },
@@ -351,7 +452,7 @@ CHARACTERS = {
         "domain":     "char4",
         "user_label": "User",
         "persona":    CHAR4_PERSONA,
-        "provider":   "openrouter",
+        "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR4", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char4.svg",
     },
@@ -361,7 +462,8 @@ CHARACTERS = {
         "domain":     "char5",
         "user_label": "User",
         "persona":    CHAR5_PERSONA,
-        "provider":   "anthropic",
+        "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR5", "anthropic")),
+        "supports_tools": True,
         "avatar":     "/static/char5.svg",
     },
     "char6": {
@@ -370,7 +472,7 @@ CHARACTERS = {
         "domain":     "char6",
         "user_label": "User",
         "persona":    CHAR6_PERSONA,
-        "provider":   "openrouter",
+        "provider":   _valid_provider(os.environ.get("PROVIDER_CHAR6", "openrouter")),
         "supports_tools": True,
         "avatar":     "/static/char6.svg",
     },
@@ -558,7 +660,7 @@ def handle_monthly_limit_reached(exc):
         owner = CHARACTERS[exc.character_id]["name"]
         message = f"{owner}本月的饭饭喵额度已经用完啦"
     else:
-        owner = "Anthropic" if exc.platform == "anthropic" else "OpenRouter"
+        owner = _provider_label(exc.platform)
         message = f"{owner} 本月的饭饭喵总额度已经用完啦"
     return jsonify({
         "error": message,
@@ -573,6 +675,25 @@ def handle_monthly_limit_reached(exc):
 ANTHROPIC_PRICING = {
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30},
     "_default":          {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30},
+}
+DEEPSEEK_PRICING = {
+    "deepseek-v4-flash": {"cache_hit": 0.0028, "input": 0.14, "output": 0.28},
+    "deepseek-v4-pro": {"cache_hit": 0.003625, "input": 0.435, "output": 0.87},
+    "_default": {"cache_hit": 0.0028, "input": 0.14, "output": 0.28},
+}
+
+
+def _env_float(name, default=0.0):
+    try:
+        return float(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+CUSTOM_OPENAI_PRICING = {
+    "input": _env_float("CUSTOM_OPENAI_INPUT_PRICE_PER_MILLION"),
+    "output": _env_float("CUSTOM_OPENAI_OUTPUT_PRICE_PER_MILLION"),
+    "cache_read": _env_float("CUSTOM_OPENAI_CACHE_PRICE_PER_MILLION"),
 }
 
 
@@ -827,6 +948,7 @@ def _wake_probability(char_id):
 # 数据库
 # ============================================================
 def init_db():
+    global SUMMARY_MODEL, SUMMARY_PROVIDER
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
@@ -1213,6 +1335,14 @@ def init_db():
             cid = k[len("model_"):]
             if cid in CHARACTERS and v.strip():
                 CHARACTERS[cid]["model"] = v.strip()
+        elif k.startswith("provider_"):
+            cid = k[len("provider_"):]
+            if cid in CHARACTERS and v.strip() in MODEL_PROVIDERS:
+                CHARACTERS[cid]["provider"] = v.strip()
+        elif k == "summary_provider" and v.strip() in MODEL_PROVIDERS:
+            SUMMARY_PROVIDER = v.strip()
+        elif k == "summary_model" and v.strip():
+            SUMMARY_MODEL = v.strip()
         elif k.startswith("limit_"):
             cid = k[len("limit_"):]
             try:
@@ -2702,10 +2832,14 @@ def maybe_group_summary(session_id):
         "直接输出总结内容，不要任何前言。\n\n"
         f"{transcript}"
     )
-    reply, usage, _ = call_or(
-        SUMMARY_MODEL, [{"role": "user", "content": summary_prompt}], max_tokens=1024
+    reply, usage, _ = call_provider_text(
+        SUMMARY_PROVIDER,
+        SUMMARY_MODEL,
+        [{"role": "user", "content": summary_prompt}],
+        max_tokens=1024,
+        session_id=f"summary:group:{session_id}",
     )
-    log_usage("group", "openrouter", SUMMARY_MODEL, usage, purpose="group_summary")
+    log_usage("group", SUMMARY_PROVIDER, SUMMARY_MODEL, usage, purpose="group_summary")
     if not reply or not reply.strip():
         return
 
@@ -2722,29 +2856,39 @@ def maybe_group_summary(session_id):
 # ============================================================
 # OpenRouter 调用
 # ============================================================
-def _apply_openrouter_cache_options(payload, model, session_id=None):
+def _apply_openrouter_cache_options(payload, model, session_id=None, provider="openrouter"):
+    if provider != "openrouter":
+        return
     if session_id:
         payload["session_id"] = str(session_id)[:256]
     if model.lstrip("~").startswith("anthropic/"):
         payload["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
 
 
-def call_or(model, messages, max_tokens=None, session_id=None):
-    payload = {"model": model, "messages": messages, "usage": {"include": True}}
+def call_or(model, messages, max_tokens=None, session_id=None, provider="openrouter"):
+    """Call an OpenAI-compatible chat-completions provider."""
+    provider = _valid_provider(provider)
+    spec = _provider_spec(provider)
+    if spec.get("api_style") != "openai" or not _provider_configured(provider):
+        return None, {}, "error"
+    payload = {"model": model, "messages": messages}
+    if provider == "openrouter":
+        payload["usage"] = {"include": True}
     if max_tokens:
         payload["max_tokens"] = max_tokens
-    _apply_openrouter_cache_options(payload, model, session_id)
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-    }
+    _apply_openrouter_cache_options(payload, model, session_id, provider)
+    headers = _openai_provider_headers(provider)
     try:
-        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
+        resp = requests.post(spec["url"], headers=headers, json=payload, timeout=60)
     except Exception as e:
-        app.logger.error(f"[call_or] request failed (model={model}): {e}")
+        app.logger.error(
+            f"[call_or] request failed (provider={provider}, model={model}): {e}"
+        )
         return None, {}, "error"
     if resp.status_code != 200:
-        app.logger.error(f"[call_or] {model} returned {resp.status_code}: {resp.text[:200]}")
+        app.logger.error(
+            f"[call_or] {provider}/{model} returned {resp.status_code}: {resp.text[:200]}"
+        )
         return None, {}, "error"
     try:
         data = resp.json()
@@ -2796,6 +2940,43 @@ def call_anthropic(model, system_blocks, messages, max_tokens=2048):
         return None, {}
     except (KeyError, IndexError):
         return None, {}
+
+
+def call_provider_text(
+    provider,
+    model,
+    messages,
+    max_tokens=2048,
+    session_id=None,
+):
+    """Send a plain text request through either supported wire format."""
+    provider = _valid_provider(provider)
+    if _provider_spec(provider).get("api_style") == "anthropic":
+        system_text = "\n\n".join(
+            str(item.get("content") or "")
+            for item in messages
+            if item.get("role") == "system"
+        ).strip()
+        anthropic_messages = [
+            item for item in messages if item.get("role") in {"user", "assistant"}
+        ]
+        if not anthropic_messages:
+            anthropic_messages = [{"role": "user", "content": "请继续。"}]
+        system_blocks = [{"type": "text", "text": system_text}] if system_text else []
+        reply, usage = call_anthropic(
+            model,
+            system_blocks,
+            merge_consecutive_roles(anthropic_messages),
+            max_tokens=max_tokens,
+        )
+        return reply, usage, "stop" if reply else "error"
+    return call_or(
+        model,
+        messages,
+        max_tokens=max_tokens,
+        session_id=session_id,
+        provider=provider,
+    )
 
 
 ANTHROPIC_TOOLS = [
@@ -3095,6 +3276,14 @@ def _combine_openrouter_usage(first, second):
         "prompt_tokens": (first.get("prompt_tokens") or 0) + (second.get("prompt_tokens") or 0),
         "completion_tokens": (first.get("completion_tokens") or 0) + (second.get("completion_tokens") or 0),
         "cost": (first.get("cost") or 0) + (second.get("cost") or 0),
+        "prompt_cache_hit_tokens": (
+            (first.get("prompt_cache_hit_tokens") or 0)
+            + (second.get("prompt_cache_hit_tokens") or 0)
+        ),
+        "prompt_cache_miss_tokens": (
+            (first.get("prompt_cache_miss_tokens") or 0)
+            + (second.get("prompt_cache_miss_tokens") or 0)
+        ),
     }
     if reported:
         combined["prompt_tokens_details"] = {
@@ -3264,8 +3453,19 @@ def _tool_chain_timeout(deadline):
     return max(1.0, min(60.0, remaining))
 
 
-def call_or_with_tools(model, messages, max_tokens=2048, session_id=None, character_id=None):
-    """OpenRouter tool loop with bounded rounds and one-turn side-effect guards."""
+def call_or_with_tools(
+    model,
+    messages,
+    max_tokens=2048,
+    session_id=None,
+    character_id=None,
+    provider="openrouter",
+):
+    """OpenAI-compatible tool loop with bounded rounds and side-effect guards."""
+    provider = _valid_provider(provider)
+    spec = _provider_spec(provider)
+    if spec.get("api_style") != "openai" or not _provider_configured(provider):
+        return None, {}, None, None, None, []
     active_tools = []
     if get_tool_enabled("save_memory"):
         active_tools.append(OR_TOOLS[0])
@@ -3282,14 +3482,12 @@ def call_or_with_tools(model, messages, max_tokens=2048, session_id=None, charac
     active_tools.extend(_custom_mcp_tools("openrouter", character_id))
     if not active_tools:
         reply, usage, _ = call_or(
-            model, messages, max_tokens=max_tokens, session_id=session_id
+            model, messages, max_tokens=max_tokens, session_id=session_id,
+            provider=provider,
         )
         return reply, usage, None, None, None, []
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-    }
+    headers = _openai_provider_headers(provider)
     state = _new_tool_chain_state()
     conversation = list(messages)
     combined_usage = {}
@@ -3311,20 +3509,25 @@ def call_or_with_tools(model, messages, max_tokens=2048, session_id=None, charac
             "max_tokens": max_tokens,
             "tools": active_tools,
             "tool_choice": "none" if force_text else "auto",
-            "usage": {"include": True},
         }
-        _apply_openrouter_cache_options(payload, model, session_id)
+        if provider == "openrouter":
+            payload["usage"] = {"include": True}
+        _apply_openrouter_cache_options(payload, model, session_id, provider)
         try:
             resp = requests.post(
-                OPENROUTER_URL, headers=headers, json=payload, timeout=timeout
+                spec["url"], headers=headers, json=payload, timeout=timeout
             )
         except Exception as exc:
-            app.logger.warning(f"[call_or_with_tools] request failed (model={model}): {exc}")
+            app.logger.warning(
+                f"[call_or_with_tools] request failed "
+                f"(provider={provider}, model={model}): {exc}"
+            )
             memory, transfer, sticker, called = _tool_chain_values(state)
             return (fallback_reply if state["call_count"] else None), combined_usage, memory, transfer, sticker, called
         if resp.status_code != 200:
             app.logger.warning(
-                f"[call_or_with_tools] {model} returned {resp.status_code}: {resp.text[:200]}"
+                f"[call_or_with_tools] {provider}/{model} returned "
+                f"{resp.status_code}: {resp.text[:200]}"
             )
             memory, transfer, sticker, called = _tool_chain_values(state)
             return (fallback_reply if state["call_count"] else None), combined_usage, memory, transfer, sticker, called
@@ -3398,9 +3601,14 @@ def call_or_with_tools(model, messages, max_tokens=2048, session_id=None, charac
             memory, transfer, sticker, called = _tool_chain_values(state)
             return raw_content or fallback_reply, combined_usage, memory, transfer, sticker, called
 
-        conversation += [
-            {"role": "assistant", "content": raw_content, "tool_calls": tool_calls}
-        ] + tool_result_msgs
+        assistant_message = {
+            "role": "assistant",
+            "content": raw_content,
+            "tool_calls": tool_calls,
+        }
+        if msg.get("reasoning_content") is not None:
+            assistant_message["reasoning_content"] = msg.get("reasoning_content")
+        conversation += [assistant_message] + tool_result_msgs
         force_text = (
             tool_rounds >= TOOL_CHAIN_MAX_ROUNDS
             or state["call_count"] >= TOOL_CHAIN_MAX_CALLS
@@ -3545,16 +3753,42 @@ def log_usage(character_id, platform, model, usage, purpose="chat"):
         "cost_usd": 0.0,
     }
     try:
-        if platform == "openrouter":
-            cost = usage.get("cost")
+        if _provider_spec(platform).get("api_style") == "openai":
             input_tokens = usage.get("prompt_tokens") or 0
             output_tokens = usage.get("completion_tokens") or 0
             details = usage.get("prompt_tokens_details")
-            cache_reported = isinstance(details, dict)
             details = details or {}
+            deepseek_cache_reported = any(
+                key in usage
+                for key in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
+            )
+            cache_reported = isinstance(usage.get("prompt_tokens_details"), dict) or deepseek_cache_reported
             cache_create = details.get("cache_write_tokens") or 0
-            cache_read = details.get("cached_tokens") or 0
+            cache_read = (
+                usage.get("prompt_cache_hit_tokens")
+                if deepseek_cache_reported
+                else details.get("cached_tokens")
+            ) or 0
             total_input = input_tokens
+            if platform == "openrouter":
+                cost = usage.get("cost")
+            elif platform == "deepseek":
+                rates = DEEPSEEK_PRICING.get(model, DEEPSEEK_PRICING["_default"])
+                cache_miss = usage.get("prompt_cache_miss_tokens")
+                if cache_miss is None:
+                    cache_miss = max(input_tokens - cache_read, 0)
+                cost = (
+                    cache_read * rates["cache_hit"]
+                    + cache_miss * rates["input"]
+                    + output_tokens * rates["output"]
+                ) / 1_000_000
+            else:
+                non_cached = max(input_tokens - cache_read, 0)
+                cost = (
+                    non_cached * CUSTOM_OPENAI_PRICING["input"]
+                    + cache_read * CUSTOM_OPENAI_PRICING["cache_read"]
+                    + output_tokens * CUSTOM_OPENAI_PRICING["output"]
+                ) / 1_000_000
         else:
             input_tokens = usage.get("input_tokens") or 0
             output_tokens = usage.get("output_tokens") or 0
@@ -3703,10 +3937,20 @@ def maybe_compress(char, session_id):
         f"【已有提要】\n{old_summary or '(暂无)'}\n\n"
         f"【新的对话片段】\n{convo_text}"
     )
-    new_summary, compress_usage, finish_reason = call_or(
-        SUMMARY_MODEL, [{"role": "user", "content": summary_prompt}], max_tokens=2048
+    new_summary, compress_usage, finish_reason = call_provider_text(
+        SUMMARY_PROVIDER,
+        SUMMARY_MODEL,
+        [{"role": "user", "content": summary_prompt}],
+        max_tokens=2048,
+        session_id=f"summary:{character_id}:{session_id}",
     )
-    log_usage(character_id, "openrouter", SUMMARY_MODEL, compress_usage, purpose="compress")
+    log_usage(
+        character_id,
+        SUMMARY_PROVIDER,
+        SUMMARY_MODEL,
+        compress_usage,
+        purpose="compress",
+    )
 
     if not new_summary:
         try:
@@ -3989,8 +4233,8 @@ def ask_character(char, session_id, user_message, image_payload=None, just_woke=
     sleep_dynamic = f"{sleep_state_text}\n{SLEEP_GUARD_TEXT}"
 
     if provider == "anthropic":
-        if not ANTHROPIC_API_KEY:
-            return f"(还没配置 ANTHROPIC_API_KEY，{char['name']}暂时说不出话)", None, None, [], None
+        if not _provider_configured(provider):
+            return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, None, [], None
 
         # 时间和长期记忆在缓存窗口内固定；新记忆写入时主动失效。
         context_parts = [time_context]
@@ -4035,9 +4279,9 @@ def ask_character(char, session_id, user_message, image_payload=None, just_woke=
             return f"(Anthropic API 暂时没能回话，{char['name']}等等再说)", transfer_to_send, sticker_to_send, tools_called, usage_metrics
         return reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics
 
-    else:  # openrouter
-        if not OPENROUTER_API_KEY:
-            return f"(还没配置 OPENROUTER_API_KEY，{char['name']}暂时说不出话)", None, None, [], None
+    else:  # OpenAI-compatible providers
+        if not _provider_configured(provider):
+            return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, None, [], None
 
         stable_system_content = char["persona"] + "\n\n" + TRANSFER_GUARD_TEXT
         context_parts = [time_context]
@@ -4070,8 +4314,9 @@ def ask_character(char, session_id, user_message, image_payload=None, just_woke=
                 char["model"], messages, max_tokens=2048,
                 session_id=f"chat:{character_id}:{session_id}",
                 character_id=character_id,
+                **({"provider": provider} if provider != "openrouter" else {}),
             )
-            usage_metrics = log_usage(character_id, "openrouter", char["model"], usage)
+            usage_metrics = log_usage(character_id, provider, char["model"], usage)
             if memory_to_save:
                 try:
                     save_long_term_memory(memory_to_save, char["domain"], source="self_saved")
@@ -4079,16 +4324,17 @@ def ask_character(char, session_id, user_message, image_payload=None, just_woke=
                 except Exception as e:
                     app.logger.warning(f"[{character_id}] 长期记忆写入失败: {e}")
             if reply is None:
-                return f"(OpenRouter 暂时没能回话，{char['name']}等等再说)", None, None, [], usage_metrics
+                return f"({_provider_label(provider)} 暂时没能回话，{char['name']}等等再说)", None, None, [], usage_metrics
             return reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics
 
         reply, usage, _ = call_or(
             char["model"], messages, max_tokens=2048,
             session_id=f"chat:{character_id}:{session_id}",
+            **({"provider": provider} if provider != "openrouter" else {}),
         )
-        usage_metrics = log_usage(character_id, "openrouter", char["model"], usage)
+        usage_metrics = log_usage(character_id, provider, char["model"], usage)
         if reply is None:
-            return f"(OpenRouter 暂时没能回话，{char['name']}等等再说)", None, None, [], usage_metrics
+            return f"({_provider_label(provider)} 暂时没能回话，{char['name']}等等再说)", None, None, [], usage_metrics
         return reply, None, None, [], usage_metrics
 
 
@@ -4112,8 +4358,8 @@ def ask_character_group(
     memory = fetch_breath_memory(character_id)
 
     if provider == "anthropic":
-        if not ANTHROPIC_API_KEY:
-            return f"(还没配置 ANTHROPIC_API_KEY，{char['name']}暂时说不出话)", None, []
+        if not _provider_configured(provider):
+            return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, []
         context_parts = []
         if memory:
             context_parts.append(f"【长期记忆浮现，供你回忆与User有关的事】\n{memory}")
@@ -4148,8 +4394,8 @@ def ask_character_group(
             return f"(Anthropic API 暂时没能回话，{char['name']}等等再说)", usage_metrics, tools_called
         return reply, usage_metrics, tools_called
     else:
-        if not OPENROUTER_API_KEY:
-            return f"(还没配置 OPENROUTER_API_KEY，{char['name']}暂时说不出话)", None, []
+        if not _provider_configured(provider):
+            return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, []
         messages = [{
             "role": "system",
             "content": char["persona"],
@@ -4167,18 +4413,20 @@ def ask_character_group(
                 char["model"], messages, max_tokens=openrouter_max_tokens,
                 session_id=openrouter_session_id,
                 character_id=character_id,
+                **({"provider": provider} if provider != "openrouter" else {}),
             )
         else:
             reply, usage, _ = call_or(
                 char["model"], messages, max_tokens=768,
                 session_id=f"reading:{character_id}:{session_id}",
+                **({"provider": provider} if provider != "openrouter" else {}),
             )
             tools_called = []
 
         if retry_openrouter_empty and not (reply or "").strip():
             app.logger.warning(
-                "[group_chat] empty OpenRouter reply; retrying without tools "
-                f"(character={character_id}, model={char['model']})"
+                f"[group_chat] empty {_provider_label(provider)} reply; "
+                f"retrying without tools (character={character_id}, model={char['model']})"
             )
             retry_messages = messages[:-1] + [{
                 "role": "user",
@@ -4191,12 +4439,13 @@ def ask_character_group(
                 char["model"], retry_messages,
                 max_tokens=openrouter_max_tokens,
                 session_id=openrouter_session_id,
+                **({"provider": provider} if provider != "openrouter" else {}),
             )
             if retry_usage:
                 usage = _combine_openrouter_usage(usage or {}, retry_usage)
             if (retry_reply or "").strip():
                 reply = retry_reply
-        usage_metrics = log_usage(character_id, "openrouter", char["model"], usage, purpose="group_chat")
+        usage_metrics = log_usage(character_id, provider, char["model"], usage, purpose="group_chat")
         if memory_to_save:
             try:
                 save_long_term_memory(memory_to_save, char["domain"], source="group_self_saved")
@@ -4204,7 +4453,7 @@ def ask_character_group(
             except Exception as e:
                 app.logger.warning(f"[{character_id}] 群聊长期记忆写入失败: {e}")
         if not (reply or "").strip():
-            return f"(OpenRouter 暂时没能回话，{char['name']}等等再说)", usage_metrics, tools_called
+            return f"({_provider_label(provider)} 暂时没能回话，{char['name']}等等再说)", usage_metrics, tools_called
         return reply, usage_metrics, tools_called
 
 
@@ -4356,8 +4605,8 @@ def ask_music_companion(char, combined_prompt):
     deadline = time.monotonic() + TOOL_CHAIN_TIMEOUT_SECONDS
 
     if provider == "anthropic":
-        if not ANTHROPIC_API_KEY:
-            return f"(还没配置 ANTHROPIC_API_KEY，{char['name']}暂时说不出话)", None, {}
+        if not _provider_configured(provider):
+            return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, {}
         system = [{
             "type": "text", "text": char["persona"],
             "cache_control": {"type": "ephemeral", "ttl": "1h"},
@@ -4411,13 +4660,14 @@ def ask_music_companion(char, combined_prompt):
             ]
         log_usage(character_id, "anthropic", char["model"], combined_usage, purpose="music_room")
     else:
-        if not OPENROUTER_API_KEY:
-            return f"(还没配置 OPENROUTER_API_KEY，{char['name']}暂时说不出话)", None, {}
+        if not _provider_configured(provider):
+            return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, {}
+        spec = _provider_spec(provider)
         conversation = [{"role": "system", "content": char["persona"]}]
         if memory:
             conversation.append({"role": "system", "content": f"【长期记忆浮现】\n{memory}"})
         conversation.append({"role": "user", "content": combined_prompt})
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_API_KEY}"}
+        headers = _openai_provider_headers(provider)
         for _round in range(4):
             timeout = _tool_chain_timeout(deadline)
             if timeout is None:
@@ -4426,16 +4676,27 @@ def ask_music_companion(char, combined_prompt):
                 "model": char["model"], "messages": conversation, "max_tokens": 256,
                 "tools": _music_tools("openrouter"),
                 "tool_choice": "none" if state["action"] else "auto",
-                "usage": {"include": True},
             }
-            _apply_openrouter_cache_options(payload, char["model"], f"music:{character_id}:room")
+            if provider == "openrouter":
+                payload["usage"] = {"include": True}
+            _apply_openrouter_cache_options(
+                payload,
+                char["model"],
+                f"music:{character_id}:room",
+                provider,
+            )
             try:
-                response = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=timeout)
+                response = requests.post(
+                    spec["url"], headers=headers, json=payload, timeout=timeout
+                )
                 response.raise_for_status()
                 data = response.json()
                 message = data["choices"][0]["message"]
             except Exception as exc:
-                app.logger.warning(f"[music] OpenRouter request failed ({character_id}): {exc}")
+                app.logger.warning(
+                    f"[music] {_provider_label(provider)} request failed "
+                    f"({character_id}): {exc}"
+                )
                 break
             combined_usage = _combine_openrouter_usage(combined_usage, data.get("usage", {}))
             raw_content = message.get("content") or ""
@@ -4455,11 +4716,15 @@ def ask_music_companion(char, combined_prompt):
                 tool_results.append({
                     "role": "tool", "tool_call_id": tool_call.get("id"), "content": result,
                 })
-            conversation += [
-                {"role": "assistant", "content": raw_content, "tool_calls": tool_calls},
-                *tool_results,
-            ]
-        log_usage(character_id, "openrouter", char["model"], combined_usage, purpose="music_room")
+            assistant_message = {
+                "role": "assistant",
+                "content": raw_content,
+                "tool_calls": tool_calls,
+            }
+            if message.get("reasoning_content") is not None:
+                assistant_message["reasoning_content"] = message.get("reasoning_content")
+            conversation += [assistant_message, *tool_results]
+        log_usage(character_id, provider, char["model"], combined_usage, purpose="music_room")
 
     action = state.get("action")
     reply = strip_fake_action_text(fallback_reply, character_id).strip()
@@ -4509,6 +4774,113 @@ def get_character_config():
     })
 
 
+def _public_provider_config():
+    return {
+        key: {
+            "label": spec["label"],
+            "api_style": spec["api_style"],
+            "configured": _provider_configured(key),
+            "default_model": spec.get("default_model", ""),
+        }
+        for key, spec in MODEL_PROVIDERS.items()
+    }
+
+
+def _test_provider_connection(provider, model):
+    provider = _valid_provider(provider, "")
+    if not provider or provider not in MODEL_PROVIDERS:
+        return False, "不认识这个模型供应商"
+    model = str(model or "").strip()
+    if not model:
+        return False, "请先填写模型名"
+    if not _provider_configured(provider):
+        return False, f"{_provider_label(provider)} 的后端环境变量还没配置"
+
+    spec = _provider_spec(provider)
+    if spec["api_style"] == "anthropic":
+        headers = {
+            "content-type": "application/json",
+            "x-api-key": spec["api_key"],
+            "anthropic-version": "2023-06-01",
+        }
+        payload = {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "Reply OK."}],
+        }
+    else:
+        headers = _openai_provider_headers(provider)
+        payload = {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "Reply OK."}],
+        }
+    try:
+        response = requests.post(
+            spec["url"], headers=headers, json=payload, timeout=20
+        )
+    except requests.RequestException as exc:
+        return False, f"连接失败：{type(exc).__name__}"
+    if response.status_code < 200 or response.status_code >= 300:
+        return False, f"供应商返回 HTTP {response.status_code}"
+    try:
+        data = response.json()
+    except ValueError:
+        return False, "供应商返回的不是 JSON"
+    if spec["api_style"] == "anthropic":
+        valid = isinstance(data.get("content"), list)
+    else:
+        valid = isinstance(data.get("choices"), list)
+    return (True, "连接成功") if valid else (False, "供应商响应格式不兼容")
+
+
+@app.route("/api/model-providers", methods=["GET"])
+def get_model_providers():
+    return jsonify({
+        "providers": _public_provider_config(),
+        "summary": {
+            "provider": SUMMARY_PROVIDER,
+            "model": SUMMARY_MODEL,
+        },
+    })
+
+
+@app.route("/api/model-providers/test", methods=["POST"])
+def test_model_provider():
+    data = request.get_json() or {}
+    ok, message = _test_provider_connection(
+        data.get("provider"), data.get("model")
+    )
+    return jsonify({"ok": ok, "message": message}), 200 if ok else 400
+
+
+@app.route("/api/model-providers/summary", methods=["POST"])
+def save_summary_provider():
+    global SUMMARY_MODEL, SUMMARY_PROVIDER
+    data = request.get_json() or {}
+    provider = _valid_provider(data.get("provider"), "")
+    model = str(data.get("model") or "").strip()
+    if not provider or provider not in MODEL_PROVIDERS:
+        return jsonify({"error": "不认识这个模型供应商"}), 400
+    if not model or len(model) > 200 or any(ch.isspace() for ch in model):
+        return jsonify({"error": "模型名格式不正确"}), 400
+    if data.get("verify_connection", True):
+        ok, message = _test_provider_connection(provider, model)
+        if not ok:
+            return jsonify({"error": message}), 400
+    conn = sqlite3.connect(DB_PATH)
+    conn.executemany(
+        "INSERT INTO settings(key,value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP",
+        [("summary_provider", provider), ("summary_model", model)],
+    )
+    conn.commit()
+    conn.close()
+    SUMMARY_PROVIDER = provider
+    SUMMARY_MODEL = model
+    return jsonify({"ok": True, "provider": provider, "model": model})
+
+
 @app.route("/api/character-config/<cid>", methods=["POST"])
 def save_character_config(cid):
     if cid not in CHARACTERS:
@@ -4516,22 +4888,37 @@ def save_character_config(cid):
     data = request.get_json() or {}
     persona = str(data.get("persona") or "").strip()
     model = str(data.get("model") or "").strip()
+    provider = _valid_provider(
+        data.get("provider", CHARACTERS[cid].get("provider", "openrouter")),
+        "",
+    )
     if not persona:
         return jsonify({"error": "人设不能为空"}), 400
     if not model or len(model) > 200 or any(ch.isspace() for ch in model):
         return jsonify({"error": "模型名格式不正确"}), 400
+    if not provider or provider not in MODEL_PROVIDERS:
+        return jsonify({"error": "不认识这个模型供应商"}), 400
+    if data.get("verify_connection"):
+        ok, message = _test_provider_connection(provider, model)
+        if not ok:
+            return jsonify({"error": message}), 400
 
     conn = sqlite3.connect(DB_PATH)
     conn.executemany(
         "INSERT INTO settings(key,value) VALUES(?,?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP",
-        [(f"persona_{cid}", persona), (f"model_{cid}", model)],
+        [
+            (f"persona_{cid}", persona),
+            (f"model_{cid}", model),
+            (f"provider_{cid}", provider),
+        ],
     )
     conn.commit()
     conn.close()
     CHARACTERS[cid]["persona"] = persona
     CHARACTERS[cid]["model"] = model
-    return jsonify({"ok": True, "model": model})
+    CHARACTERS[cid]["provider"] = provider
+    return jsonify({"ok": True, "model": model, "provider": provider})
 
 
 @app.route("/api/limits", methods=["GET"])
@@ -5110,6 +5497,7 @@ def api_usage():
         "by_platform": {k: round(v, 4) for k, v in by_platform.items()},
         "limits": limits_out,
         "platform_limits": _platform_limits(),
+        "providers": _public_provider_config(),
     })
 
 
@@ -7847,6 +8235,7 @@ def health():
             info[cid] = {
                 "name": c["name"],
                 "model": c["model"],
+                "provider": c.get("provider", "openrouter"),
                 "message_count": total,
                 "active_count": active,
                 "has_summary": has_summary,
@@ -7857,6 +8246,11 @@ def health():
     return jsonify({
         "status": "ok",
         "openrouter_key_configured": bool(OPENROUTER_API_KEY),
+        "providers": {
+            key: {"configured": _provider_configured(key)}
+            for key in MODEL_PROVIDERS
+        },
+        "summary_provider": SUMMARY_PROVIDER,
         "summary_model": SUMMARY_MODEL,
         "characters": info,
     })

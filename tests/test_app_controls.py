@@ -33,6 +33,11 @@ class AppControlsTests(unittest.TestCase):
         cls.original_personas = {
             cid: char["persona"] for cid, char in app_module.CHARACTERS.items()
         }
+        cls.original_providers = {
+            cid: char["provider"] for cid, char in app_module.CHARACTERS.items()
+        }
+        cls.original_summary_provider = app_module.SUMMARY_PROVIDER
+        cls.original_summary_model = app_module.SUMMARY_MODEL
         cls.original_limits = dict(app_module.LIMITS)
 
     @classmethod
@@ -45,6 +50,9 @@ class AppControlsTests(unittest.TestCase):
         for cid, model in self.original_models.items():
             app_module.CHARACTERS[cid]["model"] = model
             app_module.CHARACTERS[cid]["persona"] = self.original_personas[cid]
+            app_module.CHARACTERS[cid]["provider"] = self.original_providers[cid]
+        app_module.SUMMARY_PROVIDER = self.original_summary_provider
+        app_module.SUMMARY_MODEL = self.original_summary_model
         app_module.LIMITS.clear()
         app_module.LIMITS.update(self.original_limits)
         app_module._write_setting(app_module.THEME_SETTING_KEY, app_module.DEFAULT_THEME_ID)
@@ -54,6 +62,8 @@ class AppControlsTests(unittest.TestCase):
         conn.execute("DELETE FROM settings WHERE key=?", (app_module.VOICE_SETTING_KEY,))
         conn.execute("DELETE FROM voice_assets")
         conn.execute("DELETE FROM voice_usage")
+        conn.execute("DELETE FROM settings WHERE key LIKE 'provider_%'")
+        conn.execute("DELETE FROM settings WHERE key IN ('summary_provider','summary_model')")
         conn.commit()
         conn.close()
 
@@ -367,6 +377,133 @@ class AppControlsTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["limits"]["char2"], 42.5)
+
+    def test_character_provider_and_summary_provider_are_editable(self):
+        response = self.client.post("/api/character-config/char2", json={
+            "persona": "测试人设",
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "verify_connection": False,
+        })
+        self.assertEqual(response.status_code, 200)
+        config = self.client.get("/api/character-config").get_json()
+        self.assertEqual(config["char2"]["provider"], "deepseek")
+        self.assertEqual(config["char2"]["model"], "deepseek-v4-flash")
+
+        with patch.object(
+            app_module, "_test_provider_connection", return_value=(True, "连接成功")
+        ) as test_connection:
+            summary = self.client.post("/api/model-providers/summary", json={
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "verify_connection": True,
+            })
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(app_module.SUMMARY_PROVIDER, "deepseek")
+        test_connection.assert_called_once_with("deepseek", "deepseek-v4-flash")
+
+    def test_model_provider_status_and_frontend_never_expose_keys(self):
+        with patch.object(
+            app_module, "OPENROUTER_API_KEY", "server-only-openrouter"
+        ), patch.object(
+            app_module, "ANTHROPIC_API_KEY", "server-only-anthropic"
+        ), patch.object(
+            app_module, "DEEPSEEK_API_KEY", "server-only-deepseek"
+        ), patch.object(
+            app_module, "CUSTOM_OPENAI_API_KEY", "server-only-custom"
+        ), patch.object(
+            app_module, "CUSTOM_OPENAI_BASE_URL", "https://custom.example/v1"
+        ):
+            response = self.client.get("/api/model-providers")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["providers"]["deepseek"]["configured"])
+        rendered = response.get_data(as_text=True)
+        for secret in (
+            "server-only-openrouter", "server-only-anthropic",
+            "server-only-deepseek", "server-only-custom",
+        ):
+            self.assertNotIn(secret, rendered)
+        self.assertNotIn("api_key", rendered.lower())
+
+        script = (
+            Path(app_module.__file__).with_name("static") / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn('fetch("/api/model-providers")', script)
+        self.assertIn("providerSelect", script)
+        self.assertIn("verify_connection: connectionChanged", script)
+        self.assertNotIn("DEEPSEEK_API_KEY", script)
+
+    def test_deepseek_connectivity_uses_server_key_and_compatible_endpoint(self):
+        provider_response = Mock(status_code=200)
+        provider_response.json.return_value = {"choices": [{"message": {"content": "OK"}}]}
+        with patch.object(app_module, "DEEPSEEK_API_KEY", "deepseek-server-secret"), patch.object(
+            app_module, "DEEPSEEK_BASE_URL", "https://api.deepseek.example/v1"
+        ), patch.object(app_module.requests, "post", return_value=provider_response) as post:
+            response = self.client.post("/api/model-providers/test", json={
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ok"])
+        self.assertNotIn("deepseek-server-secret", response.get_data(as_text=True))
+        self.assertEqual(post.call_args.args[0], "https://api.deepseek.example/v1/chat/completions")
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["Authorization"],
+            "Bearer deepseek-server-secret",
+        )
+
+    def test_deepseek_usage_accounts_for_cache_pricing(self):
+        metrics = app_module.log_usage("char2", "deepseek", "deepseek-v4-flash", {
+            "prompt_tokens": 1000,
+            "completion_tokens": 500,
+            "prompt_cache_hit_tokens": 400,
+            "prompt_cache_miss_tokens": 600,
+        }, purpose="provider-test")
+        expected = (400 * 0.0028 + 600 * 0.14 + 500 * 0.28) / 1_000_000
+        self.assertAlmostEqual(metrics["cost_usd"], expected)
+        self.assertEqual(metrics["cache_read_tokens"], 400)
+        self.assertTrue(metrics["cache_reported"])
+
+    def test_deepseek_tool_round_preserves_reasoning_content(self):
+        first = Mock(status_code=200)
+        first.json.return_value = {
+            "choices": [{"message": {
+                "content": "",
+                "reasoning_content": "先判断是否需要关窗。",
+                "tool_calls": [{
+                    "id": "tool-1",
+                    "type": "function",
+                    "function": {
+                        "name": "close_window",
+                        "arguments": json.dumps({"reason": "有点冷"}, ensure_ascii=False),
+                    },
+                }],
+            }}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+        second = Mock(status_code=200)
+        second.json.return_value = {
+            "choices": [{"message": {"content": "窗户已经关好啦。"}}],
+            "usage": {"prompt_tokens": 15, "completion_tokens": 6},
+        }
+        with patch.object(app_module, "DEEPSEEK_API_KEY", "deepseek-secret"), patch.object(
+            app_module.requests, "post", side_effect=[first, second]
+        ) as post:
+            result = app_module.call_or_with_tools(
+                "deepseek-v4-flash",
+                [{"role": "user", "content": "有点冷。"}],
+                character_id="char1",
+                provider="deepseek",
+            )
+
+        self.assertEqual(result[0], "窗户已经关好啦。")
+        second_payload = post.call_args_list[1].kwargs["json"]
+        assistant_round = second_payload["messages"][1]
+        self.assertEqual(assistant_round["reasoning_content"], "先判断是否需要关窗。")
+        self.assertEqual(assistant_round["tool_calls"][0]["id"], "tool-1")
 
     def test_provider_api_keys_never_reach_character_config(self):
         with patch.object(

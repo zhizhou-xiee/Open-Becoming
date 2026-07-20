@@ -641,7 +641,7 @@
       metricBox.innerHTML = `
         <div class="cache-metric-head">
           <strong>${statusText}</strong>
-          <span>${metrics.provider === 'anthropic' ? 'Anthropic' : 'OpenRouter'}</span>
+          <span>${providerDisplayName(metrics.provider)}</span>
         </div>
         <div class="cache-metric-grid">
           <span>缓存读取</span><b>${formatTokenCount(metrics.cache_read_tokens)}</b>
@@ -2912,6 +2912,16 @@
     char5:    "Char 5",
     char6:    "Char 6",
   };
+  const PROVIDER_FALLBACK_LABELS = {
+    openrouter: "OpenRouter",
+    anthropic: "Anthropic 官方",
+    deepseek: "DeepSeek 官方",
+    custom_openai: "自定义 OpenAI-compatible",
+  };
+
+  function providerDisplayName(provider, providers = null) {
+    return providers?.[provider]?.label || PROVIDER_FALLBACK_LABELS[provider] || provider || "未知供应商";
+  }
 
   function renderUsage(data) {
     const panel = document.getElementById("usagePanel");
@@ -2923,7 +2933,14 @@
     const platformLimits = data.platform_limits || {};
     const platformCards = document.createElement("div");
     platformCards.className = "usage-platforms";
-    [["openrouter", "OpenRouter"], ["anthropic", "Anthropic"]].forEach(([key, label]) => {
+    const providers = data.providers || {};
+    const providerKeys = [...new Set([
+      ...Object.keys(providers),
+      ...Object.keys(byPlatform),
+      ...Object.keys(platformLimits),
+    ])].filter(key => (byPlatform[key] || platformLimits[key] || providers[key]?.configured));
+    providerKeys.forEach(key => {
+      const label = providerDisplayName(key, providers);
       const spent = byPlatform[key] || 0;
       const lim = platformLimits[key] || 0;
       const card = document.createElement("div");
@@ -3747,15 +3764,18 @@
       char4: 10, char5: 30, char6: 50,
     };
     let sleepCfg = {};
+    let modelProviderCfg = { providers: {}, summary: {} };
     try {
-      const [schedulerRes, limitsRes, sleepRes] = await Promise.all([
+      const [schedulerRes, limitsRes, sleepRes, providersRes] = await Promise.all([
         fetch("/api/scheduler/config"),
         fetch("/api/limits"),
         fetch("/api/sleep/config"),
+        fetch("/api/model-providers"),
       ]);
       cfg = await schedulerRes.json();
       ({ limits: limitCfg } = await limitsRes.json());
       sleepCfg = await sleepRes.json();
+      modelProviderCfg = await providersRes.json();
     } catch(e) {}
     const selMomSlots = new Set(cfg.moments_slots ? cfg.moments_slots.split(",").filter(Boolean) : []);
     let desireEnabled = cfg.desire_enabled !== false;
@@ -3895,6 +3915,31 @@
         label.appendChild(inputWrap);
         wrap.appendChild(label);
       });
+      return wrap;
+    }
+
+    function makeProviderStatusControls() {
+      const wrap = document.createElement("div");
+      wrap.className = "provider-status-list";
+      Object.entries(modelProviderCfg.providers || {}).forEach(([key, info]) => {
+        const row = document.createElement("div");
+        row.className = "provider-status-row";
+        const text = document.createElement("span");
+        const name = document.createElement("strong");
+        name.textContent = info.label || key;
+        const envHint = document.createElement("small");
+        envHint.textContent = info.configured ? "后端凭证已配置" : "尚未配置后端环境变量";
+        text.append(name, envHint);
+        const badge = document.createElement("span");
+        badge.className = `provider-status-badge ${info.configured ? "is-ready" : ""}`;
+        badge.textContent = info.configured ? "可用" : "未配置";
+        row.append(text, badge);
+        wrap.appendChild(row);
+      });
+      const note = document.createElement("p");
+      note.className = "provider-status-note";
+      note.textContent = "API Key 只从服务器环境变量读取，浏览器不会收到或回显。角色与摘要的供应商请到「换毛期°人设编辑」切换。";
+      wrap.appendChild(note);
       return wrap;
     }
 
@@ -4061,7 +4106,7 @@
       }
     };
 
-    function makeAccordion(title, bodyChildren) {
+    function makeAccordion(title, bodyChildren, showSave = true) {
       const wrap = document.createElement("div");
 
       const hdr = document.createElement("button");
@@ -4071,6 +4116,7 @@
       const body = document.createElement("div");
       body.style.cssText = "display:none;flex-direction:column;gap:10px;padding:14px 16px;background:var(--cream);border:2px solid var(--dusky);border-top:none;border-radius:0 0 16px 16px;box-sizing:border-box;";
       body.dataset.schedBody = "true";
+      body.dataset.schedSave = showSave ? "true" : "false";
       body.dataset.open = "false";
       bodyChildren.forEach(ch => body.appendChild(ch));
 
@@ -4080,7 +4126,8 @@
         body.style.display = isOpen ? "flex" : "none";
         body.dataset.open = isOpen ? "true" : "false";
         hdr.style.borderRadius = isOpen ? "16px 16px 0 0" : "999px";
-        const anyOpen = [...panel.querySelectorAll("[data-sched-body]")].some(b => b.dataset.open === "true");
+        const anyOpen = [...panel.querySelectorAll("[data-sched-save='true']")]
+          .some(b => b.dataset.open === "true");
         saveBtn.style.display = anyOpen ? "block" : "none";
       };
 
@@ -4101,6 +4148,7 @@
     panel.appendChild(makeAccordion("醒醒喵°欲望心跳", [makeDesireControls()]));
     panel.appendChild(makeAccordion("聊聊喵°自动发帖", [makeSlotRow(selMomSlots)]));
     panel.appendChild(voiceLink);
+    panel.appendChild(makeAccordion("路由喵°模型供应商", [makeProviderStatusControls()], false));
     panel.appendChild(makeAccordion("饭饭喵°月度额度", [makeLimitControls()]));
     panel.appendChild(makeAccordion("眠眠喵°睡眠节律", [makeSleepControls()]));
     panel.appendChild(saveBtn);
@@ -4450,13 +4498,16 @@
 
     let personas;
     let characterConfig;
+    let providerConfig;
     try {
-      const [personaRes, configRes] = await Promise.all([
+      const [personaRes, configRes, providerRes] = await Promise.all([
         fetch("/api/personas"),
         fetch("/api/character-config"),
+        fetch("/api/model-providers"),
       ]);
       personas = await personaRes.json();
       characterConfig = await configRes.json();
+      providerConfig = await providerRes.json();
     } catch (e) {
       panel.innerHTML = '<p style="padding:16px;color:var(--muted);">加载失败，请重试</p>';
       return;
@@ -4468,6 +4519,92 @@
     closeBtn.textContent = "收起";
     closeBtn.addEventListener("click", closePersonaPanel);
     panel.appendChild(closeBtn);
+
+    const providers = providerConfig.providers || {};
+    const addProviderOptions = (select, selected) => {
+      Object.entries(providers).forEach(([key, info]) => {
+        const option = document.createElement("option");
+        option.value = key;
+        option.textContent = `${info.label || key}${info.configured ? "" : " · 未配置"}`;
+        option.selected = key === selected;
+        select.appendChild(option);
+      });
+    };
+    const updateProviderHint = (hint, provider) => {
+      const info = providers[provider] || {};
+      hint.textContent = info.configured
+        ? "后端凭证已配置"
+        : "需先在服务器环境变量中配置凭证";
+      hint.classList.toggle("is-ready", !!info.configured);
+    };
+
+    const summaryCard = document.createElement("section");
+    summaryCard.className = "persona-card provider-summary-card";
+    const summaryTitle = document.createElement("div");
+    summaryTitle.className = "persona-card-name";
+    summaryTitle.textContent = "压缩与群聊摘要";
+    const summaryNote = document.createElement("p");
+    summaryNote.className = "provider-summary-note";
+    summaryNote.textContent = "老对话压缩和群聊摘要走这一条，不再固定依赖 OpenRouter。";
+    const summaryGrid = document.createElement("div");
+    summaryGrid.className = "provider-config-grid";
+    const summaryProviderWrap = document.createElement("label");
+    summaryProviderWrap.className = "persona-model-wrap";
+    summaryProviderWrap.appendChild(Object.assign(document.createElement("span"), { textContent: "供应商" }));
+    const summaryProvider = document.createElement("select");
+    summaryProvider.className = "persona-model-input";
+    addProviderOptions(summaryProvider, providerConfig.summary?.provider || "openrouter");
+    summaryProviderWrap.appendChild(summaryProvider);
+    const summaryModelWrap = document.createElement("label");
+    summaryModelWrap.className = "persona-model-wrap";
+    summaryModelWrap.appendChild(Object.assign(document.createElement("span"), { textContent: "摘要模型" }));
+    const summaryModel = document.createElement("input");
+    summaryModel.className = "persona-model-input";
+    summaryModel.value = providerConfig.summary?.model || "";
+    summaryModel.autocomplete = "off";
+    summaryModelWrap.appendChild(summaryModel);
+    summaryGrid.append(summaryProviderWrap, summaryModelWrap);
+    const summaryActions = document.createElement("div");
+    summaryActions.className = "provider-save-row";
+    const summarySave = document.createElement("button");
+    summarySave.className = "persona-save-btn";
+    summarySave.textContent = "测试并保存";
+    const summaryStatus = document.createElement("span");
+    summaryStatus.className = "persona-saved-msg provider-config-status";
+    updateProviderHint(summaryStatus, summaryProvider.value);
+    summaryProvider.onchange = () => {
+      const defaultModel = providers[summaryProvider.value]?.default_model;
+      if (defaultModel) summaryModel.value = defaultModel;
+      updateProviderHint(summaryStatus, summaryProvider.value);
+    };
+    summarySave.onclick = async () => {
+      summarySave.disabled = true;
+      summarySave.textContent = "连接测试中…";
+      try {
+        const response = await fetch("/api/model-providers/summary", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider: summaryProvider.value,
+            model: summaryModel.value.trim(),
+            verify_connection: true,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || "连接失败");
+        summaryStatus.textContent = "✓ 已连接并保存";
+        summaryStatus.classList.add("is-ready");
+      } catch (error) {
+        summaryStatus.textContent = error.message || "保存失败";
+        summaryStatus.classList.remove("is-ready");
+      } finally {
+        summarySave.disabled = false;
+        summarySave.textContent = "测试并保存";
+      }
+    };
+    summaryActions.append(summarySave, summaryStatus);
+    summaryCard.append(summaryTitle, summaryNote, summaryGrid, summaryActions);
+    panel.appendChild(summaryCard);
 
     PERSONA_ORDER.forEach(cid => {
       const char = personas[cid];
@@ -4487,10 +4624,24 @@
       header.appendChild(avatar);
       header.appendChild(nameEl);
 
+      let originalProvider = characterConfig[cid]?.provider || "openrouter";
+      let originalModel = characterConfig[cid]?.model || "";
+      const providerWrap = document.createElement("label");
+      providerWrap.className = "persona-model-wrap";
+      const providerCaption = document.createElement("span");
+      providerCaption.textContent = "供应商";
+      const providerSelect = document.createElement("select");
+      providerSelect.className = "persona-model-input";
+      addProviderOptions(providerSelect, originalProvider);
+      const providerHint = document.createElement("small");
+      providerHint.className = "provider-config-status";
+      updateProviderHint(providerHint, providerSelect.value);
+      providerWrap.append(providerCaption, providerSelect, providerHint);
+
       const modelWrap = document.createElement("label");
       modelWrap.className = "persona-model-wrap";
       const modelCaption = document.createElement("span");
-      modelCaption.textContent = `模型 · ${characterConfig[cid]?.provider === "anthropic" ? "Anthropic" : "OpenRouter"}`;
+      modelCaption.textContent = "模型";
       const modelInput = document.createElement("input");
       modelInput.className = "persona-model-input";
       modelInput.type = "text";
@@ -4499,6 +4650,13 @@
       modelInput.spellcheck = false;
       modelWrap.appendChild(modelCaption);
       modelWrap.appendChild(modelInput);
+      providerSelect.onchange = () => {
+        const defaultModel = providers[providerSelect.value]?.default_model;
+        if (!modelInput.value.trim() || modelInput.value.trim() === originalModel) {
+          if (defaultModel) modelInput.value = defaultModel;
+        }
+        updateProviderHint(providerHint, providerSelect.value);
+      };
 
       const textarea = document.createElement("textarea");
       textarea.className = "persona-textarea";
@@ -4517,13 +4675,23 @@
 
       saveBtn.addEventListener("click", async () => {
         saveBtn.disabled = true;
+        const connectionChanged = providerSelect.value !== originalProvider
+          || modelInput.value.trim() !== originalModel;
+        saveBtn.textContent = connectionChanged ? "测试连接中…" : "保存中…";
         try {
           const res = await fetch(`/api/character-config/${cid}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ persona: textarea.value, model: modelInput.value }),
+            body: JSON.stringify({
+              persona: textarea.value,
+              model: modelInput.value.trim(),
+              provider: providerSelect.value,
+              verify_connection: connectionChanged,
+            }),
           });
           if (res.ok) {
+            originalProvider = providerSelect.value;
+            originalModel = modelInput.value.trim();
             savedMsg.textContent = "✓ 已保存";
             setTimeout(() => { savedMsg.textContent = ""; }, 2000);
           } else {
@@ -4534,12 +4702,14 @@
           savedMsg.textContent = "网络错误";
         } finally {
           saveBtn.disabled = false;
+          saveBtn.textContent = "保存";
         }
       });
 
       footer.appendChild(saveBtn);
       footer.appendChild(savedMsg);
       card.appendChild(header);
+      card.appendChild(providerWrap);
       card.appendChild(modelWrap);
       card.appendChild(textarea);
       card.appendChild(footer);
