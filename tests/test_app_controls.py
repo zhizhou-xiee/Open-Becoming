@@ -145,7 +145,15 @@ class AppControlsTests(unittest.TestCase):
         self.assertNotIn('data-action="voice"', markup)
         self.assertIn('voiceLink.className = "scheduler-feature-link"', script)
         self.assertIn("voiceLink.onclick = openVoicePanel", script)
+        self.assertNotIn("TTS、录音转文字、音色与费用限制", script)
+        voice_start = script.index('voiceLink.className = "scheduler-feature-link"')
+        voice_end = script.index("voiceLink.onclick = openVoicePanel", voice_start)
+        self.assertNotIn("chevron_right", script[voice_start:voice_end])
         self.assertIn("panel.appendChild(voiceLink)", script)
+        self.assertLess(
+            script.index('makeAccordion("眠眠喵°睡眠节律"'),
+            script.index('makeAccordion("路由喵°模型供应商"'),
+        )
 
     def test_memory_files_import_json_and_txt_by_character(self):
         class ImportStore:
@@ -431,9 +439,48 @@ class AppControlsTests(unittest.TestCase):
             Path(app_module.__file__).with_name("static") / "app.js"
         ).read_text(encoding="utf-8")
         self.assertIn('fetch("/api/model-providers")', script)
-        self.assertIn("providerSelect", script)
+        self.assertIn("makeProviderPicker", script)
+        self.assertIn('trigger.setAttribute("aria-haspopup", "listbox")', script)
+        self.assertIn('option.setAttribute("role", "option")', script)
+        self.assertIn('if (event.key === "Escape")', script)
+        self.assertNotIn('summaryProvider = document.createElement("select")', script)
+        self.assertNotIn('providerSelect = document.createElement("select")', script)
         self.assertIn("verify_connection: connectionChanged", script)
         self.assertNotIn("DEEPSEEK_API_KEY", script)
+
+    def test_usage_cards_only_render_configured_providers(self):
+        with patch.object(
+            app_module, "OPENROUTER_API_KEY", ""
+        ), patch.object(
+            app_module, "ANTHROPIC_API_KEY", ""
+        ), patch.object(
+            app_module, "DEEPSEEK_API_KEY", "deepseek-only"
+        ), patch.object(
+            app_module, "CUSTOM_OPENAI_API_KEY", ""
+        ):
+            payload = self.client.get("/api/usage").get_json()
+
+        configured = [
+            key for key, provider in payload["providers"].items()
+            if provider["configured"]
+        ]
+        self.assertEqual(configured, ["deepseek"])
+        self.assertEqual(payload["cny_per_usd"], app_module.CNY_PER_USD)
+
+        script = (
+            Path(app_module.__file__).with_name("static") / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "Object.keys(providers)\n      .filter(key => providers[key]?.configured)",
+            script,
+        )
+        self.assertIn("if (providerKeys.length) panel.appendChild(platformCards);", script)
+        self.assertIn(
+            'deepseek: { symbol: "¥", rate_key: "cny_per_usd", fallback_rate: 6.78 }',
+            script,
+        )
+        self.assertIn("const displaySpent = spent * displayRate;", script)
+        self.assertIn("const displayLimit = lim * displayRate;", script)
 
     def test_deepseek_connectivity_uses_server_key_and_compatible_endpoint(self):
         provider_response = Mock(status_code=200)

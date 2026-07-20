@@ -2918,6 +2918,10 @@
     deepseek: "DeepSeek 官方",
     custom_openai: "自定义 OpenAI-compatible",
   };
+  // 内部总账统一使用 USD；供应商卡片可按实际结算习惯换算后展示。
+  const PROVIDER_MONEY_DISPLAY = {
+    deepseek: { symbol: "¥", rate_key: "cny_per_usd", fallback_rate: 6.78 },
+  };
 
   function providerDisplayName(provider, providers = null) {
     return providers?.[provider]?.label || PROVIDER_FALLBACK_LABELS[provider] || provider || "未知供应商";
@@ -2934,25 +2938,27 @@
     const platformCards = document.createElement("div");
     platformCards.className = "usage-platforms";
     const providers = data.providers || {};
-    const providerKeys = [...new Set([
-      ...Object.keys(providers),
-      ...Object.keys(byPlatform),
-      ...Object.keys(platformLimits),
-    ])].filter(key => (byPlatform[key] || platformLimits[key] || providers[key]?.configured));
+    // 额度卡只展示当前真正配置了后端凭证的供应商；旧用量仍计入角色与总计。
+    const providerKeys = Object.keys(providers)
+      .filter(key => providers[key]?.configured);
     providerKeys.forEach(key => {
       const label = providerDisplayName(key, providers);
       const spent = byPlatform[key] || 0;
       const lim = platformLimits[key] || 0;
+      const money = PROVIDER_MONEY_DISPLAY[key] || { symbol: "$", fallback_rate: 1 };
+      const displayRate = Number(data[money.rate_key]) || money.fallback_rate;
+      const displaySpent = spent * displayRate;
+      const displayLimit = lim * displayRate;
       const card = document.createElement("div");
       card.className = "usage-platform-card";
       card.innerHTML = `
         <div class="usage-platform-name">${label}</div>
-        <div class="usage-platform-amt">$${spent.toFixed(2)}</div>
-        <div class="usage-platform-name" style="margin-top:2px;">/ $${lim.toFixed(0)}</div>
+        <div class="usage-platform-amt">${money.symbol}${displaySpent.toFixed(2)}</div>
+        <div class="usage-platform-name" style="margin-top:2px;">/ ${money.symbol}${displayLimit.toFixed(0)}</div>
       `;
       platformCards.appendChild(card);
     });
-    panel.appendChild(platformCards);
+    if (providerKeys.length) panel.appendChild(platformCards);
 
     // 角色进度条
     const byChar = data.by_character || {};
@@ -4140,17 +4146,16 @@
     voiceLink.type = "button";
     voiceLink.className = "scheduler-feature-link";
     voiceLink.innerHTML = `
-      <span class="material-symbols-outlined">graphic_eq</span>
-      <span><strong>说说喵°语音收发</strong><small>TTS、录音转文字、音色与费用限制</small></span>
-      <span class="material-symbols-outlined">chevron_right</span>`;
+      <span class="material-symbols-outlined" aria-hidden="true">graphic_eq</span>
+      <strong>说说喵°语音收发</strong>`;
     voiceLink.onclick = openVoicePanel;
 
     panel.appendChild(makeAccordion("醒醒喵°欲望心跳", [makeDesireControls()]));
     panel.appendChild(makeAccordion("聊聊喵°自动发帖", [makeSlotRow(selMomSlots)]));
     panel.appendChild(voiceLink);
-    panel.appendChild(makeAccordion("路由喵°模型供应商", [makeProviderStatusControls()], false));
     panel.appendChild(makeAccordion("饭饭喵°月度额度", [makeLimitControls()]));
     panel.appendChild(makeAccordion("眠眠喵°睡眠节律", [makeSleepControls()]));
+    panel.appendChild(makeAccordion("路由喵°模型供应商", [makeProviderStatusControls()], false));
     panel.appendChild(saveBtn);
 
     _schedulerPanelOpen = true;
@@ -4484,6 +4489,157 @@
   }
 
   let _personaPanelOpen = false;
+  let _activeProviderPicker = null;
+  let _providerPickerId = 0;
+
+  function closeProviderPicker({ restoreFocus = true } = {}) {
+    if (!_activeProviderPicker) return;
+    const { overlay, trigger, keyHandler } = _activeProviderPicker;
+    document.removeEventListener("keydown", keyHandler);
+    overlay.remove();
+    trigger.setAttribute("aria-expanded", "false");
+    _activeProviderPicker = null;
+    if (restoreFocus && document.body.contains(trigger)) {
+      trigger.focus({ preventScroll: true });
+    }
+  }
+
+  function makeProviderPicker(providers, selected, onChange) {
+    const entries = Object.entries(providers);
+    let value = providers[selected] ? selected : (entries[0]?.[0] || "");
+    const pickerId = `providerPicker${++_providerPickerId}`;
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "provider-picker-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-controls", `${pickerId}List`);
+
+    const triggerLabel = document.createElement("span");
+    triggerLabel.className = "provider-picker-trigger-label";
+    const chevron = document.createElement("span");
+    chevron.className = "material-symbols-outlined provider-picker-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = "expand_more";
+    trigger.append(triggerLabel, chevron);
+
+    const renderTrigger = () => {
+      const info = providers[value] || {};
+      triggerLabel.textContent = info.label || value || "选择供应商";
+      trigger.classList.toggle("is-unconfigured", !info.configured);
+      trigger.setAttribute(
+        "aria-label",
+        `模型供应商：${info.label || value || "未选择"}${info.configured ? "，后端凭证已配置" : "，尚未配置环境变量"}`,
+      );
+    };
+    renderTrigger();
+
+    trigger.addEventListener("click", () => {
+      if (_activeProviderPicker?.trigger === trigger) {
+        closeProviderPicker();
+        return;
+      }
+      closeProviderPicker({ restoreFocus: false });
+
+      const overlay = document.createElement("div");
+      overlay.className = "provider-picker-overlay";
+      overlay.setAttribute("aria-hidden", "false");
+      const sheet = document.createElement("section");
+      sheet.className = "provider-picker-sheet";
+      sheet.setAttribute("role", "dialog");
+      sheet.setAttribute("aria-modal", "true");
+      sheet.setAttribute("aria-labelledby", `${pickerId}Title`);
+
+      // 不使用 <header>：项目的会话顶栏有全局 header 主题样式。
+      const header = document.createElement("div");
+      header.className = "provider-picker-header";
+      const headingIcon = document.createElement("span");
+      headingIcon.className = "material-symbols-outlined provider-picker-heading-icon";
+      headingIcon.setAttribute("aria-hidden", "true");
+      headingIcon.textContent = "pets";
+      const heading = document.createElement("div");
+      heading.className = "provider-picker-heading";
+      heading.id = `${pickerId}Title`;
+      heading.innerHTML = "<strong>选择模型供应商</strong><small>密钥仍只保存在服务器里</small>";
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.className = "provider-picker-close";
+      closeButton.setAttribute("aria-label", "关闭供应商选择");
+      closeButton.innerHTML = '<span class="material-symbols-outlined" aria-hidden="true">close</span>';
+      closeButton.addEventListener("click", () => closeProviderPicker());
+      header.append(headingIcon, heading, closeButton);
+
+      const list = document.createElement("div");
+      list.className = "provider-picker-list";
+      list.id = `${pickerId}List`;
+      list.setAttribute("role", "listbox");
+      list.setAttribute("aria-labelledby", `${pickerId}Title`);
+      const optionButtons = [];
+      entries.forEach(([key, info]) => {
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = "provider-picker-option";
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", key === value ? "true" : "false");
+        option.dataset.provider = key;
+        const copy = document.createElement("span");
+        copy.className = "provider-picker-option-copy";
+        const label = document.createElement("strong");
+        label.textContent = info.label || key;
+        const state = document.createElement("small");
+        state.className = `provider-picker-option-state${info.configured ? " is-ready" : ""}`;
+        state.textContent = info.configured ? "后端凭证已配置" : "需先配置服务器环境变量";
+        const check = document.createElement("span");
+        check.className = "material-symbols-outlined provider-picker-check";
+        check.setAttribute("aria-hidden", "true");
+        check.textContent = "check";
+        copy.append(label, state);
+        option.append(copy, check);
+        option.addEventListener("click", () => {
+          value = key;
+          renderTrigger();
+          closeProviderPicker();
+          onChange?.(value);
+        });
+        optionButtons.push(option);
+        list.appendChild(option);
+      });
+      list.addEventListener("keydown", event => {
+        const currentIndex = optionButtons.indexOf(document.activeElement);
+        let nextIndex = currentIndex;
+        if (event.key === "ArrowDown") nextIndex = (currentIndex + 1) % optionButtons.length;
+        else if (event.key === "ArrowUp") nextIndex = (currentIndex - 1 + optionButtons.length) % optionButtons.length;
+        else if (event.key === "Home") nextIndex = 0;
+        else if (event.key === "End") nextIndex = optionButtons.length - 1;
+        else return;
+        event.preventDefault();
+        optionButtons[nextIndex]?.focus();
+      });
+      sheet.append(header, list);
+      overlay.appendChild(sheet);
+      overlay.addEventListener("pointerdown", event => {
+        if (event.target === overlay) closeProviderPicker();
+      });
+      const keyHandler = event => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeProviderPicker();
+        }
+      };
+      _activeProviderPicker = { overlay, trigger, keyHandler };
+      document.addEventListener("keydown", keyHandler);
+      document.body.appendChild(overlay);
+      trigger.setAttribute("aria-expanded", "true");
+      requestAnimationFrame(() => {
+        (optionButtons.find(option => option.dataset.provider === value) || optionButtons[0])?.focus();
+      });
+    });
+
+    return {
+      element: trigger,
+      get value() { return value; },
+    };
+  }
 
   async function openPersonaPanel() {
     if (_voicePanelOpen) closeVoicePanel();
@@ -4521,15 +4677,6 @@
     panel.appendChild(closeBtn);
 
     const providers = providerConfig.providers || {};
-    const addProviderOptions = (select, selected) => {
-      Object.entries(providers).forEach(([key, info]) => {
-        const option = document.createElement("option");
-        option.value = key;
-        option.textContent = `${info.label || key}${info.configured ? "" : " · 未配置"}`;
-        option.selected = key === selected;
-        select.appendChild(option);
-      });
-    };
     const updateProviderHint = (hint, provider) => {
       const info = providers[provider] || {};
       hint.textContent = info.configured
@@ -4548,13 +4695,9 @@
     summaryNote.textContent = "老对话压缩和群聊摘要走这一条，不再固定依赖 OpenRouter。";
     const summaryGrid = document.createElement("div");
     summaryGrid.className = "provider-config-grid";
-    const summaryProviderWrap = document.createElement("label");
+    const summaryProviderWrap = document.createElement("div");
     summaryProviderWrap.className = "persona-model-wrap";
     summaryProviderWrap.appendChild(Object.assign(document.createElement("span"), { textContent: "供应商" }));
-    const summaryProvider = document.createElement("select");
-    summaryProvider.className = "persona-model-input";
-    addProviderOptions(summaryProvider, providerConfig.summary?.provider || "openrouter");
-    summaryProviderWrap.appendChild(summaryProvider);
     const summaryModelWrap = document.createElement("label");
     summaryModelWrap.className = "persona-model-wrap";
     summaryModelWrap.appendChild(Object.assign(document.createElement("span"), { textContent: "摘要模型" }));
@@ -4571,12 +4714,17 @@
     summarySave.textContent = "测试并保存";
     const summaryStatus = document.createElement("span");
     summaryStatus.className = "persona-saved-msg provider-config-status";
+    const summaryProvider = makeProviderPicker(
+      providers,
+      providerConfig.summary?.provider || "openrouter",
+      provider => {
+        const defaultModel = providers[provider]?.default_model;
+        if (defaultModel) summaryModel.value = defaultModel;
+        updateProviderHint(summaryStatus, provider);
+      },
+    );
+    summaryProviderWrap.appendChild(summaryProvider.element);
     updateProviderHint(summaryStatus, summaryProvider.value);
-    summaryProvider.onchange = () => {
-      const defaultModel = providers[summaryProvider.value]?.default_model;
-      if (defaultModel) summaryModel.value = defaultModel;
-      updateProviderHint(summaryStatus, summaryProvider.value);
-    };
     summarySave.onclick = async () => {
       summarySave.disabled = true;
       summarySave.textContent = "连接测试中…";
@@ -4626,17 +4774,12 @@
 
       let originalProvider = characterConfig[cid]?.provider || "openrouter";
       let originalModel = characterConfig[cid]?.model || "";
-      const providerWrap = document.createElement("label");
+      const providerWrap = document.createElement("div");
       providerWrap.className = "persona-model-wrap";
       const providerCaption = document.createElement("span");
       providerCaption.textContent = "供应商";
-      const providerSelect = document.createElement("select");
-      providerSelect.className = "persona-model-input";
-      addProviderOptions(providerSelect, originalProvider);
       const providerHint = document.createElement("small");
       providerHint.className = "provider-config-status";
-      updateProviderHint(providerHint, providerSelect.value);
-      providerWrap.append(providerCaption, providerSelect, providerHint);
 
       const modelWrap = document.createElement("label");
       modelWrap.className = "persona-model-wrap";
@@ -4650,13 +4793,15 @@
       modelInput.spellcheck = false;
       modelWrap.appendChild(modelCaption);
       modelWrap.appendChild(modelInput);
-      providerSelect.onchange = () => {
-        const defaultModel = providers[providerSelect.value]?.default_model;
+      const providerPicker = makeProviderPicker(providers, originalProvider, provider => {
+        const defaultModel = providers[provider]?.default_model;
         if (!modelInput.value.trim() || modelInput.value.trim() === originalModel) {
           if (defaultModel) modelInput.value = defaultModel;
         }
-        updateProviderHint(providerHint, providerSelect.value);
-      };
+        updateProviderHint(providerHint, provider);
+      });
+      updateProviderHint(providerHint, providerPicker.value);
+      providerWrap.append(providerCaption, providerPicker.element, providerHint);
 
       const textarea = document.createElement("textarea");
       textarea.className = "persona-textarea";
@@ -4675,7 +4820,7 @@
 
       saveBtn.addEventListener("click", async () => {
         saveBtn.disabled = true;
-        const connectionChanged = providerSelect.value !== originalProvider
+        const connectionChanged = providerPicker.value !== originalProvider
           || modelInput.value.trim() !== originalModel;
         saveBtn.textContent = connectionChanged ? "测试连接中…" : "保存中…";
         try {
@@ -4685,12 +4830,12 @@
             body: JSON.stringify({
               persona: textarea.value,
               model: modelInput.value.trim(),
-              provider: providerSelect.value,
+              provider: providerPicker.value,
               verify_connection: connectionChanged,
             }),
           });
           if (res.ok) {
-            originalProvider = providerSelect.value;
+            originalProvider = providerPicker.value;
             originalModel = modelInput.value.trim();
             savedMsg.textContent = "✓ 已保存";
             setTimeout(() => { savedMsg.textContent = ""; }, 2000);
@@ -4723,6 +4868,7 @@
   }
 
   function closePersonaPanel() {
+    closeProviderPicker({ restoreFocus: false });
     const panel = document.getElementById("personaPanel");
     const placeholder = panel.nextElementSibling;
     panel.style.display = "none";

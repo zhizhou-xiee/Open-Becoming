@@ -105,6 +105,8 @@ CUSTOM_OPENAI_BASE_URL=https://provider.example/v1
 
 环境变量只决定“服务器有哪些线路可用”和首次启动默认值。前端保存的角色选择会进入 SQLite，重启后继续生效；如果希望完全回到环境变量默认值，需要删除数据库中的对应 `provider_charN`、`model_charN`、`summary_provider` 和 `summary_model` 设置，或使用一份新的数据库。自定义供应商若不会在响应里返回费用，可另外填写 `CUSTOM_OPENAI_INPUT_PRICE_PER_MILLION`、`CUSTOM_OPENAI_OUTPUT_PRICE_PER_MILLION` 和 `CUSTOM_OPENAI_CACHE_PRICE_PER_MILLION`，让饭饭喵按每百万 token 的美元单价估算。
 
+饭饭喵的内部总账统一按美元保存，便于跨供应商汇总；DeepSeek 官方的供应商卡片会换算成人民币显示。默认使用 `CNY_PER_USD=6.78`，部署者可按自己的账单汇率覆盖这个可选环境变量。它只影响展示，不改变历史用量或限额的美元口径。
+
 需要区分三类配置：
 
 | 类型 | 示例 | 应该放在哪里 | 浏览器是否需要知道 |

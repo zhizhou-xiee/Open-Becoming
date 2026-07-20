@@ -695,6 +695,7 @@ CUSTOM_OPENAI_PRICING = {
     "output": _env_float("CUSTOM_OPENAI_OUTPUT_PRICE_PER_MILLION"),
     "cache_read": _env_float("CUSTOM_OPENAI_CACHE_PRICE_PER_MILLION"),
 }
+CNY_PER_USD = max(_env_float("CNY_PER_USD", 6.78), 0.01)
 
 
 # ============================================================
@@ -5498,6 +5499,7 @@ def api_usage():
         "limits": limits_out,
         "platform_limits": _platform_limits(),
         "providers": _public_provider_config(),
+        "cny_per_usd": CNY_PER_USD,
     })
 
 
