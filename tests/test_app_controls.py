@@ -105,6 +105,8 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn('groupSendBtn.addEventListener("pointerdown"', script)
         self.assertIn('openCharPicker("online", null, [...onlineCharacters])', script)
         self.assertIn("长按群聊发送爪", script)
+        self.assertIn("在共读书架的文件行上向左滑", script)
+        self.assertIn("露出右侧删除按钮，可以移除已上传的共读文件", script)
         self.assertNotIn("双击（250ms 内两次 tap）", script)
         self.assertIn('aria-label="发送；长按选择在线角色"', markup)
 

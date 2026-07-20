@@ -5458,6 +5458,7 @@
           <div class="gesture-help-item"><span class="material-symbols-outlined">group</span><div><strong>长按群聊发送爪</strong><small>调整群聊里当前在线的角色。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">chat</span><div><strong>长按单聊消息</strong><small>删除这一条及它之后的本轮消息。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">format_quote</span><div><strong>长按群聊消息</strong><small>复制、引用，或删除这一条及后续群聊。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">swipe_left</span><div><strong>在共读书架的文件行上向左滑</strong><small>露出右侧删除按钮，可以移除已上传的共读文件。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">edit</span><div><strong>长按聊天标题或角色名</strong><small>给角色或群聊改一个昵称。</small></div></div>
         </div>
       </section>`;
