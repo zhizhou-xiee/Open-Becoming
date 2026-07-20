@@ -207,6 +207,7 @@
   }
 
   const charPreviewEls = {};
+  const charRows = {};
   const charAvatars = {
     char1: "/static/char1.svg",
     char2: "/static/char2.svg",
@@ -217,6 +218,273 @@
   };
   let userAvatar = "/static/user.svg";
   let appearanceState = null;
+
+  const FRIENDSHIP_NORMAL = {
+    state: "normal",
+    reason: "",
+    deleted_at: null,
+    request_after: null,
+    pending_request: null,
+  };
+  const _friendship = Object.fromEntries(
+    Object.keys(histories).map(cid => [cid, { ...FRIENDSHIP_NORMAL }])
+  );
+
+  function friendshipState(cid = currentChar) {
+    return _friendship[cid] || FRIENDSHIP_NORMAL;
+  }
+
+  function setFriendshipState(cid, state) {
+    _friendship[cid] = { ...FRIENDSHIP_NORMAL, ...(state || {}) };
+    updateFriendshipListItem(cid);
+    if (cid === currentChar) updateFriendshipInputState();
+    return _friendship[cid];
+  }
+
+  async function fetchFriendship(cid) {
+    try {
+      const response = await fetch(`/api/friendship/${cid}`);
+      if (!response.ok) return friendshipState(cid);
+      return setFriendshipState(cid, await response.json());
+    } catch (error) {
+      console.warn("friendship fetch failed for", cid, error);
+      return friendshipState(cid);
+    }
+  }
+
+  function updateFriendshipListItem(cid) {
+    const state = friendshipState(cid);
+    const row = charRows[cid];
+    if (row) row.dataset.friendshipState = state.state;
+    const preview = charPreviewEls[cid];
+    if (preview && state.pending_request?.text) {
+      preview.textContent = getPreviewText(`[好友申请] ${state.pending_request.text}`);
+    }
+    const dot = document.querySelector(`.unread-dot[data-cid="${cid}"]`);
+    if (dot && state.pending_request) dot.classList.remove("hidden");
+  }
+
+  function updateFriendshipInputState() {
+    const state = friendshipState();
+    const inputbar = document.getElementById("inputbar");
+    const lockbar = document.getElementById("friendshipLockBar");
+    const userDeleted = state.state === "user_deleted";
+    inputbar.classList.toggle("hidden", userDeleted);
+    lockbar.classList.toggle("hidden", !userDeleted);
+    if (userDeleted) {
+      closePawMenu();
+      setSingleReplyTarget(null);
+    }
+  }
+
+  function resetSingleHistory(cid) {
+    historyLoaded.delete(cid);
+    histories[cid].length = 0;
+    delete historyState[cid];
+  }
+
+  async function reloadSingleHistory(cid) {
+    resetSingleHistory(cid);
+    if (cid === currentChar) {
+      messagesEl.innerHTML = "";
+      await loadHistory(cid);
+    }
+  }
+
+  async function refreshFriendships() {
+    await Promise.all(Object.keys(_friendship).map(fetchFriendship));
+    refreshCharPreviews();
+    refreshUnread();
+  }
+
+  let friendshipActionCid = null;
+  function openFriendshipActionSheet(cid) {
+    friendshipActionCid = cid;
+    const state = friendshipState(cid);
+    const sheet = document.getElementById("friendshipActionSheet");
+    const primary = document.getElementById("friendshipActionPrimary");
+    primary.textContent = state.state === "normal" ? "删除好友" : "恢复好友";
+    primary.classList.toggle("danger", state.state === "normal");
+    sheet.classList.remove("hidden");
+    sheet.setAttribute("aria-hidden", "false");
+  }
+
+  function closeFriendshipActionSheet() {
+    const sheet = document.getElementById("friendshipActionSheet");
+    sheet.classList.add("hidden");
+    sheet.setAttribute("aria-hidden", "true");
+    friendshipActionCid = null;
+  }
+
+  async function restoreFriendship(cid, greet = false) {
+    const response = await fetch("/api/friendship/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ character_id: cid, greet }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "恢复失败");
+    setFriendshipState(cid, FRIENDSHIP_NORMAL);
+    await reloadSingleHistory(cid);
+    refreshCharPreviews();
+    refreshUnread();
+    return data;
+  }
+
+  function openFriendVerification(prefill = "") {
+    const state = friendshipState();
+    const reason = String(state.reason || "").trim();
+    document.getElementById("friendVerifyReason").textContent = reason;
+    document.getElementById("friendVerifyReasonWrap").classList.toggle("hidden", !reason);
+    document.getElementById("friendVerifyText").value = prefill;
+    const modal = document.getElementById("friendVerifyModal");
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    setTimeout(() => document.getElementById("friendVerifyText").focus(), 80);
+  }
+
+  function closeFriendVerification() {
+    const modal = document.getElementById("friendVerifyModal");
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+  }
+
+  function openPendingFriendRequest(cid) {
+    const request = friendshipState(cid).pending_request;
+    if (!request) return;
+    const modal = document.getElementById("friendRequestModal");
+    modal.dataset.cid = cid;
+    document.getElementById("friendRequestAvatar").src = charAvatars[cid] || "";
+    document.getElementById("friendRequestName").textContent = nickName(cid);
+    document.getElementById("friendRequestText").textContent = request.text || "";
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+  }
+
+  function closePendingFriendRequest() {
+    const modal = document.getElementById("friendRequestModal");
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+    delete modal.dataset.cid;
+  }
+
+  function showFriendDeletedModal(reason) {
+    document.getElementById("friendDeletedReason").textContent = reason || "";
+    const modal = document.getElementById("friendDeletedModal");
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+  }
+
+  function ensureNormalFriendship() {
+    const state = friendshipState();
+    if (state.state === "normal") return true;
+    if (state.state === "char_deleted") openFriendVerification(inputEl.value.trim());
+    else showToast("你已删除对方，可以先恢复好友");
+    return false;
+  }
+
+  document.getElementById("friendshipActionCancel").addEventListener("click", closeFriendshipActionSheet);
+  document.getElementById("friendshipActionSheet").addEventListener("click", event => {
+    if (event.target === event.currentTarget) closeFriendshipActionSheet();
+  });
+  document.getElementById("friendshipActionPrimary").addEventListener("click", () => {
+    const cid = friendshipActionCid;
+    if (!cid) return;
+    const state = friendshipState(cid);
+    closeFriendshipActionSheet();
+    if (state.state !== "normal") {
+      restoreFriendship(cid).then(data => showToast(data.released > 0
+        ? `已恢复好友，收到 ${data.released} 条积压消息`
+        : "已恢复好友"))
+        .catch(error => showToast(error.message));
+      return;
+    }
+    showConfirmDialog("删除后祂将无法收到你的消息，确定吗？", async () => {
+      try {
+        const response = await fetch("/api/friendship/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ character_id: cid }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "删除失败");
+        setFriendshipState(cid, data);
+        showToast("已删除好友");
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  });
+
+  document.getElementById("friendshipRestoreInline").addEventListener("click", () => {
+    restoreFriendship(currentChar).then(data => showToast(data.released > 0
+      ? `已恢复好友，收到 ${data.released} 条积压消息`
+      : "已恢复好友"))
+      .catch(error => showToast(error.message));
+  });
+
+  document.getElementById("friendVerifyClose").addEventListener("click", closeFriendVerification);
+  document.getElementById("friendVerifyModal").addEventListener("click", event => {
+    if (event.target === event.currentTarget) closeFriendVerification();
+  });
+  document.getElementById("friendVerifySubmit").addEventListener("click", async () => {
+    const text = document.getElementById("friendVerifyText").value.trim();
+    if (!text) return showToast("写一句申请验证再发送");
+    const cid = currentChar;
+    const button = document.getElementById("friendVerifySubmit");
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/friendship/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ character_id: cid, text }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "申请没送到");
+      closeFriendVerification();
+      inputEl.value = "";
+      if (data.approved) {
+        setFriendshipState(cid, FRIENDSHIP_NORMAL);
+        await reloadSingleHistory(cid);
+        refreshUnread();
+        showToast(data.released > 0
+          ? `对方通过了申请，收到 ${data.released} 条积压消息`
+          : "对方通过了你的好友申请");
+      } else {
+        showToast("好友申请已发送，对方暂未通过");
+      }
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  document.getElementById("friendRequestLater").addEventListener("click", closePendingFriendRequest);
+  document.getElementById("friendRequestApprove").addEventListener("click", async () => {
+    const modal = document.getElementById("friendRequestModal");
+    const cid = modal.dataset.cid;
+    if (!cid) return;
+    const button = document.getElementById("friendRequestApprove");
+    button.disabled = true;
+    try {
+      const data = await restoreFriendship(cid, true);
+      closePendingFriendRequest();
+      showToast(data.released > 0
+        ? `已通过申请，释放 ${data.released} 条积压消息`
+        : "已通过好友申请");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  document.getElementById("friendDeletedKnow").addEventListener("click", () => {
+    const modal = document.getElementById("friendDeletedModal");
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+  });
 
   function hexToRgb(hex) {
     const normalized = String(hex || "").replace("#", "");
@@ -668,6 +936,8 @@
         send_voice: '🎙️ AI 语音',
         press_hug: '🤍 和好按钮',
         close_window: '🚪 封窗',
+        delete_friend: '👤 删除好友',
+        approve_friend_request: '🤝 通过好友申请',
       };
       toolsCalled.forEach(t => {
         const isTrace = t && typeof t === 'object' && !Array.isArray(t);
@@ -1046,6 +1316,11 @@
     for (const cid of order) {
       const el = charPreviewEls[cid];
       if (!el) continue;
+      const request = friendshipState(cid).pending_request;
+      if (request?.text) {
+        el.textContent = getPreviewText(`[好友申请] ${request.text}`);
+        continue;
+      }
       if (histories[cid] && histories[cid].length > 0) {
         el.textContent = getPreviewText(histories[cid][histories[cid].length - 1].text);
       } else {
@@ -1071,6 +1346,8 @@
       listView.style.display = "flex";
       chatView.style.display = "none";
       refreshCharPreviews();
+      refreshFriendships();
+      refreshUnread();
     } else {
       listView.style.display = "none";
       chatView.style.display = "flex";
@@ -1092,9 +1369,10 @@
         row.className = "char-list-row";
 
         const avatarWrap = document.createElement("div");
-        avatarWrap.style.cssText = "position:relative;flex-shrink:0;";
+        avatarWrap.className = "char-list-avatar-wrap";
         const img = document.createElement("img");
         img.src = c.avatar;
+        img.draggable = false;
         img.onerror = function() { this.style.display = "none"; };
         img.style.cssText = "width:48px;height:48px;border-radius:50%;object-fit:cover;display:block;";
         const dot = document.createElement("div");
@@ -1121,9 +1399,42 @@
         row.appendChild(info);
 
         charPreviewEls[cid] = previewEl;
+        charRows[cid] = row;
         charAvatars[cid] = c.avatar;
 
+        let relationPressTimer = null;
+        let relationPressStart = null;
+        avatarWrap.addEventListener("pointerdown", event => {
+          if (event.pointerType === "mouse" && event.button !== 0) return;
+          relationPressStart = { x: event.clientX, y: event.clientY };
+          relationPressTimer = setTimeout(() => {
+            row._friendshipSuppressClick = true;
+            setTimeout(() => { row._friendshipSuppressClick = false; }, 900);
+            openFriendshipActionSheet(cid);
+          }, 600);
+        });
+        avatarWrap.addEventListener("pointermove", event => {
+          if (!relationPressStart) return;
+          if (
+            Math.abs(event.clientX - relationPressStart.x) > 8
+            || Math.abs(event.clientY - relationPressStart.y) > 8
+          ) clearTimeout(relationPressTimer);
+        });
+        ["pointerup", "pointercancel", "pointerleave"].forEach(type => {
+          avatarWrap.addEventListener(type, () => {
+            clearTimeout(relationPressTimer);
+            relationPressStart = null;
+          });
+        });
         row.addEventListener("click", () => {
+          if (row._friendshipSuppressClick) {
+            row._friendshipSuppressClick = false;
+            return;
+          }
+          if (friendshipState(cid).pending_request) {
+            openPendingFriendRequest(cid);
+            return;
+          }
           dot.classList.add("hidden");
           fetch(`/api/unread/${cid}/clear`, { method: "POST" }).catch(() => {});
           document.getElementById("char-name").textContent = nickName(cid);
@@ -1132,9 +1443,11 @@
           switchChar(cid);
         });
         container.appendChild(row);
+        updateFriendshipListItem(cid);
       });
       refreshCharPreviews();
       refreshUnread();
+      refreshFriendships();
       refreshSleepStates();
       scheduleSecondaryViewsWarmup();
     } catch (e) {
@@ -1148,7 +1461,8 @@
       if (!res.ok) return;
       const unreadList = await res.json();
       document.querySelectorAll(".unread-dot").forEach(dot => {
-        dot.classList.toggle("hidden", !unreadList.includes(dot.dataset.cid));
+        const pending = !!friendshipState(dot.dataset.cid).pending_request;
+        dot.classList.toggle("hidden", !pending && !unreadList.includes(dot.dataset.cid));
       });
     } catch(e) {}
   }
@@ -1183,12 +1497,25 @@
   // 每 60 秒轮询一次睡眠状态
   refreshSleepStates();
   setInterval(refreshSleepStates, 60000);
+  setInterval(refreshFriendships, 30000);
+  setInterval(refreshUnread, 15000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    refreshFriendships();
+    refreshUnread();
+  });
+  window.addEventListener("pageshow", () => {
+    refreshFriendships();
+    refreshUnread();
+  });
 
-  function switchChar(charId) {
+  async function switchChar(charId) {
     setSingleReplyTarget(null);
     currentChar = charId;
     charSubEl.textContent = CHAR_META[charId]?.label ?? charId;
     messagesEl.innerHTML = "";
+    await fetchFriendship(charId);
+    updateFriendshipInputState();
     loadHistory(charId);
     refreshSleepStates();
   }
@@ -1228,9 +1555,17 @@
       await new Promise(r => setTimeout(r, 350));
       addVoiceBubble(data.voice);
     }
-    if (data.window_closed) {
+    if (data.window_closed && !data.friend_deleted) {
       await new Promise(r => setTimeout(r, 300));
       showCloseWindowModal(data.window_closed.reason || "");
+    }
+    if (data.friend_deleted) {
+      setFriendshipState(currentChar, {
+        state: "char_deleted",
+        reason: data.friend_deleted.reason || "",
+      });
+      await new Promise(r => setTimeout(r, 300));
+      showFriendDeletedModal(data.friend_deleted.reason || "");
     }
   }
 
@@ -1295,11 +1630,22 @@
   async function send() {
     const text = inputEl.value.trim();
     if (!text) return;
+    const friendship = friendshipState();
+    if (friendship.state === "char_deleted") {
+      openFriendVerification(text);
+      return;
+    }
+    if (friendship.state === "user_deleted") {
+      updateFriendshipInputState();
+      showToast("你已删除对方，可以先恢复好友");
+      return;
+    }
     inputEl.value = "";
     closePawMenu();
     sendBtn.disabled = true;
     const pendingQuote = singleReplyTarget;
     addBubble(text, "user", null, pendingQuote);
+    const optimisticUserBlock = messagesEl.lastElementChild;
     const pending = addPendingAiBlock();
 
     try {
@@ -1316,6 +1662,20 @@
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || "发送失败");
+      if (data.friendship_blocked) {
+        optimisticUserBlock?.remove();
+        pending.aiBlock?.remove();
+        histories[currentChar].pop();
+        inputEl.value = text;
+        const status = await fetchFriendship(currentChar);
+        if (data.friendship_state === "char_deleted") {
+          setFriendshipState(currentChar, { ...status, state: "char_deleted" });
+          openFriendVerification(text);
+        } else {
+          setFriendshipState(currentChar, { ...status, state: "user_deleted" });
+        }
+        return;
+      }
       setSingleReplyTarget(null);
 
       if (data.sleep) {
@@ -1704,6 +2064,7 @@
   let _makeupWaiting    = false;
 
   function openMakeupSheet() {
+    if (!ensureNormalFriendship()) return;
     _makeupCount = 0;
     makeupHintEl.textContent = "按下，让他们知道";
     makeupPressBtn.disabled = false;
@@ -1789,6 +2150,10 @@
   });
 
   async function triggerHugApi() {
+    if (!ensureNormalFriendship()) {
+      closeMakeupSheet();
+      return;
+    }
     if (_makeupWaiting) return;
     _makeupWaiting = true;
     makeupPressBtn.disabled = true;
@@ -1856,6 +2221,7 @@
   const transferNote   = document.getElementById("transferNote");
 
   function openTransferPanel() {
+    if (!ensureNormalFriendship()) return;
     transferAmount.value = "";
     transferNote.value   = "";
     transferPanel.classList.remove("hidden");
@@ -1877,6 +2243,10 @@
   });
 
   document.getElementById("transferConfirm").addEventListener("click", async () => {
+    if (!ensureNormalFriendship()) {
+      closeTransferPanel();
+      return;
+    }
     const amount = parseFloat(transferAmount.value);
     if (!amount || isNaN(amount) || amount <= 0) {
       showToast("🐾 输个金额先～");
@@ -1908,6 +2278,7 @@
   const imagePickerSheet = document.getElementById("imagePickerSheet");
 
   function openImagePickerSheet() {
+    if (!ensureNormalFriendship()) return;
     imagePickerSheet.classList.remove("hidden");
     imagePickerSheet.setAttribute("aria-hidden", "false");
   }
@@ -1931,6 +2302,7 @@
   });
 
   function openStickerPanel() {
+    if (!ensureNormalFriendship()) return;
     if (Object.keys(STICKERS_CACHE).length === 0) {
       showToast("🐱 表情包还没加载好，等一下再试～");
       return;
@@ -1959,6 +2331,7 @@
   });
 
   async function sendStickerFromPicker(key) {
+    if (!ensureNormalFriendship()) return;
     closeStickerPanel();
     try {
       const res = await fetch("/api/sticker", {
@@ -1978,6 +2351,7 @@
 
   async function sendImageFile(file) {
     if (!file) return;
+    if (!ensureNormalFriendship()) return;
     if (!file.type.startsWith("image/")) {
       showToast("🐱 选一张图片嘛～");
       return;
@@ -2106,6 +2480,7 @@
 
   async function sendVoiceRecording(file) {
     if (!file || !file.size) return;
+    if (!ensureNormalFriendship()) return;
     const maxMb = Number(voiceConfigState?.stt?.max_upload_mb || 20);
     if (file.size > maxMb * 1024 * 1024) {
       showToast(`录音不能超过 ${maxMb}MB`);
@@ -2144,6 +2519,7 @@
   }
 
   async function startVoiceRecording() {
+    if (!ensureNormalFriendship()) return;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       voiceFileInput.click();
       return;
@@ -4145,9 +4521,7 @@
     const voiceLink = document.createElement("button");
     voiceLink.type = "button";
     voiceLink.className = "scheduler-feature-link";
-    voiceLink.innerHTML = `
-      <span class="material-symbols-outlined" aria-hidden="true">graphic_eq</span>
-      <strong>说说喵°语音收发</strong>`;
+    voiceLink.textContent = "说说喵°语音收发";
     voiceLink.onclick = openVoicePanel;
 
     panel.appendChild(makeAccordion("醒醒喵°欲望心跳", [makeDesireControls()]));
@@ -5072,6 +5446,7 @@
         </div>
         <div class="gesture-help-list">
           <div class="gesture-help-item"><span class="material-symbols-outlined">swipe_right</span><div><strong>从屏幕左边缘向右滑</strong><small>单聊里返回角色列表。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">person_remove</span><div><strong>长按单聊列表头像</strong><small>删除好友、恢复好友，或处理对方发来的好友申请。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">touch_app</span><div><strong>长按单聊发送爪</strong><small>打开图片、表情包、转账和补记入口。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">group</span><div><strong>长按群聊发送爪</strong><small>调整群聊里当前在线的角色。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">chat</span><div><strong>长按单聊消息</strong><small>删除这一条及它之后的本轮消息。</small></div></div>

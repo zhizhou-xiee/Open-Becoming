@@ -169,6 +169,10 @@
           <span class="material-symbols-outlined" style="font-size:22px">pets</span>
         </button>
       </div>
+      <div id="friendshipLockBar" class="friendship-lock-bar hidden">
+        <span>你已删除对方</span>
+        <button id="friendshipRestoreInline" type="button">恢复好友</button>
+      </div>
     </div>
 
   </div>
@@ -609,6 +613,56 @@
       <span>选取文件</span>
     </button>
   </div>
+</div>
+
+<!-- 好友关系菜单 -->
+<div id="friendshipActionSheet" class="soft-sheet-overlay friendship-action-overlay hidden" aria-hidden="true">
+  <div class="friendship-action-card" role="dialog" aria-modal="true" aria-label="好友关系操作">
+    <button id="friendshipActionPrimary" class="friendship-action-item" type="button"></button>
+    <button id="friendshipActionCancel" class="friendship-action-item friendship-action-cancel" type="button">取消</button>
+  </div>
+</div>
+
+<!-- 朋友验证 -->
+<div id="friendVerifyModal" class="friendship-modal-overlay hidden" aria-hidden="true">
+  <section class="friendship-modal-card" role="dialog" aria-modal="true" aria-labelledby="friendVerifyTitle">
+    <button id="friendVerifyClose" class="friendship-modal-close" type="button" aria-label="关闭">
+      <span class="material-symbols-outlined">close</span>
+    </button>
+    <span class="friendship-modal-kicker">朋友验证</span>
+    <h2 id="friendVerifyTitle">发送好友申请</h2>
+    <p class="friendship-modal-copy">对方开启了朋友验证，你还不是祂的朋友。请先发送验证请求，对方通过后才能聊天。</p>
+    <div id="friendVerifyReasonWrap" class="friendship-reason hidden">
+      <span>祂当时留下的话</span>
+      <p id="friendVerifyReason"></p>
+    </div>
+    <textarea id="friendVerifyText" maxlength="200" placeholder="写一句申请验证……"></textarea>
+    <button id="friendVerifySubmit" class="friendship-primary-btn" type="button">发送申请</button>
+  </section>
+</div>
+
+<!-- 收到的好友申请 -->
+<div id="friendRequestModal" class="friendship-modal-overlay hidden" aria-hidden="true">
+  <section class="friendship-modal-card friendship-request-card" role="dialog" aria-modal="true" aria-labelledby="friendRequestName">
+    <img id="friendRequestAvatar" alt="">
+    <span class="friendship-modal-kicker">好友申请</span>
+    <h2 id="friendRequestName"></h2>
+    <p id="friendRequestText" class="friendship-request-text"></p>
+    <div class="friendship-request-actions">
+      <button id="friendRequestLater" type="button">暂时不理</button>
+      <button id="friendRequestApprove" class="friendship-primary-btn" type="button">通过</button>
+    </div>
+  </section>
+</div>
+
+<!-- 被删除提示 -->
+<div id="friendDeletedModal" class="friendship-modal-overlay friendship-deleted-overlay hidden" aria-hidden="true">
+  <section class="friendship-modal-card friendship-deleted-card" role="alertdialog" aria-modal="true" aria-labelledby="friendDeletedTitle">
+    <span class="material-symbols-outlined friendship-deleted-icon">person_remove</span>
+    <h2 id="friendDeletedTitle">对方已把你从好友列表删除</h2>
+    <p id="friendDeletedReason" class="friendship-request-text"></p>
+    <button id="friendDeletedKnow" class="friendship-primary-btn" type="button">知道了</button>
+  </section>
 </div>
 
 <!-- 角色内心状态 -->

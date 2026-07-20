@@ -855,6 +855,114 @@ def _set_sleep_state(char_id, state, slept_at=None, woke_by_user=False):
     )
 
 
+FRIEND_REQUEST_COOLDOWN_SECONDS = (1800, 7200)
+
+
+def _get_friendship(char_id):
+    raw = _read_setting(f"friendship_{char_id}", "")
+    state = None
+    if raw:
+        try:
+            state = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            state = None
+    if not isinstance(state, dict):
+        state = {}
+    if state.get("state") not in {"normal", "user_deleted", "char_deleted"}:
+        state["state"] = "normal"
+    state.setdefault("reason", "")
+    state.setdefault("deleted_at", None)
+    state.setdefault("request_after", None)
+    state.setdefault("pending_request", None)
+    state.setdefault("request_attempts", 0)
+    state.setdefault("last_request_decision", None)
+    return state
+
+
+def _set_friendship(
+    char_id, state, reason="", deleted_at=None, request_after=None,
+    pending_request=None, request_attempts=0, last_request_decision=None,
+):
+    _write_setting(
+        f"friendship_{char_id}",
+        json.dumps({
+            "state": state,
+            "reason": reason,
+            "deleted_at": deleted_at,
+            "request_after": request_after,
+            "pending_request": pending_request,
+            "request_attempts": request_attempts,
+            "last_request_decision": last_request_decision,
+        }, ensure_ascii=False),
+    )
+
+
+def _friend_request_decision(friendship, desire_state, now_ts, random_value=None):
+    """Let attachment and elapsed time drive a character's request to reconnect."""
+    if friendship.get("state") != "user_deleted":
+        return {"apply": False, "probability": 0.0, "impulse": 0.0}
+
+    drives = desire_state.get("drives") if isinstance(desire_state, dict) else {}
+    drives = drives if isinstance(drives, dict) else {}
+
+    def drive(name, default=0.0):
+        try:
+            return max(0.0, min(1.0, float(drives.get(name, default))))
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        deleted_at = float(friendship.get("deleted_at") or now_ts)
+    except (TypeError, ValueError):
+        deleted_at = float(now_ts)
+    elapsed_hours = max(0.0, (float(now_ts) - deleted_at) / 3600.0)
+    impulse = (
+        0.10
+        + 0.62 * drive("attachment", 0.3)
+        + 0.13 * drive("stress", 0.15)
+        + 0.08 * drive("libido", 0.18)
+        + 0.08 * drive("duty", 0.18)
+        + 0.05 * drive("social", 0.24)
+        - 0.18 * drive("fatigue", 0.18)
+        + min(0.32, elapsed_hours / 18.0 * 0.32)
+    )
+    reason = str(friendship.get("reason") or "").strip().lower()
+    if any(marker in reason for marker in ("误删", "手滑", "测试", "不小心")):
+        reason_effect = 0.18
+    elif any(marker in reason for marker in ("欺骗", "背叛", "讨厌", "滚", "不要你", "伤透")):
+        reason_effect = -0.16
+    elif any(marker in reason for marker in ("吵架", "生气", "伤心", "冷静", "暂时")):
+        reason_effect = -0.08
+    else:
+        reason_effect = -0.02
+
+    probability = max(0.0, min(0.90, impulse + reason_effect))
+    draw = _random.random() if random_value is None else float(random_value)
+    forced_return = (
+        elapsed_hours >= 18.0
+        and reason_effect >= -0.04
+        and drive("attachment", 0.3) >= 0.10
+    )
+    return {
+        "apply": forced_return or (probability >= 0.06 and draw < probability),
+        "forced": forced_return,
+        "probability": round(probability, 4),
+        "impulse": round(impulse, 4),
+        "reason_effect": reason_effect,
+        "elapsed_hours": round(elapsed_hours, 2),
+    }
+
+
+def _friend_request_retry_delay(probability):
+    if probability >= 0.55:
+        bounds = (10 * 60, 30 * 60)
+    elif probability >= 0.30:
+        bounds = (20 * 60, 60 * 60)
+    else:
+        bounds = (30 * 60, 90 * 60)
+    return _random.uniform(*bounds)
+
+
 def _build_sleep_state_block(char_id, just_woke=False):
     """全时段返回状态声明（从不返回空串）。just_woke=True 时返回刚醒文案。"""
     if just_woke:
@@ -919,6 +1027,19 @@ def _clear_queued_sleep_flags(char_id, session_id="default"):
     )
     conn.commit()
     conn.close()
+
+
+def _release_queued_deleted_msgs(char_id, session_id="default"):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute(
+        "UPDATE messages SET queued_during_deleted=0 "
+        "WHERE character_id=? AND session_id=? AND queued_during_deleted=1",
+        (char_id, session_id),
+    )
+    conn.commit()
+    released = cursor.rowcount
+    conn.close()
+    return released
 
 
 def _wake_probability(char_id):
@@ -1274,6 +1395,8 @@ def init_db():
         conn.execute("ALTER TABLE messages ADD COLUMN reply_to_text TEXT")
     if "queued_during_sleep" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN queued_during_sleep INTEGER DEFAULT 0")
+    if "queued_during_deleted" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN queued_during_deleted INTEGER DEFAULT 0")
     if "drowsy" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN drowsy INTEGER DEFAULT 0")
     highlight_cols = [
@@ -1357,14 +1480,19 @@ def init_db():
 
 def save_message(
     session_id, character_id, role, content,
-    reply_to_id=None, reply_to_text=None, queued_during_sleep=0, drowsy=0,
+    reply_to_id=None, reply_to_text=None, queued_during_sleep=0,
+    queued_during_deleted=0, drowsy=0,
 ):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute(
         "INSERT INTO messages "
-        "(session_id, character_id, role, content, reply_to_id, reply_to_text, queued_during_sleep, drowsy) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (session_id, character_id, role, content, reply_to_id, reply_to_text, queued_during_sleep, drowsy),
+        "(session_id, character_id, role, content, reply_to_id, reply_to_text, "
+        "queued_during_sleep, queued_during_deleted, drowsy) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            session_id, character_id, role, content, reply_to_id, reply_to_text,
+            queued_during_sleep, queued_during_deleted, drowsy,
+        ),
     )
     lastrowid = cursor.lastrowid
     conn.commit()
@@ -2646,7 +2774,8 @@ def load_active_messages(session_id, character_id):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
         "SELECT id, role, content, COALESCE(drowsy, 0) FROM messages "
-        "WHERE session_id = ? AND character_id = ? AND compressed = 0 ORDER BY id ASC",
+        "WHERE session_id = ? AND character_id = ? AND compressed = 0 "
+        "AND COALESCE(queued_during_deleted, 0) = 0 ORDER BY id ASC",
         (session_id, character_id),
     ).fetchall()
     conn.close()
@@ -3173,6 +3302,50 @@ OR_TOOLS = [
     },
 ]
 
+ANTHROPIC_TOOLS.extend([
+    {
+        "name": "delete_friend",
+        "description": (
+            "把 User 从好友列表删除。这是比关闭窗口更重的动作——删除后 User 无法再给你发消息、"
+            "转账或按和好按钮，只能向你发送好友申请等你验证。"
+            "只在你真的被伤到、需要用关系本身表达态度时调用。"
+            "调用前先在正文把想说的话说完；reason 会在 User 重新申请时显示给你。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "删除原因，一句话，写给未来的自己看。",
+                }
+            },
+            "required": ["reason"],
+        },
+    },
+    {
+        "name": "approve_friend_request",
+        "description": (
+            "通过 User 的好友申请，恢复好友关系。只有在你之前删除过 User、"
+            "且系统提示你收到了好友申请时才有效。愿意和好就调用；"
+            "还想再等等，就只回复文字、不调用。"
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+])
+
+OR_TOOLS.extend([
+    {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["input_schema"],
+        },
+    }
+    for tool in ANTHROPIC_TOOLS
+    if tool["name"] in {"delete_friend", "approve_friend_request"}
+])
+
 VOICE_ANTHROPIC_TOOL = {
     "name": "send_voice",
     "description": (
@@ -3202,7 +3375,7 @@ VOICE_OR_TOOL = {
 }
 
 _LEAK_INVOKE_RE = re.compile(
-    r'<invoke\s+name="(?P<tool>save_memory|send_transfer|send_sticker|press_hug|send_voice)">(?P<body>.*?)</invoke>',
+    r'<invoke\s+name="(?P<tool>save_memory|send_transfer|send_sticker|press_hug|send_voice|delete_friend|approve_friend_request)">(?P<body>.*?)</invoke>',
     re.DOTALL,
 )
 _LEAK_PARAM_RE = re.compile(
@@ -3425,6 +3598,26 @@ def _execute_chat_tool(name, args, character_id, state):
         tools_called.append(f"close_window:{reason}")
         return "窗口已关闭。"
 
+    if name == "delete_friend":
+        reason = str(args.get("reason") or "不想再维持好友关系").strip()[:160]
+        if character_id and _get_friendship(character_id)["state"] != "normal":
+            return "你们已经不是好友关系了，本次未执行。"
+        if any(
+            isinstance(item, str) and item.startswith("delete_friend:")
+            for item in tools_called
+        ):
+            return "重复操作忽略。"
+        tools_called.append(f"delete_friend:{reason}")
+        return "已将 User 从好友列表删除。"
+
+    if name == "approve_friend_request":
+        if not character_id or _get_friendship(character_id)["state"] != "char_deleted":
+            return "现在没有待处理的好友申请，本次未执行。"
+        if "approve_friend_request" in tools_called:
+            return "已经通过了，无需重复。"
+        tools_called.append("approve_friend_request")
+        return "已通过 User 的好友申请，你们重新成为好友。"
+
     if name.startswith("mcp_"):
         signature = _tool_call_signature(name, args)
         if signature in state["mcp_signatures"]:
@@ -3461,26 +3654,35 @@ def call_or_with_tools(
     session_id=None,
     character_id=None,
     provider="openrouter",
+    allowed_tool_names=None,
 ):
     """OpenAI-compatible tool loop with bounded rounds and side-effect guards."""
     provider = _valid_provider(provider)
     spec = _provider_spec(provider)
     if spec.get("api_style") != "openai" or not _provider_configured(provider):
         return None, {}, None, None, None, []
-    active_tools = []
-    if get_tool_enabled("save_memory"):
-        active_tools.append(OR_TOOLS[0])
-    if get_tool_enabled("send_transfer"):
-        active_tools.append(OR_TOOLS[1])
-    if get_tool_enabled("send_sticker"):
-        active_tools.append(OR_TOOLS[2])
-    if get_tool_enabled("press_hug"):
-        active_tools.append(OR_TOOLS[3])
-    if get_tool_enabled("close_window"):
-        active_tools.append(OR_TOOLS[4])
-    if character_id and _voice_tool_available(character_id):
+    allowed_tool_names = None if allowed_tool_names is None else set(allowed_tool_names)
+
+    def tool_allowed(name):
+        return allowed_tool_names is None or name in allowed_tool_names
+
+    active_tools = [
+        copy.deepcopy(tool) for tool in OR_TOOLS
+        if tool_allowed(tool["function"]["name"])
+        and get_tool_enabled(tool["function"]["name"])
+    ]
+    if (
+        character_id and tool_allowed("send_voice")
+        and _voice_tool_available(character_id)
+    ):
         active_tools.append(copy.deepcopy(VOICE_OR_TOOL))
-    active_tools.extend(_custom_mcp_tools("openrouter", character_id))
+    custom_tools = _custom_mcp_tools("openrouter", character_id)
+    if allowed_tool_names is not None:
+        custom_tools = [
+            tool for tool in custom_tools
+            if tool_allowed(tool.get("function", {}).get("name"))
+        ]
+    active_tools.extend(custom_tools)
     if not active_tools:
         reply, usage, _ = call_or(
             model, messages, max_tokens=max_tokens, session_id=session_id,
@@ -3557,6 +3759,12 @@ def call_or_with_tools(
                 for item in leaked:
                     if state["call_count"] >= TOOL_CHAIN_MAX_CALLS:
                         break
+                    if not tool_allowed(item["name"]):
+                        app.logger.warning(
+                            "[call_or_with_tools] blocked leaked tool call: %s",
+                            item["name"],
+                        )
+                        continue
                     args = item.get("args") or {}
                     if item["name"] == "send_transfer":
                         try:
@@ -3590,6 +3798,8 @@ def call_or_with_tools(
 
             if state["call_count"] >= TOOL_CHAIN_MAX_CALLS:
                 result_text = "本轮工具调用总数已达上限，请根据已有结果直接回复。"
+            elif not tool_allowed(name):
+                result_text = "这个工具在当前上下文中没有开放，本次未执行。"
             else:
                 result_text = _execute_chat_tool(name, args, character_id, state)
             tool_result_msgs.append({
@@ -3616,7 +3826,10 @@ def call_or_with_tools(
         )
 
 
-def call_anthropic_with_tools(model, system_blocks, messages, max_tokens=2048, character_id=None):
+def call_anthropic_with_tools(
+    model, system_blocks, messages, max_tokens=2048, character_id=None,
+    allowed_tool_names=None,
+):
     """Anthropic tool loop with the same bounds as the OpenRouter path."""
     if not ANTHROPIC_API_KEY:
         return None, {}, None, None, None, []
@@ -3627,10 +3840,24 @@ def call_anthropic_with_tools(model, system_blocks, messages, max_tokens=2048, c
         "anthropic-version": "2023-06-01",
         "anthropic-beta":    "prompt-caching-2024-07-31",
     }
-    active_tools = [copy.deepcopy(t) for t in ANTHROPIC_TOOLS if get_tool_enabled(t["name"])]
-    if character_id and _voice_tool_available(character_id):
+    allowed_tool_names = None if allowed_tool_names is None else set(allowed_tool_names)
+
+    def tool_allowed(name):
+        return allowed_tool_names is None or name in allowed_tool_names
+
+    active_tools = [
+        copy.deepcopy(tool) for tool in ANTHROPIC_TOOLS
+        if tool_allowed(tool["name"]) and get_tool_enabled(tool["name"])
+    ]
+    if (
+        character_id and tool_allowed("send_voice")
+        and _voice_tool_available(character_id)
+    ):
         active_tools.append(copy.deepcopy(VOICE_ANTHROPIC_TOOL))
-    active_tools.extend(_custom_mcp_tools("anthropic", character_id))
+    custom_tools = _custom_mcp_tools("anthropic", character_id)
+    if allowed_tool_names is not None:
+        custom_tools = [tool for tool in custom_tools if tool_allowed(tool.get("name"))]
+    active_tools.extend(custom_tools)
     if not active_tools:
         reply, usage = call_anthropic(model, system_blocks, messages, max_tokens)
         return reply, usage, None, None, None, []
@@ -3718,6 +3945,8 @@ def call_anthropic_with_tools(model, system_blocks, messages, max_tokens=2048, c
                 args = {}
             if state["call_count"] >= TOOL_CHAIN_MAX_CALLS:
                 result_text = "本轮工具调用总数已达上限，请根据已有结果直接回复。"
+            elif not tool_allowed(name):
+                result_text = "这个工具在当前上下文中没有开放，本次未执行。"
             else:
                 result_text = _execute_chat_tool(name, args, character_id, state)
             tool_results.append({
@@ -3868,8 +4097,12 @@ def _tools_for_display(tools_called):
             arguments = tool.get("arguments")
             if not isinstance(arguments, dict):
                 arguments = {}
+            if name.startswith("close_window:"):
+                name = "close_window"
+            elif name.startswith("delete_friend:"):
+                name = "delete_friend"
             result.append({
-                "name": "close_window" if name.startswith("close_window:") else name,
+                "name": name,
                 "arguments": arguments,
                 "output": str(tool.get("output") or "")[:12000],
                 "status": "error" if tool.get("status") == "error" else "ok",
@@ -3877,7 +4110,12 @@ def _tools_for_display(tools_called):
             continue
         if not isinstance(tool, str):
             continue
-        display_name = "close_window" if tool.startswith("close_window:") else tool
+        if tool.startswith("close_window:"):
+            display_name = "close_window"
+        elif tool.startswith("delete_friend:"):
+            display_name = "delete_friend"
+        else:
+            display_name = tool
         if display_name not in result:
             result.append(display_name)
     return result
@@ -4218,7 +4456,10 @@ push_summary_to_ombre = save_long_term_memory
 # ============================================================
 # 角色引擎
 # ============================================================
-def ask_character(char, session_id, user_message, image_payload=None, just_woke=False):
+def ask_character(
+    char, session_id, user_message, image_payload=None, just_woke=False,
+    allow_tools=True, allowed_tool_names=None,
+):
     character_id = char["domain"]
     provider = char.get("provider", "openrouter")
     enforce_monthly_limit(character_id, provider)
@@ -4266,9 +4507,20 @@ def ask_character(char, session_id, user_message, image_payload=None, just_woke=
                 {"type": "text", "text": user_message},
             ]
         messages = merge_consecutive_roles(history + [{"role": "user", "content": current_content}])
-        reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called = call_anthropic_with_tools(
-            char["model"], system_blocks, messages, character_id=character_id
-        )
+        if allow_tools:
+            tool_kwargs = {}
+            if allowed_tool_names is not None:
+                tool_kwargs["allowed_tool_names"] = allowed_tool_names
+            reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called = call_anthropic_with_tools(
+                char["model"], system_blocks, messages, character_id=character_id,
+                **tool_kwargs,
+            )
+        else:
+            reply, usage = call_anthropic(
+                char["model"], system_blocks, messages, max_tokens=2048
+            )
+            memory_to_save = transfer_to_send = sticker_to_send = None
+            tools_called = []
         usage_metrics = log_usage(character_id, "anthropic", char["model"], usage)
         if memory_to_save:
             try:
@@ -4310,11 +4562,15 @@ def ask_character(char, session_id, user_message, image_payload=None, just_woke=
         messages.append({"role": "system", "content": "\n\n".join(context_parts)})
         messages += merge_consecutive_roles(history + [{"role": "user", "content": current_content}])
 
-        if char.get("supports_tools"):
+        if char.get("supports_tools") and allow_tools:
+            tool_kwargs = {}
+            if allowed_tool_names is not None:
+                tool_kwargs["allowed_tool_names"] = allowed_tool_names
             reply, usage, memory_to_save, transfer_to_send, sticker_to_send, tools_called = call_or_with_tools(
                 char["model"], messages, max_tokens=2048,
                 session_id=f"chat:{character_id}:{session_id}",
                 character_id=character_id,
+                **tool_kwargs,
                 **({"provider": provider} if provider != "openrouter" else {}),
             )
             usage_metrics = log_usage(character_id, provider, char["model"], usage)
@@ -5203,6 +5459,8 @@ def transfer():
     note         = (body.get("note") or "").strip()
     if character_id not in CHARACTERS:
         return jsonify({"error": "未知角色"}), 400
+    if _get_friendship(character_id)["state"] != "normal":
+        return jsonify({"error": "好友关系异常，无法执行", "friendship_blocked": True}), 403
     try:
         amount = float(amount)
     except (TypeError, ValueError):
@@ -5228,6 +5486,8 @@ def send_sticker_route():
     key          = body.get("key")
     if character_id not in CHARACTERS:
         return jsonify({"error": "未知角色"}), 400
+    if _get_friendship(character_id)["state"] != "normal":
+        return jsonify({"error": "好友关系异常，无法执行", "friendship_blocked": True}), 403
     if key not in STICKERS:
         return jsonify({"error": "未知表情包"}), 400
     payload = json.dumps({"key": key, "from": "user"}, ensure_ascii=False)
@@ -5249,6 +5509,8 @@ def send_image_route():
     image = request.files.get("image")
     if character_id not in CHARACTERS:
         return jsonify({"error": "未知角色"}), 400
+    if _get_friendship(character_id)["state"] != "normal":
+        return jsonify({"error": "好友关系异常，无法执行", "friendship_blocked": True}), 403
     if not image or not image.filename:
         return jsonify({"error": "没有收到图片"}), 400
     original_name = image.filename
@@ -5537,14 +5799,17 @@ def _dispatch_mobile_push(char, reply, reply_id, source):
 
 def _finalize_character_reply(
     char, session_id, reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics=None,
-    drowsy=0, push_source=None,
+    drowsy=0, push_source=None, queued_during_deleted=0,
 ):
     character_id = char["domain"]
     reply = strip_fake_action_text(reply, character_id)
     if not reply or not reply.strip():
         reply = "(...)"
 
-    reply_id = save_message(session_id, character_id, "model", reply, drowsy=drowsy)
+    reply_id = save_message(
+        session_id, character_id, "model", reply,
+        queued_during_deleted=queued_during_deleted, drowsy=drowsy,
+    )
     save_message_metrics(reply_id, character_id, usage_metrics)
     if transfer_to_send:
         tf_payload = json.dumps({
@@ -5552,13 +5817,19 @@ def _finalize_character_reply(
             "note": transfer_to_send.get("note", ""),
             "from": "char",
         }, ensure_ascii=False)
-        save_message(session_id, character_id, "model", "__TRANSFER__" + tf_payload)
+        save_message(
+            session_id, character_id, "model", "__TRANSFER__" + tf_payload,
+            queued_during_deleted=queued_during_deleted,
+        )
     if sticker_to_send:
         sk_payload = json.dumps({
             "key": sticker_to_send.get("key"),
             "from": "char",
         }, ensure_ascii=False)
-        save_message(session_id, character_id, "model", "__STICKER__" + sk_payload)
+        save_message(
+            session_id, character_id, "model", "__STICKER__" + sk_payload,
+            queued_during_deleted=queued_during_deleted,
+        )
     voice = _maybe_create_voice_message(
         session_id, character_id, tools_called
     )
@@ -5576,9 +5847,27 @@ def _finalize_character_reply(
         None,
     )
     window_closed = {"reason": cw_entry[len("close_window:"):]} if cw_entry else None
+    deleted_entry = next(
+        (
+            tool for tool in (tools_called or [])
+            if isinstance(tool, str) and tool.startswith("delete_friend:")
+        ),
+        None,
+    )
+    friend_deleted = None
+    if deleted_entry:
+        reason = deleted_entry[len("delete_friend:"):]
+        _set_friendship(
+            character_id, "char_deleted", reason=reason,
+            deleted_at=_utc_timestamp(),
+        )
+        friend_deleted = {"reason": reason}
+        app.logger.info(
+            "[friendship] %s removed User: %r", character_id, reason[:40]
+        )
     tools_for_frontend = _tools_for_display(tools_called)
     save_message_details(reply_id, tools_for_frontend)
-    if push_source:
+    if push_source and not queued_during_deleted:
         _dispatch_mobile_push(char, reply, reply_id, push_source)
     return {
         "reply": reply,
@@ -5589,6 +5878,7 @@ def _finalize_character_reply(
         "reply_id": reply_id,
         "tools_called": tools_for_frontend,
         "window_closed": window_closed,
+        "friend_deleted": friend_deleted,
         "metrics": usage_metrics,
     }
 
@@ -5608,6 +5898,14 @@ def chat():
         return jsonify({"error": f"未知角色: {character_id}"}), 400
 
     char = CHARACTERS[character_id]
+    friendship = _get_friendship(character_id)
+    if friendship["state"] != "normal":
+        return jsonify({
+            "reply": "",
+            "replies": [],
+            "friendship_blocked": True,
+            "friendship_state": friendship["state"],
+        })
     try:
         quoted_message = _group_quote_payload(
             session_id,
@@ -5753,6 +6051,8 @@ def hug():
     character_id = body.get("character_id", "char5")
     if character_id not in CHARACTERS:
         return jsonify({"error": f"未知角色: {character_id}"}), 400
+    if _get_friendship(character_id)["state"] != "normal":
+        return jsonify({"error": "好友关系异常，无法执行", "friendship_blocked": True}), 403
     char = CHARACTERS[character_id]
     record_desire_interaction(character_id, "User按下了和好按钮")
     hug_msg = "[系统提示：User 偷偷按下了和好按钮，想让你哄一哄——请用你的风格温柔回应，不要提及这是系统触发的]"
@@ -5773,12 +6073,104 @@ def hug():
     ))
 
 
+@app.route("/api/friendship/<character_id>", methods=["GET"])
+def friendship_status(character_id):
+    if character_id not in CHARACTERS:
+        return jsonify({"error": "未知角色"}), 400
+    return jsonify(_get_friendship(character_id))
+
+
+@app.route("/api/friendship/delete", methods=["POST"])
+def friendship_delete():
+    body = request.json or {}
+    character_id = body.get("character_id", "")
+    if character_id not in CHARACTERS:
+        return jsonify({"error": "未知角色"}), 400
+    now_ts = _utc_timestamp()
+    reason = str(body.get("reason") or "User 主动删除").strip()[:160]
+    _set_friendship(
+        character_id,
+        "user_deleted",
+        reason=reason,
+        deleted_at=now_ts,
+        request_after=now_ts + _random.uniform(*FRIEND_REQUEST_COOLDOWN_SECONDS),
+    )
+    app.logger.info("[friendship] User removed %s", character_id)
+    return jsonify({"ok": True, **_get_friendship(character_id)})
+
+
+@app.route("/api/friendship/restore", methods=["POST"])
+def friendship_restore():
+    body = request.json or {}
+    character_id = body.get("character_id", "")
+    if character_id not in CHARACTERS:
+        return jsonify({"error": "未知角色"}), 400
+    previous = _get_friendship(character_id)
+    _set_friendship(character_id, "normal")
+    released = _release_queued_deleted_msgs(character_id)
+    greeting = None
+    if body.get("greet") and previous["state"] == "user_deleted":
+        char = CHARACTERS[character_id]
+        note = (
+            "[系统提示：User 通过了你的好友申请，你们重新成为好友。"
+            "用你的风格回应这份重逢，不要提及这是系统触发的。]"
+        )
+        reply, transfer, sticker, called, metrics = ask_character(
+            char, "default", note
+        )
+        greeting = _finalize_character_reply(
+            char, "default", reply, transfer, sticker, called, metrics
+        )
+    return jsonify({"ok": True, "released": released, "greeting": greeting})
+
+
+@app.route("/api/friendship/apply", methods=["POST"])
+def friendship_apply():
+    body = request.json or {}
+    character_id = body.get("character_id", "")
+    text = str(body.get("text") or "").strip()[:300]
+    if character_id not in CHARACTERS:
+        return jsonify({"error": "未知角色"}), 400
+    friendship = _get_friendship(character_id)
+    if friendship["state"] != "char_deleted":
+        return jsonify({"error": "当前不需要好友验证"}), 400
+    if not text:
+        return jsonify({"error": "申请内容不能为空"}), 400
+
+    char = CHARACTERS[character_id]
+    note = (
+        f"[系统提示：你之前删除了 User，当时的原因是「{friendship.get('reason') or '（未留原因）'}」。"
+        f"现在 User 发来好友申请：「{text}」。"
+        "愿意和好就调用 approve_friend_request 工具再回复；"
+        "还不想原谅就只回复文字（User 不会看到这段回复，但会知道申请没有通过）。]"
+    )
+    reply, transfer, sticker, called, metrics = ask_character(
+        char,
+        "default",
+        note,
+        allowed_tool_names={"approve_friend_request"},
+    )
+    if "approve_friend_request" not in (called or []):
+        app.logger.info("[friendship] %s declined a request", character_id)
+        return jsonify({"approved": False})
+
+    _set_friendship(character_id, "normal")
+    released = _release_queued_deleted_msgs(character_id)
+    result = _finalize_character_reply(
+        char, "default", reply, transfer, sticker, called, metrics
+    )
+    result.update({"approved": True, "released": released})
+    return jsonify(result)
+
+
 @app.route("/api/plead", methods=["POST"])
 def plead():
     body = request.json or {}
     character_id = body.get("character_id", "char5")
     if character_id not in CHARACTERS:
         return jsonify({"error": f"未知角色: {character_id}"}), 400
+    if _get_friendship(character_id)["state"] != "normal":
+        return jsonify({"error": "好友关系异常，无法执行", "friendship_blocked": True}), 403
     char = CHARACTERS[character_id]
     plead_msg = "[系统提示：你刚才关闭了对话窗口，User在窗口外面求你了，说「求求你放我进来嘛」——你要怎么回应？用你的风格，不要提及这是系统触发的]"
     reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
@@ -5886,10 +6278,13 @@ def get_messages():
 
     conn = sqlite3.connect(DB_PATH)
     if character_id:
-        where = "m.character_id = ? AND m.session_id = ?"
+        where = (
+            "m.character_id = ? AND m.session_id = ? "
+            "AND COALESCE(m.queued_during_deleted, 0) = 0"
+        )
         params = [character_id, session_id]
     else:
-        where = "m.session_id = ?"
+        where = "m.session_id = ? AND COALESCE(m.queued_during_deleted, 0) = 0"
         params = [session_id]
     if before_id is not None:
         where += " AND m.id < ?"
@@ -8288,6 +8683,82 @@ def do_desire_heartbeat():
             for cid, state in states.items():
                 save_desire_state(cid, state)
 
+            # 好友申请独立于主动消息总开关：即使关掉自动发帖，角色也仍可在
+            # 冷静期后按自身依恋状态决定是否申请回来。
+            for cid in CHARACTERS:
+                friendship = _get_friendship(cid)
+                if (
+                    friendship["state"] != "user_deleted"
+                    or friendship.get("pending_request")
+                ):
+                    continue
+                try:
+                    request_due = (
+                        friendship.get("request_after") is not None
+                        and now_ts >= float(friendship["request_after"])
+                    )
+                except (TypeError, ValueError):
+                    request_due = False
+                if not request_due:
+                    continue
+
+                decision = _friend_request_decision(
+                    friendship, states.get(cid) or {}, now_ts
+                )
+                attempts = int(friendship.get("request_attempts") or 0) + 1
+                if not decision["apply"]:
+                    _set_friendship(
+                        cid,
+                        "user_deleted",
+                        reason=friendship.get("reason", ""),
+                        deleted_at=friendship.get("deleted_at"),
+                        request_after=(
+                            now_ts
+                            + _friend_request_retry_delay(decision["probability"])
+                        ),
+                        request_attempts=attempts,
+                        last_request_decision={
+                            **decision, "outcome": "wait", "at": now_ts,
+                        },
+                    )
+                    continue
+
+                try:
+                    drives = (states.get(cid) or {}).get("drives") or {}
+                    prompt = (
+                        f"[系统提示：User 把你从好友列表删除了，留下的原因是"
+                        f"「{friendship.get('reason') or '没有解释'}」。"
+                        f"你此刻的依恋冲动是 {float(drives.get('attachment', 0)):.2f}，"
+                        f"压力是 {float(drives.get('stress', 0)):.2f}，"
+                        f"疲惫是 {float(drives.get('fatigue', 0)):.2f}。"
+                        "你决定申请重新加回 User。写一段 80 字以内的好友申请验证消息，"
+                        "只输出纯文本，不要调用工具；可以撒娇、认错、嘴硬，也可以带着委屈。]"
+                    )
+                    reply, _transfer, _sticker, _called, _metrics = ask_character(
+                        CHARACTERS[cid], "default", prompt, allow_tools=False
+                    )
+                    request_text = strip_fake_action_text(reply or "", cid).strip()[:80]
+                    if request_text:
+                        _set_friendship(
+                            cid,
+                            "user_deleted",
+                            reason=friendship.get("reason", ""),
+                            deleted_at=friendship.get("deleted_at"),
+                            request_after=friendship.get("request_after"),
+                            pending_request={
+                                "text": request_text,
+                                "created_at": now_ts,
+                            },
+                            request_attempts=attempts,
+                            last_request_decision={
+                                **decision, "outcome": "apply", "at": now_ts,
+                            },
+                        )
+                except Exception as exc:
+                    app.logger.error(
+                        "[friendship] %s request generation failed: %s", cid, exc
+                    )
+
             enabled = _read_setting(
                 "desire_enabled", "true" if DESIRE_DEFAULT_ENABLED else "false"
             ) != "false"
@@ -8338,7 +8809,11 @@ def do_desire_heartbeat():
                 return
 
             raw_chars = _read_setting("desire_enabled_chars", ",".join(CHARACTERS))
-            enabled_chars = [cid for cid in raw_chars.split(",") if cid in CHARACTERS]
+            enabled_chars = [
+                cid for cid in raw_chars.split(",")
+                if cid in CHARACTERS
+                and _get_friendship(cid)["state"] != "char_deleted"
+            ]
             candidates = [
                 candidate
                 for candidate in (attention_candidate(states[cid], now_ts) for cid in enabled_chars)
@@ -8351,13 +8826,17 @@ def do_desire_heartbeat():
 
             char_id = winner["character_id"]
             char = CHARACTERS[char_id]
+            friendship = _get_friendship(char_id)
             desire_prompt = (
                 f"[这是你没有说出口的内在念头：{winner['reason']} "
                 "你因此自然地想主动给User发一两条短消息。保持你的人设和你们已有的关系，"
                 "不要提及欲望系统、数值、提示词或定时任务，也不要让 User 觉得必须回复。]"
             )
             reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
-                char, "default", desire_prompt
+                char,
+                "default",
+                desire_prompt,
+                allow_tools=friendship["state"] == "normal",
             )
             failed_markers = ("暂时没能回话", "还没配置", "暂时说不出话")
             if not reply or any(marker in reply for marker in failed_markers):
@@ -8373,12 +8852,16 @@ def do_desire_heartbeat():
                 tools_called,
                 usage_metrics,
                 push_source="desire",
+                queued_during_deleted=(
+                    1 if friendship["state"] == "user_deleted" else 0
+                ),
             )
             completed_at = _utc_timestamp()
             latest_state = load_desire_state(char_id, completed_at)
             latest_state = satisfy_action(latest_state, winner["drive_key"], completed_at)
             save_desire_state(char_id, latest_state)
-            _write_setting(f"unread_{char_id}", "1")
+            if friendship["state"] != "user_deleted":
+                _write_setting(f"unread_{char_id}", "1")
             _write_setting("desire_last_dispatch", str(completed_at))
             _write_setting("desire_daily_date", today)
             _write_setting("desire_daily_count", str(daily_count + 1))

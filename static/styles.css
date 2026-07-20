@@ -206,6 +206,20 @@ body::before {
   background: rgba(var(--dusky-rgb), 0.24);
 }
 .char-list-row > div > div:first-child { color: var(--text); font-weight: 600; }
+.char-list-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+  touch-action: pan-y;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.char-list-avatar-wrap img {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 
 /* ── 未读消息红点 ── */
 .unread-dot {
@@ -962,6 +976,7 @@ header {
   align-items: center;
   position: relative;
 }
+#inputbar.hidden { display: none; }
 #input {
   flex: 1;
   padding: 11px 14px;
@@ -990,6 +1005,29 @@ header {
   user-select: none;
 }
 #send:disabled { opacity: 0.5; }
+
+.friendship-lock-bar {
+  min-height: 65px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: rgba(var(--cream-rgb), 0.94);
+  color: var(--muted);
+  font-size: 14px;
+}
+.friendship-lock-bar.hidden { display: none; }
+.friendship-lock-bar button {
+  border: 1.5px solid var(--dusky);
+  border-radius: 18px;
+  padding: 7px 14px;
+  background: var(--cream);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+}
 .voice-record-btn {
   width: 38px;
   height: 38px;
@@ -2257,6 +2295,156 @@ header {
 }
 .soft-sheet-overlay.hidden { display: none; }
 
+.friendship-action-overlay {
+  z-index: 380;
+  padding: 12px 16px calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 14px);
+}
+.friendship-action-card {
+  width: min(100%, 420px);
+  overflow: hidden;
+  border: 1.5px solid var(--bubble-border);
+  border-radius: 18px;
+  background: rgba(var(--cream-rgb), 0.98);
+  box-shadow: 0 12px 30px rgba(var(--dusky-rgb), 0.2);
+  animation: softPickerIn 0.2s ease-out;
+}
+.friendship-action-item {
+  width: 100%;
+  min-height: 56px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+}
+.friendship-action-item.danger { color: #a14f58; font-weight: 600; }
+.friendship-action-cancel { border-top: 1px solid var(--border); }
+.friendship-action-item:active { background: rgba(var(--dusky-rgb), 0.1); }
+
+.friendship-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 390;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(var(--text-rgb), 0.27);
+}
+.friendship-modal-overlay.hidden { display: none; }
+.friendship-modal-card {
+  position: relative;
+  width: min(100%, 390px);
+  padding: 24px;
+  border: 1.5px solid var(--bubble-border);
+  border-radius: 18px;
+  background: var(--cream);
+  box-shadow: 0 16px 42px rgba(var(--dusky-rgb), 0.26);
+  color: var(--text);
+  animation: softPickerIn 0.2s ease-out;
+}
+.friendship-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+.friendship-modal-close .material-symbols-outlined { font-size: 20px; }
+.friendship-modal-kicker {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.friendship-modal-card h2 {
+  margin: 0 36px 12px 0;
+  font-size: 20px;
+  letter-spacing: 0;
+}
+.friendship-modal-copy,
+.friendship-request-text {
+  margin: 0 0 16px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.friendship-reason {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--dusky);
+  background: rgba(var(--ai-rgb), 0.38);
+}
+.friendship-reason.hidden { display: none; }
+.friendship-reason span { color: var(--muted); font-size: 11px; }
+.friendship-reason p { margin: 5px 0 0; font-size: 14px; line-height: 1.55; }
+#friendVerifyText {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  box-sizing: border-box;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+#friendVerifyText:focus { border-color: var(--dusky); }
+.friendship-primary-btn {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 18px;
+  background: var(--chrome);
+  color: var(--on-dusky);
+  font: inherit;
+  font-weight: 600;
+}
+.friendship-primary-btn:disabled { opacity: 0.5; }
+.friendship-modal-card > .friendship-primary-btn { width: 100%; }
+.friendship-request-card { text-align: center; }
+.friendship-request-card > img {
+  width: 64px;
+  height: 64px;
+  margin: -56px auto 12px;
+  display: block;
+  border: 3px solid var(--cream);
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 5px 16px rgba(var(--dusky-rgb), 0.22);
+}
+.friendship-request-card h2 { margin-right: 0; }
+.friendship-request-text { text-align: left; }
+.friendship-request-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.friendship-request-actions > button {
+  min-height: 44px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: var(--cream);
+  color: var(--text);
+  font: inherit;
+}
+.friendship-request-actions > .friendship-primary-btn {
+  border-color: var(--chrome);
+  background: var(--chrome);
+  color: var(--on-dusky);
+}
+.friendship-deleted-overlay { background: rgba(var(--text-rgb), 0.42); }
+.friendship-deleted-card { border-width: 2px; text-align: center; }
+.friendship-deleted-card h2 { margin: 8px 0 14px; }
+.friendship-deleted-icon { color: var(--dusky); font-size: 42px; }
+.friendship-deleted-card .friendship-request-text { text-align: center; color: var(--muted); }
+
 .image-picker-card {
   width: min(100%, 360px);
   margin-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 74px);
@@ -2726,10 +2914,7 @@ header {
 }
 .scheduler-feature-link {
   width: 100%;
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
+  display: block;
   padding: 14px 20px;
   border: 2px solid var(--dusky);
   border-radius: 999px;
@@ -2739,13 +2924,6 @@ header {
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
-}
-.scheduler-feature-link > .material-symbols-outlined {
-  font-size: 20px;
-}
-.scheduler-feature-link strong {
-  color: var(--dusky);
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

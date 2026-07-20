@@ -64,6 +64,8 @@ class AppControlsTests(unittest.TestCase):
         conn.execute("DELETE FROM voice_usage")
         conn.execute("DELETE FROM settings WHERE key LIKE 'provider_%'")
         conn.execute("DELETE FROM settings WHERE key IN ('summary_provider','summary_model')")
+        conn.execute("DELETE FROM settings WHERE key LIKE 'friendship_%'")
+        conn.execute("DELETE FROM messages WHERE session_id LIKE 'friendship-test%'")
         conn.commit()
         conn.close()
 
@@ -149,6 +151,8 @@ class AppControlsTests(unittest.TestCase):
         voice_start = script.index('voiceLink.className = "scheduler-feature-link"')
         voice_end = script.index("voiceLink.onclick = openVoicePanel", voice_start)
         self.assertNotIn("chevron_right", script[voice_start:voice_end])
+        self.assertNotIn("graphic_eq", script[voice_start:voice_end])
+        self.assertIn('voiceLink.textContent = "说说喵°语音收发"', script)
         self.assertIn("panel.appendChild(voiceLink)", script)
         self.assertLess(
             script.index('makeAccordion("眠眠喵°睡眠节律"'),
@@ -2341,6 +2345,155 @@ class AppControlsTests(unittest.TestCase):
 
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["cache_control"]["ttl"], "1h")
+
+    def test_friendship_ui_uses_long_press_and_theme_aware_dialogs(self):
+        static_dir = Path(app_module.__file__).with_name("static")
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+        markup = (static_dir / "index.html").read_text(encoding="utf-8")
+        styles = (static_dir / "styles.css").read_text(encoding="utf-8")
+
+        for element_id in (
+            "friendshipLockBar", "friendshipActionSheet", "friendVerifyModal",
+            "friendRequestModal", "friendDeletedModal",
+        ):
+            self.assertIn(f'id="{element_id}"', markup)
+        self.assertIn('avatarWrap.addEventListener("pointerdown"', script)
+        self.assertIn("openFriendshipActionSheet(cid)", script)
+        self.assertIn("setTimeout(() => {", script)
+        self.assertIn("}, 600);", script)
+        self.assertIn("长按单聊列表头像", script)
+        self.assertIn("#inputbar.hidden { display: none; }", styles)
+        self.assertIn("background: var(--cream);", styles)
+        self.assertIn("background: var(--chrome);", styles)
+
+    def test_user_delete_blocks_chat_before_model_and_persists_cooldown(self):
+        character_id = "char1"
+        response = self.client.post(
+            "/api/friendship/delete", json={"character_id": character_id}
+        )
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["state"], "user_deleted")
+        self.assertGreaterEqual(
+            payload["request_after"] - payload["deleted_at"],
+            app_module.FRIEND_REQUEST_COOLDOWN_SECONDS[0],
+        )
+        self.assertLessEqual(
+            payload["request_after"] - payload["deleted_at"],
+            app_module.FRIEND_REQUEST_COOLDOWN_SECONDS[1],
+        )
+
+        with patch.object(app_module, "ask_character") as ask:
+            blocked = self.client.post("/api/chat", json={
+                "character_id": character_id,
+                "session_id": "friendship-test-chat",
+                "message": "还能收到吗",
+            })
+        self.assertTrue(blocked.get_json()["friendship_blocked"])
+        self.assertEqual(blocked.get_json()["friendship_state"], "user_deleted")
+        ask.assert_not_called()
+        conn = app_module.sqlite3.connect(app_module.DB_PATH)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id='friendship-test-chat'"
+        ).fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 0)
+
+    def test_character_delete_tool_sets_state_and_frontend_payload(self):
+        character_id = "char2"
+        app_module._set_friendship(character_id, "normal")
+        with patch.object(app_module, "maybe_compress"), patch.object(
+            app_module, "_maybe_create_voice_message", return_value=None
+        ):
+            result = app_module._finalize_character_reply(
+                app_module.CHARACTERS[character_id],
+                "friendship-test-delete",
+                "我需要冷静。",
+                None,
+                None,
+                ["delete_friend:先暂停这段关系"],
+            )
+        self.assertEqual(result["friend_deleted"]["reason"], "先暂停这段关系")
+        self.assertEqual(app_module._get_friendship(character_id)["state"], "char_deleted")
+        self.assertIn("delete_friend", result["tools_called"])
+
+    def test_friend_request_apply_only_exposes_approval_tool(self):
+        character_id = "char3"
+        app_module._set_friendship(
+            character_id, "char_deleted", reason="需要冷静", deleted_at=1
+        )
+        app_module.save_message(
+            "default", character_id, "model", "积压消息",
+            queued_during_deleted=1,
+        )
+        with patch.object(
+            app_module,
+            "ask_character",
+            return_value=("回来吧。", None, None, ["approve_friend_request"], None),
+        ) as ask, patch.object(app_module, "maybe_compress"), patch.object(
+            app_module, "_maybe_create_voice_message", return_value=None
+        ):
+            response = self.client.post("/api/friendship/apply", json={
+                "character_id": character_id,
+                "text": "可以重新认识吗",
+            })
+        self.assertTrue(response.get_json()["approved"])
+        self.assertEqual(app_module._get_friendship(character_id)["state"], "normal")
+        self.assertEqual(
+            ask.call_args.kwargs["allowed_tool_names"],
+            {"approve_friend_request"},
+        )
+        conn = app_module.sqlite3.connect(app_module.DB_PATH)
+        queued = conn.execute(
+            "SELECT queued_during_deleted FROM messages "
+            "WHERE character_id=? AND session_id='default' AND content='积压消息'",
+            (character_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "DELETE FROM messages WHERE character_id=? AND session_id='default' "
+            "AND content IN ('积压消息','回来吧。')",
+            (character_id,),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(queued, 0)
+
+    def test_deleted_queue_is_hidden_until_released(self):
+        character_id = "char4"
+        message_id = app_module.save_message(
+            "friendship-test-queue", character_id, "model", "暂存",
+            queued_during_deleted=1,
+        )
+        before = self.client.get(
+            f"/api/messages?character_id={character_id}&session_id=friendship-test-queue"
+        ).get_json()["messages"]
+        self.assertFalse(any(item["id"] == message_id for item in before))
+        self.assertEqual(
+            app_module._release_queued_deleted_msgs(
+                character_id, "friendship-test-queue"
+            ),
+            1,
+        )
+        after = self.client.get(
+            f"/api/messages?character_id={character_id}&session_id=friendship-test-queue"
+        ).get_json()["messages"]
+        self.assertTrue(any(item["id"] == message_id for item in after))
+
+    def test_friend_request_decision_uses_attachment_and_elapsed_time(self):
+        now_ts = 100_000.0
+        friendship = {
+            "state": "user_deleted",
+            "reason": "User 主动删除",
+            "deleted_at": now_ts - 19 * 3600,
+        }
+        decision = app_module._friend_request_decision(
+            friendship,
+            {"drives": {"attachment": 0.8, "stress": 0.2, "fatigue": 0.1}},
+            now_ts,
+            random_value=0.99,
+        )
+        self.assertTrue(decision["apply"])
+        self.assertTrue(decision["forced"])
 
     def test_memory_api_does_not_cross_character_owners(self):
         memory_id, _ = app_module.MEMORY_SERVICE.save(
