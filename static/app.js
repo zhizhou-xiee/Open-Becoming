@@ -7983,7 +7983,7 @@
     if (activeReadingBook && index < activeReadingBook.chapters.length - 1) loadReadingChapter(index + 1);
   });
 
-  function captureReadingSelection() {
+  function captureReadingSelection({ suppressNativeCallout = false } = {}) {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return;
     const range = selection.getRangeAt(0);
@@ -8047,12 +8047,25 @@
       scroll_top: document.getElementById("readingContent").scrollTop,
     };
     document.getElementById("readingSelectionBar").classList.remove("hidden");
+    // iOS may leave its Copy/Look Up/Translate menu above our own reading toolbar.
+    // The offsets are safely stored above, so clearing only the native Range keeps
+    // our highlight/note/ask actions intact while dismissing that system menu.
+    if (suppressNativeCallout) selection.removeAllRanges();
   }
 
-  document.getElementById("readingContent").addEventListener("pointerup", () => {
-    setTimeout(captureReadingSelection, 20);
+  const readingContentElement = document.getElementById("readingContent");
+  let readingPointerType = "";
+  readingContentElement.addEventListener("pointerdown", event => {
+    readingPointerType = event.pointerType || "";
   });
-  document.getElementById("readingContent").addEventListener("keyup", captureReadingSelection);
+  readingContentElement.addEventListener("contextmenu", event => {
+    if (readingPointerType === "touch") event.preventDefault();
+  });
+  readingContentElement.addEventListener("pointerup", event => {
+    const suppressNativeCallout = event.pointerType === "touch";
+    setTimeout(() => captureReadingSelection({ suppressNativeCallout }), 20);
+  });
+  readingContentElement.addEventListener("keyup", () => captureReadingSelection());
 
   function clearReadingSelection() {
     window.getSelection()?.removeAllRanges();

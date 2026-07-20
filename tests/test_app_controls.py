@@ -129,6 +129,17 @@ class AppControlsTests(unittest.TestCase):
         )
         self.assertNotIn("SWIPE_BACK_EDGE_RATIO", script)
 
+    def test_reading_touch_selection_hides_native_ios_callout(self):
+        static_dir = Path(app_module.__file__).with_name("static")
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+        styles = (static_dir / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("#readingContent {", styles)
+        self.assertIn("-webkit-touch-callout: none;", styles)
+        self.assertIn('readingContentElement.addEventListener("contextmenu"', script)
+        self.assertIn('if (readingPointerType === "touch") event.preventDefault();', script)
+        self.assertIn("if (suppressNativeCallout) selection.removeAllRanges();", script)
+
     def test_memory_overview_keeps_backend_and_character_payload(self):
         script = (
             Path(app_module.__file__).with_name("static") / "app.js"

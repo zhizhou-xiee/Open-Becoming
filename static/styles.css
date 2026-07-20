@@ -4374,6 +4374,7 @@ img.music-local-artwork { display: block !important; object-fit: cover; }
   scroll-padding: 88px 0 110px;
   user-select: text;
   -webkit-user-select: text;
+  -webkit-touch-callout: none;
 }
 .reading-block {
   margin: 0 0 1.15em;
