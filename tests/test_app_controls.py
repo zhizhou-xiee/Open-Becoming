@@ -737,6 +737,21 @@ class AppControlsTests(unittest.TestCase):
         self.assertEqual(payload["voice"]["credential_storage"], "server_only")
         self.assertNotIn("secret", response.get_data(as_text=True).lower())
 
+    def test_deployment_docs_include_optional_gemini_memory_key(self):
+        root = Path(app_module.__file__).parent
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        deployment = (root / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+        env_example = (root / ".env.example").read_text(encoding="utf-8")
+
+        for text in (readme, deployment, env_example):
+            self.assertIn("OMBRE_EMBEDDING_API_KEY", text)
+            self.assertIn("gemini-embedding-2", text)
+        self.assertIn("GEMINI_API_KEY", deployment)
+        self.assertIn("embeddings.db", deployment)
+        self.assertIn("RAILWAY_RUN_UID=0", deployment)
+        self.assertIn("Healthcheck Path", deployment)
+        self.assertIn("/health", deployment)
+
     def test_memory_overview_reports_backend_capabilities(self):
         response = self.client.get("/api/memory")
         self.assertEqual(response.status_code, 200)

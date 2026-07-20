@@ -41,7 +41,7 @@ python app.py
 
 打开 `http://127.0.0.1:5000`，使用 `APP_PASSWORD` 登录。
 
-最少需要配置：
+按仓库默认角色配置，最少需要：
 
 ```dotenv
 APP_PASSWORD=replace-with-a-strong-password
@@ -50,9 +50,15 @@ OPENROUTER_API_KEY=replace-with-your-openrouter-key
 ANTHROPIC_API_KEY=replace-with-your-anthropic-key
 # 可选：直连 DeepSeek 官方
 # DEEPSEEK_API_KEY=replace-with-your-deepseek-key
+# 可选：为长期记忆生成 Gemini 语义向量
+# OMBRE_EMBEDDING_API_KEY=replace-with-your-google-ai-studio-key
 ```
 
 默认配置中，`OPENROUTER_API_KEY` 供 `char1`–`char4`、`char6` 和摘要流程使用，`ANTHROPIC_API_KEY` 供 `char5` 使用。也可以配置 `DEEPSEEK_API_KEY`，再在「换毛期°人设编辑」里给每个角色和摘要流程切换 OpenRouter、Anthropic 官方、DeepSeek 官方或自定义 OpenAI-compatible 服务。密钥只从后端环境变量读取，前端只显示是否已配置。未设置 `APP_PASSWORD` 时，登录接口会保持关闭。
+
+如果打算全员只用 DeepSeek 官方或自定义线路，不必同时购买 OpenRouter 与 Anthropic；删掉未使用的占位 Key，并同步修改角色和摘要的供应商、模型即可。不要把 `replace-with-...` 原样留在真实环境变量里，它会被识别成一个已填写但无效的凭据。
+
+记忆的 `valence` / `arousal` 情感坐标会依次读取专用记忆 Key、`DEEPSEEK_API_KEY`，最后才回退到 `OPENROUTER_API_KEY`。Gemini 语义 embedding 是另一条可选链路，需要单独配置 `OMBRE_EMBEDDING_API_KEY`（也兼容 `GEMINI_API_KEY`）；模型和地址不填时默认使用 `gemini-embedding-2` 与 Google Generative Language API。完整变量与数据流见[部署教程的“可选记忆增强”](docs/DEPLOYMENT.md#可选记忆增强deepseek-情感打标与-gemini-embedding)。
 
 ## 配置角色
 

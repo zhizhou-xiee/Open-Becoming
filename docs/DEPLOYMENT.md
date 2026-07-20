@@ -128,6 +128,28 @@ CUSTOM_OPENAI_BASE_URL=https://provider.example/v1
 
 环境变量只决定“服务器有哪些线路可用”和首次启动默认值。前端保存的角色选择会进入 SQLite，重启后继续生效；如果希望完全回到环境变量默认值，需要删除数据库中的对应 `provider_charN`、`model_charN`、`summary_provider` 和 `summary_model` 设置，或使用一份新的数据库。自定义供应商若不会在响应里返回费用，可另外填写 `CUSTOM_OPENAI_INPUT_PRICE_PER_MILLION`、`CUSTOM_OPENAI_OUTPUT_PRICE_PER_MILLION` 和 `CUSTOM_OPENAI_CACHE_PRICE_PER_MILLION`，让饭饭喵按每百万 token 的美元单价估算。
 
+## 可选记忆增强：DeepSeek 情感打标与 Gemini embedding
+
+长期记忆有两条彼此独立的后台增强链路，不要把它们当成同一个模型：
+
+- 情感打标使用 OpenAI-compatible Chat Completions，为记忆生成 `valence`、`arousal`、标签、标题和重要度。默认依次读取 `OMBRE_DEHYDRATION_API_KEY`、`OMBRE_API_KEY`、`DEEPSEEK_API_KEY`；三者都没有时才复用 `OPENROUTER_API_KEY`。直连默认请求 `https://api.deepseek.com/v1` 的 `deepseek-chat`，OpenRouter 回退则使用 `deepseek/deepseek-chat`。
+- 语义 embedding 默认使用 `gemini-embedding-2` 生成 768 维向量，需要单独的 Google AI Studio Key。它不会复用 DeepSeek、Anthropic 或 OpenRouter Key。
+
+只想启用情感打标，并且已经配置 DeepSeek 官方线路时，不需要新增变量。想同时生成 Gemini 语义向量，请在 Railway Variables、其他 PaaS 的 Secrets，或服务器 `.env` 中加入：
+
+```dotenv
+# 这一项是启用 Gemini embedding 唯一需要新增的变量
+OMBRE_EMBEDDING_API_KEY=replace-with-your-google-ai-studio-key
+
+# 以下两项有默认值，通常不需要填写
+# OMBRE_EMBEDDING_MODEL=gemini-embedding-2
+# OMBRE_EMBEDDING_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+```
+
+代码也兼容 `GEMINI_API_KEY`，但推荐统一使用 `OMBRE_EMBEDDING_API_KEY`，便于看出它只服务于记忆向量。Key 仅由后端读取，不会返回浏览器。向量保存在 `BECOMING_MEMORY_DIR/embeddings.db`，所以使用 Volume 时要把整个 `BECOMING_MEMORY_DIR` 纳入持久化和备份。
+
+当前内置聊天召回仍以置顶、重要度、激活次数、时间衰减和情绪唤醒度为主；Gemini embedding 会生成并落盘，但尚未参与主聊天召回排序。未配置 embedding Key 不会影响记忆保存、情感打标或正常聊天。
+
 饭饭喵的内部总账统一按美元保存，便于跨供应商汇总；DeepSeek 官方的供应商卡片会换算成人民币显示。默认使用 `CNY_PER_USD=6.78`，部署者可按自己的账单汇率覆盖这个可选环境变量。它只影响展示，不改变历史用量或限额的美元口径。
 
 需要区分三类配置：
@@ -178,6 +200,8 @@ ANTHROPIC_API_KEY=replace-with-your-anthropic-key
 - `APP_PASSWORD`：你每次登录网页时使用的密码。
 - `FLASK_SECRET_KEY`：用于保护登录会话；第一次生成后应保持不变，否则现有登录会失效。
 - 默认模型 key：初始六个角色会同时用到 OpenRouter 与 Anthropic；只有准备在前端选择 DeepSeek 或自定义服务时，才需要再配置对应环境变量。少配一个不会泄密，但选择了该线路的角色或摘要功能无法回复。
+
+这里的“四项”是仓库默认角色配置所需，并不是要求所有部署者购买两家服务。如果只想用 DeepSeek 官方或自己的 OpenAI-compatible 服务，可以只配置那条线路，然后同时用 `PROVIDER_CHAR1`–`PROVIDER_CHAR6`、`MODEL_CHAR1`–`MODEL_CHAR6`、`SUMMARY_PROVIDER` 和 `SUMMARY_MODEL` 改掉首次启动默认值；也可以先登录，再到「换毛期°人设编辑」逐个切换。删除或注释未使用供应商的占位 Key；不要把 `replace-with-...` 原样部署，否则前端会把这个非空占位文字显示成“已配置”，实际测试仍会失败。`.env.example` 中带 `#` 的行都是可选项，不要不加区分地全部复制到 Railway。
 
 生成随机值（macOS / Linux / Windows 都可）：
 
@@ -363,6 +387,8 @@ APP_PASSWORD=replace-with-a-strong-password
 FLASK_SECRET_KEY=replace-with-a-long-random-value
 OPENROUTER_API_KEY=replace-with-your-openrouter-key
 ANTHROPIC_API_KEY=replace-with-your-anthropic-key
+# 可选：长期记忆 Gemini 语义向量
+# OMBRE_EMBEDDING_API_KEY=replace-with-your-google-ai-studio-key
 DB_PATH=/var/lib/open-becoming/becoming.db
 BECOMING_MEMORY_DIR=/var/lib/open-becoming/memory
 UPLOAD_ROOT=/var/lib/open-becoming/uploads
@@ -444,7 +470,7 @@ chat.example.com {
 | Runtime | Python 3.11+ |
 | Build command | `pip install -r requirements.txt` |
 | Start command | `gunicorn -c gunicorn.conf.py wsgi:app` |
-| Health check | `GET /` |
+| Health check | `GET /health` |
 | Port | 使用平台注入的 `PORT` |
 | Worker count | `WEB_CONCURRENCY=1` |
 | Threads | `GUNICORN_THREADS=8` |
@@ -457,6 +483,31 @@ chat.example.com {
 把 `.env.example` 中的变量逐项录入平台控制台，但不要上传含真实值的 `.env`。支持 Procfile 的平台可直接使用仓库中的 `Procfile`；不支持也只需填写相同的启动命令。
 
 部署成功但重启后聊天或本地音乐消失，几乎总是因为没有挂载持久化磁盘，或四个路径没有指向挂载点。只有代码文件持久化是不够的。
+
+### Railway：照着这些字段填
+
+仓库根目录已经带有可直接运行的 `Dockerfile`，Railway 会自动识别；不需要把 `compose.yaml` 当作启动文件，也不需要另写 Build Command 或 Start Command。
+
+下面的字段与权限处理按 Railway 当前的 [Dockerfile](https://docs.railway.com/builds/dockerfiles)、[Healthchecks](https://docs.railway.com/deployments/healthchecks) 和 [Volumes](https://docs.railway.com/volumes/reference) 文档编写。平台界面名称以后若有变化，以官方文档为准，但仓库需要的路径和值不变。
+
+1. 新建项目并选择 **Deploy from GitHub repo**，仓库选 `Open-Becoming`，部署分支选 `main`。不要填写仓库里不存在的分支名。
+2. **Root Directory** 留空，因为 `Dockerfile`、`app.py` 和 `requirements.txt` 就在仓库根目录。**Dockerfile Path** 也可以留空让平台自动识别；如果界面强制要求，填 `Dockerfile`，不要填本机绝对路径。
+3. 在 Variables 中填写 `APP_PASSWORD`、固定不变的 `FLASK_SECRET_KEY`、全局显示名，以及实际使用的模型 Key。仓库的 Docker 镜像已读取 Railway 注入的 `PORT`，不需要自己猜端口。
+4. 添加一个 Railway Volume，**Mount Path** 填 `/data`；再添加 `RAILWAY_RUN_UID=0`。镜像会先以 root 修正挂载目录权限，随后主动降权到普通用户运行应用。
+5. 在服务设置中把 **Healthcheck Path** 填 `/health`。注意是 `health`，不是 `heath`，也不要在这里填写域名。部署成功后，访问 `https://你的域名/health` 应得到含 `"status":"ok"` 的 JSON。
+6. 在 Networking 中生成公开域名，再用域名首页登录。首次成功后重启一次，确认聊天、记忆、上传和本地音乐仍存在。
+
+Railway 使用这个仓库时，`DB_PATH=/data/becoming.db`、`BECOMING_MEMORY_DIR=/data/memory`、`UPLOAD_ROOT=/data/uploads` 和 `MUSIC_LIBRARY_DIR=/data/music_library` 已由 Dockerfile 提供默认值，无需重复添加；如果主动覆盖，四项仍必须都位于 `/data`。连接 Volume 的服务重新部署时可能有短暂停机，这是平台避免两个部署同时写同一磁盘的保护，不代表健康检查失效。
+
+最常见的 Railway 失败对照：
+
+| 现象 | 先检查 |
+|---|---|
+| 只选 `main` 能构建 | 保持 `main`；确认其他分支确实存在且包含同一份根目录 `Dockerfile` |
+| 日志显示 Gunicorn 监听 `0.0.0.0:<PORT>`，网页却打不开 | 在 Networking 生成域名，并确认 Healthcheck Path 是 `/health` |
+| `Permission denied: /data/...` | Volume 是否挂到 `/data`，以及 `RAILWAY_RUN_UID=0` 是否已保存并重新部署 |
+| 重建项目后突然好了 | 对照新旧服务的 Source 分支、Root Directory、Volume、Variables 和健康检查；通常是旧服务残留配置不同 |
+| 改了变量但行为没变 | Variables 保存后重新部署；模型线路还要检查前端已保存的角色配置是否覆盖环境变量默认值 |
 
 ## NAS、家庭服务器与内网访问
 
@@ -575,6 +626,10 @@ docker compose logs --tail=100
 ### 登录后立刻掉线
 
 确保 `FLASK_SECRET_KEY` 是固定值，且没有在每次部署时重新生成。若经过反向代理，确认 HTTPS 和代理头配置正确。
+
+### 修改 `APP_PASSWORD` 后，旧设备还要手动退出吗？
+
+不需要。服务重启或重新部署并读取到新密码后，旧设备保存的登录会话会在下一次 API 请求时失效并重新显示登录页。修改 `FLASK_SECRET_KEY` 也会让全部旧会话失效，但它还会影响所有会话签名，因此日常换登录密码只改 `APP_PASSWORD` 即可。
 
 ### Windows 上 Gunicorn 启动失败
 
