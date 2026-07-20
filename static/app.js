@@ -16,11 +16,33 @@
     return _settings["group_name"] || "群聊（6）";
   }
 
+  function clearNativeSelection(settle = false) {
+    const clear = () => {
+      const selection = window.getSelection?.();
+      if (selection && !selection.isCollapsed) selection.removeAllRanges();
+    };
+    clear();
+    if (settle) {
+      requestAnimationFrame(clear);
+      setTimeout(clear, 80);
+    }
+  }
+
+  function bindNativeLongPressGuard(element, targetSelector = null) {
+    element?.addEventListener("contextmenu", event => {
+      if (targetSelector && !event.target.closest(targetSelector)) return;
+      event.preventDefault();
+      clearNativeSelection();
+    });
+  }
+
   function makeLongPressEditable(el, keyOrGetter, onSave) {
     let timer;
+    bindNativeLongPressGuard(el);
     el.addEventListener("touchstart", e => {
       timer = setTimeout(() => {
         e.preventDefault();
+        clearNativeSelection();
         const settingKey = typeof keyOrGetter === "function" ? keyOrGetter() : keyOrGetter;
         const original = el.textContent;
         const input = document.createElement("input");
@@ -1415,11 +1437,13 @@
           if (event.pointerType === "mouse" && event.button !== 0) return;
           relationPressStart = { x: event.clientX, y: event.clientY };
           relationPressTimer = setTimeout(() => {
+            clearNativeSelection(true);
             row._friendshipSuppressClick = true;
             setTimeout(() => { row._friendshipSuppressClick = false; }, 900);
             openFriendshipActionSheet(cid);
           }, 600);
         });
+        bindNativeLongPressGuard(avatarWrap);
         avatarWrap.addEventListener("pointermove", event => {
           if (!relationPressStart) return;
           if (
@@ -1832,6 +1856,7 @@
   let _longPressTimer = null;
 
   function openPawMenu() {
+    clearNativeSelection(true);
     _longPressFired = true;
     pawMenu.classList.remove("hidden");
   }
@@ -1853,6 +1878,7 @@
   sendBtn.addEventListener("touchmove", cancelLongPress);
   sendBtn.addEventListener("mousedown", startLongPress);
   sendBtn.addEventListener("mouseup", cancelLongPress);
+  bindNativeLongPressGuard(sendBtn);
 
   // 长按触发后拦掉紧随的 click，不执行 send()
   sendBtn.addEventListener("click", e => {
@@ -1873,6 +1899,7 @@
   });
   messagesEl.addEventListener("pointerup",   () => clearTimeout(bubblePressTimer));
   messagesEl.addEventListener("pointermove", () => clearTimeout(bubblePressTimer));
+  bindNativeLongPressGuard(messagesEl, ".bubble");
 
   function showConfirmDialog(msg, onConfirm) {
     const dialog = document.getElementById("confirmDialog");
@@ -1888,6 +1915,7 @@
   }
 
   function handleBubbleLongPress(bubble) {
+    clearNativeSelection(true);
     const allBubbles = [...messagesEl.querySelectorAll(".bubble")];
     const idx = allBubbles.indexOf(bubble);
 
@@ -2596,6 +2624,7 @@
   const groupInputEl    = document.getElementById("groupInput");
   const groupSendBtn    = document.getElementById("groupSend");
   const groupContinuePickerBtn = document.getElementById("charPickerContinue");
+  bindNativeLongPressGuard(groupMessagesEl, ".bubble");
 
   groupInputEl.addEventListener('focus', () => {
     setTimeout(() => {
@@ -3025,6 +3054,7 @@
   });
 
   function openGroupBubbleActions(bubble, block) {
+    clearNativeSelection(true);
     const messageId = Number(block.dataset.messageId);
     if (!messageId) return;
     const bubbleText = bubble.dataset.bubbleText || bubble.textContent || "";
@@ -3212,6 +3242,7 @@
     if (groupSendBtn.disabled) return;
     cancelGroupSendPress();
     _groupSendPressTimer = setTimeout(() => {
+      clearNativeSelection(true);
       _groupSendPressTimer = null;
       _groupSendSuppressClickUntil = Date.now() + 800;
       navigator.vibrate?.(18);
@@ -3221,7 +3252,7 @@
   ["pointerup", "pointermove", "pointercancel", "pointerleave"].forEach(type => {
     groupSendBtn.addEventListener(type, cancelGroupSendPress);
   });
-  groupSendBtn.addEventListener("contextmenu", event => event.preventDefault());
+  bindNativeLongPressGuard(groupSendBtn);
   groupSendBtn.addEventListener("click", event => {
     if (Date.now() < _groupSendSuppressClickUntil) {
       event.preventDefault();

@@ -365,6 +365,24 @@ header {
   user-select: none;
   -webkit-touch-callout: none;
 }
+
+/* Custom long-press actions own these surfaces. Keep iOS selection/callout UI
+   away from their app-native sheets; the reading pane is intentionally absent. */
+#char-name,
+#groupChatTitle,
+.char-list-avatar-wrap,
+#send,
+#send *,
+#groupSend,
+#groupSend *,
+#messages .bubble,
+#messages .bubble *,
+#groupMessages .bubble,
+#groupMessages .bubble * {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
 .user {
   align-self: flex-end;
   background: var(--user-bubble);

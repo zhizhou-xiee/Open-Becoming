@@ -140,6 +140,26 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn('if (readingPointerType === "touch") event.preventDefault();', script)
         self.assertIn("if (suppressNativeCallout) selection.removeAllRanges();", script)
 
+    def test_custom_long_press_surfaces_suppress_native_ios_selection(self):
+        static_dir = Path(app_module.__file__).with_name("static")
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+        styles = (static_dir / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function bindNativeLongPressGuard(element, targetSelector = null)", script)
+        self.assertIn("requestAnimationFrame(clear);", script)
+        self.assertIn("setTimeout(clear, 80);", script)
+        self.assertIn('bindNativeLongPressGuard(messagesEl, ".bubble");', script)
+        self.assertIn('bindNativeLongPressGuard(groupMessagesEl, ".bubble");', script)
+        self.assertIn("bindNativeLongPressGuard(sendBtn);", script)
+        self.assertIn("bindNativeLongPressGuard(groupSendBtn);", script)
+        self.assertIn("bindNativeLongPressGuard(avatarWrap);", script)
+        self.assertIn("bindNativeLongPressGuard(el);", script)
+        self.assertIn("#groupMessages .bubble *", styles)
+        self.assertIn("-webkit-user-select: none !important;", styles)
+        self.assertNotIn("#readingContent .reading-block", styles.split(
+            "/* Custom long-press actions own these surfaces.", 1
+        )[1].split("}", 1)[0])
+
     def test_memory_overview_keeps_backend_and_character_payload(self):
         script = (
             Path(app_module.__file__).with_name("static") / "app.js"
