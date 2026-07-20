@@ -65,6 +65,8 @@ class AppControlsTests(unittest.TestCase):
         conn.execute("DELETE FROM settings WHERE key LIKE 'provider_%'")
         conn.execute("DELETE FROM settings WHERE key IN ('summary_provider','summary_model')")
         conn.execute("DELETE FROM settings WHERE key LIKE 'friendship_%'")
+        conn.execute("DELETE FROM settings WHERE key LIKE 'scene_%'")
+        conn.execute("DELETE FROM settings WHERE key='tool_enabled_set_scene'")
         conn.execute("DELETE FROM messages WHERE session_id LIKE 'friendship-test%'")
         conn.commit()
         conn.close()
@@ -159,6 +161,21 @@ class AppControlsTests(unittest.TestCase):
         self.assertNotIn("#readingContent .reading-block", styles.split(
             "/* Custom long-press actions own these surfaces.", 1
         )[1].split("}", 1)[0])
+
+    def test_group_history_pins_to_latest_after_layout_settles(self):
+        script = (
+            Path(app_module.__file__).with_name("static") / "app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("function scrollGroupToLatest({ settle = false } = {})", script)
+        self.assertIn("requestAnimationFrame(() => {", script)
+        self.assertIn("requestAnimationFrame(pin);", script)
+        self.assertIn("document.fonts?.ready", script)
+        self.assertGreaterEqual(
+            script.count("scrollGroupToLatest({ settle: true });"),
+            3,
+        )
+        self.assertIn("if (groupLatestPinActive) return;", script)
 
     def test_memory_overview_keeps_backend_and_character_payload(self):
         script = (
@@ -610,6 +627,50 @@ class AppControlsTests(unittest.TestCase):
         with patch.object(app_module, "APP_PASSWORD", ""):
             response = unauthenticated.post("/api/login", json={"password": ""})
         self.assertEqual(response.status_code, 503)
+
+    def test_password_change_invalidates_existing_login_session(self):
+        client = app_module.app.test_client()
+        with patch.object(app_module, "APP_PASSWORD", "old-password"):
+            login = client.post("/api/login", json={"password": "old-password"})
+            self.assertEqual(login.status_code, 200)
+            self.assertEqual(client.get("/api/characters").status_code, 200)
+            with client.session_transaction() as browser_session:
+                self.assertNotEqual(
+                    browser_session.get("auth_version"),
+                    "old-password",
+                )
+
+        with patch.object(app_module, "APP_PASSWORD", "new-password"):
+            expired = client.get("/api/characters")
+            self.assertEqual(expired.status_code, 401)
+            with client.session_transaction() as browser_session:
+                self.assertNotIn("authed", browser_session)
+                self.assertNotIn("auth_version", browser_session)
+
+            old_login = client.post("/api/login", json={"password": "old-password"})
+            self.assertEqual(old_login.status_code, 401)
+            new_login = client.post("/api/login", json={"password": "new-password"})
+            self.assertEqual(new_login.status_code, 200)
+            self.assertEqual(client.get("/api/characters").status_code, 200)
+
+    def test_legacy_login_session_is_invalidated_once(self):
+        client = app_module.app.test_client()
+        with client.session_transaction() as browser_session:
+            browser_session["authed"] = True
+
+        response = client.get("/api/characters")
+        self.assertEqual(response.status_code, 401)
+
+    def test_any_expired_api_request_reopens_login_overlay(self):
+        script = (
+            Path(app_module.__file__).with_name("static") / "app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("window.fetch = async (...args) =>", script)
+        self.assertIn("response.status === 401", script)
+        self.assertIn('url.pathname.startsWith("/api/")', script)
+        self.assertIn('url.pathname !== "/api/login"', script)
+        self.assertIn("showLoginOverlay();", script)
 
     def test_public_sleep_nudge_stays_closed_without_a_configured_password(self):
         unauthenticated = app_module.app.test_client()
@@ -2402,6 +2463,96 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn("#inputbar.hidden { display: none; }", styles)
         self.assertIn("background: var(--cream);", styles)
         self.assertIn("background: var(--chrome);", styles)
+
+    def test_scene_tool_persists_and_user_can_clear_it(self):
+        character_id = "char1"
+        tools = {
+            item["name"]: item
+            for item in self.client.get("/api/tools").get_json()["tools"]
+        }
+        self.assertIn("set_scene", tools)
+        state = app_module._new_tool_chain_state()
+        result = app_module._execute_chat_tool(
+            "set_scene",
+            {
+                "location": "公司",
+                "activity": "在收尾今天的工作",
+                "ambience": "窗外正在下雨",
+            },
+            character_id,
+            state,
+        )
+
+        self.assertIn("公司", result)
+        self.assertEqual(state["tools_called"], ["set_scene"])
+        self.assertEqual(
+            app_module._get_character_scene(character_id)["location"],
+            "公司",
+        )
+        self.assertIn("公司", app_module._build_scene_state_block(character_id))
+
+        desire = self.client.get(
+            f"/api/desire/state/{character_id}"
+        ).get_json()
+        self.assertTrue(desire["scene_enabled"])
+        self.assertEqual(desire["scene"]["location"], "公司")
+        cleared = self.client.post(f"/api/scene/{character_id}/clear")
+        self.assertEqual(cleared.status_code, 200)
+        self.assertEqual(cleared.get_json()["scene"]["location"], "")
+        self.assertGreater(
+            float(cleared.get_json()["scene"]["cleared_until"]),
+            app_module._utc_timestamp(),
+        )
+
+    def test_scene_toggle_is_the_master_switch(self):
+        app_module._set_character_scene("char1", "公司", "在开会", "窗外有风")
+        app_module._set_character_scene("char2", "公园", "在散步", "天快黑了")
+
+        toggled = self.client.post("/api/tools/set_scene/toggle")
+        self.assertEqual(toggled.status_code, 200)
+        self.assertFalse(toggled.get_json()["enabled"])
+        self.assertTrue(all(
+            app_module._get_character_scene(cid)["location"] == ""
+            for cid in app_module.CHARACTERS
+        ))
+
+        # Even a stale scene written by an older version is not exposed as current.
+        app_module._set_character_scene("char1", "旧地点", source="legacy")
+        payload = self.client.get("/api/desire/state/char1").get_json()
+        self.assertFalse(payload["scene_enabled"])
+        self.assertEqual(payload["scene"]["location"], "")
+        self.assertIn(
+            "不要把对话历史里的旧场景当作当前状态",
+            app_module._build_scene_state_block("char1"),
+        )
+
+        state = app_module._new_tool_chain_state()
+        result = app_module._execute_chat_tool(
+            "set_scene", {"location": "卧室"}, "char1", state,
+        )
+        self.assertIn("已经关闭", result)
+        self.assertEqual(state["tools_called"], [])
+        evolved = app_module._maybe_evolve_character_scene(
+            "char1",
+            app_module.initial_desire_state("char1", app_module._utc_timestamp()),
+        )
+        self.assertEqual(evolved["location"], "")
+
+    def test_scene_ui_and_avatar_gesture_help_follow_the_master_switch(self):
+        static_dir = Path(app_module.__file__).with_name("static")
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+        markup = (static_dir / "index.html").read_text(encoding="utf-8")
+        styles = (static_dir / "styles.css").read_text(encoding="utf-8")
+
+        for element_id in (
+            "desireSceneWrap", "desireSceneLocation", "desireSceneDetail",
+            "desireSceneClear",
+        ):
+            self.assertIn(f'id="{element_id}"', markup)
+        self.assertIn("renderDesireScene(data.scene, data.scene_enabled !== false)", script)
+        self.assertIn("点击聊天中的角色头像", script)
+        self.assertIn("查看祂此刻的欲望状态与当前位置", script)
+        self.assertIn(".desire-scene.hidden { display: none; }", styles)
 
     def test_user_delete_blocks_chat_before_model_and_persists_cooldown(self):
         character_id = "char1"

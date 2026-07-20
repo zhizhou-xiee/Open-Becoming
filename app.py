@@ -13,6 +13,7 @@ import os
 import base64
 import copy
 import hashlib
+import hmac
 import mimetypes
 import re
 import secrets
@@ -99,6 +100,21 @@ CORS_ALLOW_ORIGINS = {
     if origin.strip()
 }
 
+def _auth_session_version():
+    """Bind a signed browser session to the current APP_PASSWORD value."""
+    if not APP_PASSWORD:
+        return ""
+    secret_key = app.secret_key
+    if isinstance(secret_key, str):
+        secret_key = secret_key.encode("utf-8")
+    elif not isinstance(secret_key, bytes):
+        secret_key = str(secret_key).encode("utf-8")
+    return hmac.new(
+        secret_key,
+        APP_PASSWORD.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get("Origin", "")
@@ -129,8 +145,17 @@ def require_login():
         return  # 静态页面、图标等全部公开
     if request.path in ("/api/login", "/api/sleep/nudge"):
         return
-    if session.get("authed"):
+    expected_version = _auth_session_version()
+    session_version = session.get("auth_version")
+    if (
+        session.get("authed")
+        and expected_version
+        and isinstance(session_version, str)
+        and hmac.compare_digest(session_version, expected_version)
+    ):
         return
+    if session.get("authed") or session_version:
+        session.clear()
     return jsonify({"error": "unauthorized"}), 401
 
 @app.route("/api/login", methods=["POST"])
@@ -139,8 +164,10 @@ def api_login():
         return jsonify({"error": "APP_PASSWORD is not configured"}), 503
     body = request.json or {}
     if body.get("password") == APP_PASSWORD:
+        session.clear()
         session.permanent = True
         session["authed"] = True
+        session["auth_version"] = _auth_session_version()
         return jsonify({"ok": True})
     return jsonify({"ok": False}), 401
 
@@ -974,6 +1001,178 @@ def _friend_request_retry_delay(probability):
     else:
         bounds = (30 * 60, 90 * 60)
     return _random.uniform(*bounds)
+
+
+SCENE_CHOICES = {
+    "attachment": [
+        ("客厅", "倚在沙发边发呆", "屋里很安静"),
+        ("回家路上", "慢慢往熟悉的方向走", "路灯刚亮起来"),
+    ],
+    "curiosity": [
+        ("街边书店", "随手翻着一本书", "窗外有人来来往往"),
+        ("公园草地", "坐在树影下面看风", "草叶被风吹得轻轻响"),
+        ("咖啡馆", "守着一杯快凉的饮料", "邻桌压低声音聊天"),
+    ],
+    "reflection": [
+        ("书房", "在桌前整理思绪", "纸页摊了一小片"),
+        ("河边长椅", "看水面一点点暗下来", "风里有潮湿的凉意"),
+    ],
+    "duty": [
+        ("公司", "在处理还没收尾的事情", "桌边亮着一盏灯"),
+        ("书房", "低头核对手边的东西", "房间里只剩翻页声"),
+    ],
+    "social": [
+        ("客厅", "留意着家里的动静", "像是在等谁开口"),
+        ("咖啡馆", "坐在靠窗的位置", "周围有松散的人声"),
+    ],
+    "fatigue": [
+        ("卧室", "靠在床头放空", "灯光压得很低"),
+        ("沙发边", "把自己陷进柔软的靠垫里", "什么都不太想动"),
+    ],
+    "libido": [
+        ("卧室", "坐在床沿走神", "空气里留着一点暧昧的静"),
+        ("落地窗边", "看着玻璃里的倒影", "夜色贴得很近"),
+    ],
+    "stress": [
+        ("安静楼梯间", "暂时躲开外面的声音", "脚步声隔很久才响一次"),
+        ("公司天台", "靠着栏杆吹风", "城市的声音离得很远"),
+        ("河边", "沿着水边慢慢走", "风把脑子吹清醒了一点"),
+    ],
+}
+
+
+def _scene_text(value, limit=80):
+    return " ".join(str(value or "").strip().split())[:limit]
+
+
+def _get_character_scene(char_id):
+    raw = _read_setting(f"scene_{char_id}", "")
+    try:
+        scene = json.loads(raw) if raw else {}
+    except (TypeError, json.JSONDecodeError):
+        scene = {}
+    if not isinstance(scene, dict):
+        scene = {}
+    return {
+        "location": _scene_text(scene.get("location"), 40),
+        "activity": _scene_text(scene.get("activity"), 80),
+        "ambience": _scene_text(scene.get("ambience"), 80),
+        "updated_at": scene.get("updated_at"),
+        "next_change_after": scene.get("next_change_after"),
+        "cleared_until": scene.get("cleared_until"),
+        "source": scene.get("source") or "",
+    }
+
+
+def _set_character_scene(char_id, location="", activity="", ambience="", *,
+                         updated_at=None, next_change_after=None,
+                         cleared_until=None, source="character"):
+    now_ts = float(updated_at if updated_at is not None else _utc_timestamp())
+    scene = {
+        "location": _scene_text(location, 40),
+        "activity": _scene_text(activity, 80),
+        "ambience": _scene_text(ambience, 80),
+        "updated_at": now_ts,
+        "next_change_after": next_change_after,
+        "cleared_until": cleared_until,
+        "source": source,
+    }
+    _write_setting(f"scene_{char_id}", json.dumps(scene, ensure_ascii=False))
+    return _get_character_scene(char_id)
+
+
+def _clear_character_scene(char_id, now_ts=None):
+    now_ts = float(now_ts if now_ts is not None else _utc_timestamp())
+    return _set_character_scene(
+        char_id,
+        updated_at=now_ts,
+        next_change_after=now_ts + 4 * 3600,
+        cleared_until=now_ts + 4 * 3600,
+        source="user_clear",
+    )
+
+
+def _scene_feature_enabled():
+    return get_tool_enabled("set_scene")
+
+
+def _empty_character_scene(source="disabled"):
+    return {
+        "location": "",
+        "activity": "",
+        "ambience": "",
+        "updated_at": None,
+        "next_change_after": None,
+        "cleared_until": None,
+        "source": source,
+    }
+
+
+def _maybe_evolve_character_scene(character_id, desire_state, now_ts=None):
+    """Let time and the character's strongest current drive move the scene."""
+    if not _scene_feature_enabled():
+        return _empty_character_scene()
+    now_ts = float(now_ts if now_ts is not None else _utc_timestamp())
+    scene = _get_character_scene(character_id)
+    for key in ("cleared_until", "next_change_after"):
+        try:
+            if scene.get(key) is not None and now_ts < float(scene[key]):
+                return scene
+        except (TypeError, ValueError):
+            pass
+
+    local_now = _sleep_local_now(datetime.fromtimestamp(now_ts, timezone.utc))
+    sleep_state = _get_sleep_state(character_id)
+    if sleep_state.get("state") == "asleep":
+        choice = ("卧室", "已经睡下了", "房间里只留着很轻的呼吸声")
+    else:
+        try:
+            intent = pick_intent(desire_state or {})
+            drive_key = intent.get("drive_key") or "reflection"
+        except (KeyError, TypeError, ValueError):
+            drive_key = "reflection"
+        choices = SCENE_CHOICES.get(drive_key, SCENE_CHOICES["reflection"])
+        if local_now.hour >= 22 or local_now.hour < 7:
+            choices = [
+                ("卧室", "在夜里安静待着", "灯光和声音都放得很低"),
+                ("客厅", "独自坐了一会儿", "窗外已经很安静"),
+                ("书房", "还没有准备睡", "桌边留着一小圈灯光"),
+            ]
+        choice = _random.choice(choices)
+
+    return _set_character_scene(
+        character_id,
+        choice[0],
+        choice[1],
+        choice[2],
+        updated_at=now_ts,
+        next_change_after=now_ts + _random.uniform(3 * 3600, 7 * 3600),
+        source="desire",
+    )
+
+
+def _build_scene_state_block(char_id):
+    if not _scene_feature_enabled():
+        return (
+            "【当前生活场景】场景功能已关闭。不要延续或新建固定地点，"
+            "也不要把对话历史里的旧场景当作当前状态。"
+        )
+    scene = _get_character_scene(char_id)
+    if not scene["location"]:
+        return (
+            "【当前生活场景】暂时没有固定场景。不要为了填空生硬编造地点；"
+            "当你自然确定自己身处何处时，可以调用 set_scene 更新。"
+        )
+    details = [f"你现在在{scene['location']}"]
+    if scene["activity"]:
+        details.append(scene["activity"])
+    if scene["ambience"]:
+        details.append(scene["ambience"])
+    return (
+        "【当前生活场景】" + "；".join(details)
+        + f"。这个场景会持续存在，直到你自然换到别处或{USER_DISPLAY_NAME}将它清空。"
+        "请让言行与场景自然一致，但不要每轮主动复述地点。"
+    )
 
 
 def _build_sleep_state_block(char_id, just_woke=False):
@@ -2722,6 +2921,11 @@ def desire_state_payload(character_id, now_ts=None):
     now_ts = float(now_ts if now_ts is not None else _utc_timestamp())
     state = load_desire_state(character_id, now_ts)
     save_desire_state(character_id, state)
+    scene_enabled = _scene_feature_enabled()
+    scene = (
+        _maybe_evolve_character_scene(character_id, state, now_ts)
+        if scene_enabled else _empty_character_scene()
+    )
     thoughts = sorted(
         state.get("thoughts", []), key=lambda item: item.get("strength", 0), reverse=True
     )[:3]
@@ -2733,6 +2937,8 @@ def desire_state_payload(character_id, now_ts=None):
         "scores": {key: round(value, 4) for key, value in score_state(state).items()},
         "intent": pick_intent(state),
         "thoughts": thoughts,
+        "scene": scene,
+        "scene_enabled": scene_enabled,
         "enabled": _read_setting(
             "desire_enabled", "true" if DESIRE_DEFAULT_ENABLED else "false"
         ) != "false",
@@ -3344,6 +3550,32 @@ ANTHROPIC_TOOLS.extend([
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "set_scene",
+        "description": (
+            "更新你此刻真实所处的生活场景。只有当你自然地到了另一个地方，"
+            "或正在做的事明显改变时才调用；不要为了展示功能每轮调用。"
+            f"场景会持续影响之后的对话，直到你再次更新或{USER_DISPLAY_NAME}将它清空。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "当前位置，如公司、卧室、公园草地。",
+                },
+                "activity": {
+                    "type": "string",
+                    "description": "此刻正在做什么，一小句即可。",
+                },
+                "ambience": {
+                    "type": "string",
+                    "description": "可选的环境氛围或周围细节。",
+                },
+            },
+            "required": ["location"],
+        },
+    },
 ])
 
 OR_TOOLS.extend([
@@ -3356,7 +3588,7 @@ OR_TOOLS.extend([
         },
     }
     for tool in ANTHROPIC_TOOLS
-    if tool["name"] in {"delete_friend", "approve_friend_request"}
+    if tool["name"] in {"delete_friend", "approve_friend_request", "set_scene"}
 ])
 
 VOICE_ANTHROPIC_TOOL = {
@@ -3388,7 +3620,7 @@ VOICE_OR_TOOL = {
 }
 
 _LEAK_INVOKE_RE = re.compile(
-    r'<invoke\s+name="(?P<tool>save_memory|send_transfer|send_sticker|press_hug|send_voice|delete_friend|approve_friend_request)">(?P<body>.*?)</invoke>',
+    r'<invoke\s+name="(?P<tool>save_memory|send_transfer|send_sticker|press_hug|send_voice|delete_friend|approve_friend_request|set_scene)">(?P<body>.*?)</invoke>',
     re.DOTALL,
 )
 _LEAK_PARAM_RE = re.compile(
@@ -3630,6 +3862,27 @@ def _execute_chat_tool(name, args, character_id, state):
             return "已经通过了，无需重复。"
         tools_called.append("approve_friend_request")
         return f"已通过 {USER_DISPLAY_NAME} 的好友申请，你们重新成为好友。"
+
+    if name == "set_scene":
+        if not _scene_feature_enabled():
+            return "场景功能已经关闭，本次未更新。"
+        location = _scene_text(args.get("location"), 40)
+        if not character_id or character_id not in CHARACTERS or not location:
+            return "没有有效地点，本次未更新场景。"
+        if "set_scene" in tools_called:
+            return "本轮已经更新过场景，无需重复。"
+        now_ts = _utc_timestamp()
+        _set_character_scene(
+            character_id,
+            location,
+            _scene_text(args.get("activity"), 80),
+            _scene_text(args.get("ambience"), 80),
+            updated_at=now_ts,
+            next_change_after=now_ts + _random.uniform(3 * 3600, 7 * 3600),
+            source="character",
+        )
+        tools_called.append("set_scene")
+        return f"当前场景已更新为：{location}。"
 
     if name.startswith("mcp_"):
         signature = _tool_call_signature(name, args)
@@ -4485,7 +4738,8 @@ def ask_character(
     time_context = _session_time_context(character_id, session_id)
     # 全时段注入状态声明 + 历史隔离守卫（动态块，persona 静态块零改动）
     sleep_state_text = _build_sleep_state_block(character_id, just_woke=just_woke)
-    sleep_dynamic = f"{sleep_state_text}\n{SLEEP_GUARD_TEXT}"
+    scene_state_text = _build_scene_state_block(character_id)
+    sleep_dynamic = f"{sleep_state_text}\n{SLEEP_GUARD_TEXT}\n{scene_state_text}"
 
     if provider == "anthropic":
         if not _provider_configured(provider):
@@ -5722,6 +5976,9 @@ def toggle_tool(name):
     )
     conn.commit()
     conn.close()
+    if name == "set_scene" and new_val == "false":
+        for character_id in CHARACTERS:
+            _set_character_scene(character_id, source="feature_disabled")
     return jsonify({"ok": True, "enabled": new_val == "true"})
 
 
@@ -6685,6 +6942,15 @@ def get_desire_state(character_id):
     if character_id not in CHARACTERS:
         return jsonify({"error": "未知角色"}), 404
     return jsonify(desire_state_payload(character_id))
+
+
+@app.route("/api/scene/<character_id>/clear", methods=["POST"])
+def clear_character_scene(character_id):
+    if character_id not in CHARACTERS:
+        return jsonify({"error": "未知角色"}), 404
+    if not _scene_feature_enabled():
+        return jsonify({"ok": True, "scene": _empty_character_scene()})
+    return jsonify({"ok": True, "scene": _clear_character_scene(character_id)})
 
 
 @app.route("/api/summaries", methods=["GET"])
@@ -8701,6 +8967,7 @@ def do_desire_heartbeat():
             }
             for cid, state in states.items():
                 save_desire_state(cid, state)
+                _maybe_evolve_character_scene(cid, state, now_ts)
 
             # 好友申请独立于主动消息总开关：即使关掉自动发帖，角色也仍可在
             # 冷静期后按自身依恋状态决定是否申请回来。

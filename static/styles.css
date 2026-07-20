@@ -2584,6 +2584,54 @@ header {
   font-size: 13px;
   line-height: 1.55;
 }
+.desire-scene {
+  min-height: 66px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.desire-scene.hidden { display: none; }
+.desire-scene-copy {
+  min-width: 0;
+  flex: 1;
+}
+.desire-scene-copy > span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.desire-scene-copy strong {
+  display: block;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+}
+.desire-scene-copy p {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.desire-scene-clear {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.desire-scene-clear.hidden { display: none; }
+.desire-scene-clear .material-symbols-outlined { font-size: 19px; }
+.desire-scene-clear:active { background: rgba(var(--dusky-rgb), 0.08); }
 .desire-drive-list {
   display: flex;
   flex-direction: column;

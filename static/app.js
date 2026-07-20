@@ -132,6 +132,24 @@
     document.documentElement.classList.remove("chrome-shell");
   }
 
+  // Any API request can be the first one made after APP_PASSWORD changes.
+  // Reopen the login screen instead of leaving a restored iOS page looking usable.
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const response = await nativeFetch(...args);
+    const target = args[0];
+    const targetUrl = typeof target === "string" ? target : target?.url;
+    if (response.status === 401 && targetUrl) {
+      const url = new URL(targetUrl, window.location.href);
+      if (
+        url.origin === window.location.origin
+        && url.pathname.startsWith("/api/")
+        && url.pathname !== "/api/login"
+      ) showLoginOverlay();
+    }
+    return response;
+  };
+
   async function submitLogin() {
     const pw = document.getElementById("loginPassword").value.trim();
     if (!pw) return;
@@ -706,6 +724,22 @@
     sheet.setAttribute("aria-hidden", "true");
   }
 
+  function renderDesireScene(scene, enabled = true) {
+    const wrap = document.getElementById("desireSceneWrap");
+    const location = document.getElementById("desireSceneLocation");
+    const detail = document.getElementById("desireSceneDetail");
+    const clear = document.getElementById("desireSceneClear");
+    wrap.classList.toggle("hidden", !enabled);
+    if (!enabled) return;
+    const hasScene = Boolean(scene?.location);
+    location.textContent = hasScene ? scene.location : "还没落脚";
+    const details = [scene?.activity, scene?.ambience].filter(Boolean);
+    detail.textContent = hasScene
+      ? (details.join(" · ") || "祂只是安静待在这里。")
+      : "祂想好待在哪里时，这里会自己变化。";
+    clear.classList.toggle("hidden", !hasScene);
+  }
+
   async function openDesireSheet(characterId) {
     if (!(characterId in histories)) return;
     const sheet = document.getElementById("desireSheet");
@@ -715,6 +749,8 @@
     document.getElementById("desireIntent").textContent = "正在听心跳";
     document.getElementById("desireReason").textContent = "…";
     document.getElementById("desireThoughtWrap").classList.add("hidden");
+    sheet.dataset.characterId = characterId;
+    renderDesireScene(null, false);
     list.innerHTML = "";
     sheet.classList.remove("hidden");
     sheet.setAttribute("aria-hidden", "false");
@@ -728,6 +764,7 @@
       document.getElementById("desireAvatar").src = data.avatar || charAvatars[characterId] || "";
       document.getElementById("desireIntent").textContent = DESIRE_INTENT_LABELS[driveKey] || "安静待一会儿";
       document.getElementById("desireReason").textContent = data.intent?.reason || "";
+      renderDesireScene(data.scene, data.scene_enabled !== false);
       list.innerHTML = "";
       DESIRE_DRIVE_META.forEach(([key, label]) => {
         const value = Math.max(0, Math.min(1, Number(data.drives?.[key]) || 0));
@@ -752,6 +789,21 @@
   }
 
   document.getElementById("desireClose").addEventListener("click", closeDesireSheet);
+  document.getElementById("desireSceneClear").addEventListener("click", async event => {
+    event.stopPropagation();
+    const sheet = document.getElementById("desireSheet");
+    const characterId = sheet.dataset.characterId;
+    if (!characterId) return;
+    try {
+      const response = await fetch(`/api/scene/${characterId}/clear`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "清空失败");
+      renderDesireScene(data.scene);
+      showToast("当前位置已清空");
+    } catch (error) {
+      showToast(error.message || "暂时没能清空");
+    }
+  });
   document.getElementById("desireSheet").addEventListener("click", event => {
     if (event.target === event.currentTarget) closeDesireSheet();
   });
@@ -960,6 +1012,7 @@
         close_window: '🚪 封窗',
         delete_friend: '👤 删除好友',
         approve_friend_request: '🤝 通过好友申请',
+        set_scene: '📍 切换场景',
       };
       toolsCalled.forEach(t => {
         const isTrace = t && typeof t === 'object' && !Array.isArray(t);
@@ -2819,6 +2872,35 @@
   let groupHistoryLoaded = false;
   const groupHistory = [];
   let groupReplyTarget = null;
+  let groupLatestPinToken = 0;
+  let groupLatestPinActive = false;
+
+  function scrollGroupToLatest({ settle = false } = {}) {
+    const token = ++groupLatestPinToken;
+    groupLatestPinActive = true;
+    const pin = () => {
+      if (token !== groupLatestPinToken || !groupLatestPinActive) return;
+      const view = document.getElementById("groupView");
+      if (!view.classList.contains("active")) return;
+      groupMessagesEl.scrollTop = groupMessagesEl.scrollHeight;
+    };
+    requestAnimationFrame(() => {
+      pin();
+      requestAnimationFrame(pin);
+    });
+    if (document.fonts?.ready) document.fonts.ready.then(pin).catch(() => {});
+    if (settle) {
+      setTimeout(pin, 100);
+      setTimeout(() => {
+        pin();
+        if (token === groupLatestPinToken) groupLatestPinActive = false;
+      }, 320);
+    } else {
+      setTimeout(() => {
+        if (token === groupLatestPinToken) groupLatestPinActive = false;
+      }, 80);
+    }
+  }
 
   function setGroupReplyTarget(quote) {
     groupReplyTarget = quote || null;
@@ -2973,7 +3055,7 @@
     groupHistory.forEach(m => renderGroupMsg(
       m.character_id, m.character_name, m.role, m.content, m.time, m.toolsCalled, m.metrics, m.id, m.quote
     ));
-    groupMessagesEl.scrollTop = groupMessagesEl.scrollHeight;
+    scrollGroupToLatest({ settle: true });
   }
 
   let groupOldestId    = null;
@@ -2983,6 +3065,7 @@
   async function loadGroupHistory() {
     if (groupHistoryLoaded) {
       if (!groupMessagesEl.childElementCount) renderGroupFromCache();
+      scrollGroupToLatest({ settle: true });
       return;
     }
     groupHistoryLoaded = true;
@@ -2999,7 +3082,7 @@
       });
       groupOldestId = msgs.length ? msgs[0].id : null;
       groupHasMore  = !!data.has_more;
-      groupMessagesEl.scrollTop = groupMessagesEl.scrollHeight;
+      scrollGroupToLatest({ settle: true });
       cacheGroupHistorySnapshot();
     } catch (e) {
       console.warn("loadGroupHistory failed", e);
@@ -3039,6 +3122,7 @@
     }
   }
   groupMessagesEl.addEventListener("scroll", () => {
+    if (groupLatestPinActive) return;
     if (groupMessagesEl.scrollTop < 80) loadOlderGroupMessages();
   });
 
@@ -5484,6 +5568,7 @@
         </div>
         <div class="gesture-help-list">
           <div class="gesture-help-item"><span class="material-symbols-outlined">swipe_right</span><div><strong>从屏幕左边缘向右滑</strong><small>单聊里返回角色列表。</small></div></div>
+          <div class="gesture-help-item"><span class="material-symbols-outlined">location_on</span><div><strong>点击聊天中的角色头像</strong><small>查看祂此刻的欲望状态与当前位置。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">person_remove</span><div><strong>长按单聊列表头像</strong><small>删除好友、恢复好友，或处理对方发来的好友申请。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">touch_app</span><div><strong>长按单聊发送爪</strong><small>打开图片、表情包、转账和补记入口。</small></div></div>
           <div class="gesture-help-item"><span class="material-symbols-outlined">group</span><div><strong>长按群聊发送爪</strong><small>调整群聊里当前在线的角色。</small></div></div>
