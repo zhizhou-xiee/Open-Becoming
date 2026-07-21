@@ -229,9 +229,13 @@ py -c "import secrets; print(secrets.token_urlsafe(48))"
 ```dotenv
 NETEASE_MUSIC_U=replace-with-your-own-music-u-cookie
 NETEASE_BITRATE=320000
+# 可选：至少多少条房间消息才询问角色是否保存共听记忆
+MUSIC_MEMORY_MIN_MESSAGES=4
 ```
 
 不要把这个值发给他人、写进前端或提交到 Git。账号退出、Cookie 轮换或服务商策略变化后可能失效；更新 Secret 并重启应用即可。只播放自己有权访问的内容，并遵守音乐服务条款与所在地法律。
+
+一起听会按角色隔离带入少量近期私聊；离开或更换参与者时，达到上述条数门槛的房间记录会交给每位角色自己的模型判断是否写入长期记忆。这个变量只是触发判断的门槛，不代表每次都会保存。
 
 ### 可选：睡眠时区与外部催睡页面
 

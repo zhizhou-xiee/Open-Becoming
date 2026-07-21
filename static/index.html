@@ -21,8 +21,10 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Mrs+Saint+Delafield&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet">
 <link rel="apple-touch-icon" href="/static/icon.png">
 <link rel="stylesheet" href="/static/styles.css?v=__BUILD_VERSION__">
+<link rel="stylesheet" href="/static/imperial.css?v=__BUILD_VERSION__">
 </head>
 <body>
 
@@ -67,6 +69,7 @@
         <span class="material-symbols-outlined header-paw" style="font-size:14px;top:18px;left:96px;transform:rotate(-6deg)">pets</span>
         <span class="material-symbols-outlined header-paw" style="font-size:21px;bottom:12px;left:114px;transform:rotate(20deg)">pets</span>
         <span class="becoming-title">Becoming</span>
+        <span class="imperial-plaque-title" aria-hidden="true">建极殿</span>
       </div>
 
       <div id="charListContainer"></div>
@@ -322,13 +325,18 @@
             <div id="musicRoomMessages" aria-live="polite"></div>
           </div>
           <div id="musicProgressWrap">
+            <button id="musicPlaybackModeBtn" type="button" aria-label="顺序播放" title="顺序播放" data-mode="sequence"><span class="material-symbols-outlined music-control-symbol">format_list_numbered</span></button>
             <input id="musicProgress" type="range" min="0" max="1000" value="0" aria-label="播放进度">
             <div><span id="musicCurrentTime">0:00</span><span id="musicDuration">0:00</span></div>
           </div>
           <div id="musicControls">
-            <button id="musicPreviousBtn" type="button" aria-label="上一首"><span class="material-symbols-outlined">skip_previous</span></button>
-            <button id="musicPlayBtn" type="button" aria-label="播放"><span class="material-symbols-outlined">play_arrow</span></button>
-            <button id="musicNextBtn" type="button" aria-label="下一首"><span class="material-symbols-outlined">skip_next</span></button>
+            <button id="musicPreviousBtn" type="button" aria-label="上一首"><span class="material-symbols-outlined music-control-symbol">skip_previous</span></button>
+            <button id="musicPlayBtn" type="button" aria-label="播放"><span class="material-symbols-outlined music-control-symbol">play_arrow</span></button>
+            <button id="musicNextBtn" type="button" aria-label="下一首"><span class="material-symbols-outlined music-control-symbol">skip_next</span></button>
+          </div>
+          <div id="musicLyrics" class="hidden" aria-label="滚动歌词">
+            <p id="musicLyricCurrent"></p>
+            <p id="musicLyricNext"></p>
           </div>
         </section>
       </div>
@@ -473,7 +481,7 @@
 
   <!-- ══ 底部导航 ══ -->
   <nav id="bottomNav">
-    <button type="button" class="nav-item active" data-view="singleView">
+    <button type="button" class="nav-item active" data-view="singleView" data-imperial-label="召见">
       <span class="nav-cat" aria-hidden="true">
         <svg viewBox="0 0 240 140">
           <use class="nav-cat-outline" href="#peekCatOutline"/>
@@ -485,7 +493,7 @@
       <span class="material-symbols-outlined nav-icon">chat_bubble</span>
       <span>单聊</span>
     </button>
-    <button type="button" class="nav-item" data-view="groupView">
+    <button type="button" class="nav-item" data-view="groupView" data-imperial-label="议政">
       <span class="nav-cat" aria-hidden="true">
         <svg viewBox="0 0 240 140">
           <use class="nav-cat-outline" href="#peekCatOutline"/>
@@ -496,7 +504,7 @@
       <span class="material-symbols-outlined nav-icon">group</span>
       <span>群聊</span>
     </button>
-    <button type="button" class="nav-item" data-view="memoryView">
+    <button type="button" class="nav-item" data-view="memoryView" data-imperial-label="奏折">
       <span class="nav-cat" aria-hidden="true">
         <svg viewBox="0 0 240 140">
           <use class="nav-cat-outline" href="#peekCatOutline"/>
@@ -506,7 +514,7 @@
       <span class="material-symbols-outlined nav-icon">psychology</span>
       <span>记忆</span>
     </button>
-    <button type="button" class="nav-item" data-view="momentsView">
+    <button type="button" class="nav-item" data-view="momentsView" data-imperial-label="后苑">
       <span class="nav-cat" aria-hidden="true">
         <svg viewBox="0 0 240 140">
           <use class="nav-cat-outline" href="#peekCatOutline"/>
@@ -516,7 +524,7 @@
       <span class="material-symbols-outlined nav-icon">photo_library</span>
       <span>猫窝</span>
     </button>
-    <button type="button" class="nav-item" data-view="moreView">
+    <button type="button" class="nav-item" data-view="moreView" data-imperial-label="内务">
       <span class="nav-cat" aria-hidden="true">
         <svg viewBox="0 0 240 140">
           <use class="nav-cat-outline" href="#peekCatOutline"/>

@@ -26,6 +26,8 @@ DRIVE_KEYS = (
 )
 
 ACTIONABLE_DRIVES = ("attachment", "duty", "libido", "stress")
+AUTONOMOUS_DRIVES = ("curiosity", "reflection", "social")
+TRIGGERABLE_DRIVES = ACTIONABLE_DRIVES + AUTONOMOUS_DRIVES
 
 BASELINES = {
     "attachment": 0.30,
@@ -42,12 +44,25 @@ BASELINES = {
 # conservative household target; the global gate remains the hard limit.
 GROWTH_PER_HOUR = {
     "attachment": 0.0040,
-    "curiosity": 0.0050,
-    "reflection": 0.0035,
     "duty": 0.0008,
     "social": 0.0030,
     "libido": 0.0015,
 }
+
+INWARD_IDLE_TARGET_EXCESS = {
+    "curiosity": 0.36,
+    "reflection": 0.06,
+}
+
+INWARD_HALF_LIFE_HOURS = {
+    "curiosity": 48.0,
+    "reflection": 6.0,
+}
+
+# Sleep restores fatigue much faster than ordinary idle time. With a two-hour
+# half-life, a short nap helps a little while a full night returns close to the
+# character's personal fatigue floor.
+SLEEP_FATIGUE_HALF_LIFE_HOURS = 2.0
 
 PROFILE_MULTIPLIERS = {
     "char1": {"attachment": 0.92, "duty": 1.25, "reflection": 1.05},
@@ -95,16 +110,37 @@ INTENTS = {
 
 ACTION_THRESHOLDS = {
     "attachment": 0.72,
+    "curiosity": 0.70,
+    "reflection": 0.62,
     "duty": 0.80,
+    "social": 0.72,
     "libido": 0.78,
     "stress": 0.80,
 }
 
 SATISFY_FACTORS = {
     "attachment": 0.44,
+    "curiosity": 0.52,
+    "reflection": 0.50,
     "duty": 0.48,
+    "social": 0.55,
     "libido": 0.42,
     "stress": 0.50,
+}
+
+ACTION_REFRACTORY_SECONDS = {
+    "attachment": 18 * 3600,
+    "curiosity": 6 * 3600,
+    "reflection": 12 * 3600,
+    "duty": 18 * 3600,
+    "social": 6 * 3600,
+    "libido": 18 * 3600,
+    "stress": 18 * 3600,
+}
+
+PASSIVE_SATISFY_FACTORS = {
+    "curiosity": 0.58,
+    "reflection": 0.55,
 }
 
 
@@ -122,6 +158,12 @@ def _profile_multiplier(character_id: str, key: str) -> float:
     return PROFILE_MULTIPLIERS.get(character_id, {}).get(key, 1.0)
 
 
+def _settle_toward_baseline(state: dict, drive_key: str, factor: float) -> None:
+    floor = state["baselines"][drive_key]
+    excess = max(0.0, state["drives"][drive_key] - floor)
+    state["drives"][drive_key] = _clamp(floor + excess * factor)
+
+
 def initial_state(character_id: str, now_ts: float) -> dict:
     drives = {}
     baselines = dict(BASELINES)
@@ -135,7 +177,7 @@ def initial_state(character_id: str, now_ts: float) -> dict:
         "drives": drives,
         "baselines": baselines,
         "thoughts": [],
-        "refractory_until": {key: 0.0 for key in ACTIONABLE_DRIVES},
+        "refractory_until": {key: 0.0 for key in TRIGGERABLE_DRIVES},
         "last_user_at": 0.0,
         "last_action_at": 0.0,
         "actions_taken": 0,
@@ -161,7 +203,7 @@ def normalize_state(state: dict, character_id: str, now_ts: float) -> dict:
     }
     result["refractory_until"] = {
         key: float((state.get("refractory_until") or {}).get(key, 0.0) or 0.0)
-        for key in ACTIONABLE_DRIVES
+        for key in TRIGGERABLE_DRIVES
     }
     thoughts = state.get("thoughts") if isinstance(state.get("thoughts"), list) else []
     result["thoughts"] = [copy.deepcopy(t) for t in thoughts if isinstance(t, dict)][:8]
@@ -180,6 +222,16 @@ def advance_state(state: dict, now_ts: float) -> dict:
         multiplier = _profile_multiplier(character_id, key)
         gain = rate * multiplier * elapsed_hours * math.sqrt(max(0.0, 1.0 - drives[key]))
         drives[key] = _clamp(drives[key] + gain)
+
+    # Inward drives settle around personal idle levels. They can still spike after
+    # events, but neither silently climbs to one forever.
+    for key, target_excess in INWARD_IDLE_TARGET_EXCESS.items():
+        target = _clamp(
+            result["baselines"][key]
+            + target_excess * _profile_multiplier(character_id, key)
+        )
+        factor = 0.5 ** (elapsed_hours / INWARD_HALF_LIFE_HOURS[key])
+        drives[key] = _clamp(target + (drives[key] - target) * factor)
 
     # Fatigue and stress recover toward their personal floor while idle.
     drives["fatigue"] = max(result["baselines"]["fatigue"], drives["fatigue"] - 0.018 * elapsed_hours)
@@ -211,6 +263,24 @@ def advance_state(state: dict, now_ts: float) -> dict:
     result["thoughts"] = sorted(refreshed, key=lambda t: t.get("strength", 0), reverse=True)[:8]
     result["drives"] = {key: _clamp(value) for key, value in drives.items()}
     result["updated_at"] = float(now_ts)
+    return result
+
+
+def recover_from_sleep(state: dict, now_ts: float, slept_hours: float) -> dict:
+    """Recover fatigue toward its baseline according to actual sleep time."""
+    result = advance_state(state, now_ts)
+    hours = _clamp(float(slept_hours), 0.0, 16.0)
+    if hours <= 0:
+        return result
+
+    baseline = result["baselines"]["fatigue"]
+    fatigue = result["drives"]["fatigue"]
+    factor = 0.5 ** (hours / SLEEP_FATIGUE_HALF_LIFE_HOURS)
+    result["drives"]["fatigue"] = _clamp(
+        baseline + (fatigue - baseline) * factor,
+        baseline,
+        1.0,
+    )
     return result
 
 
@@ -261,10 +331,23 @@ def apply_user_interaction(state: dict, now_ts: float, thought_text: str = "") -
     )
     # Contact strengthens the bond but satisfies the immediate need to reach out.
     result["drives"]["attachment"] *= 0.70
+    # New contact answers some accumulated curiosity while still leaving room for
+    # the conversation itself to spark a smaller fresh question.
+    _settle_toward_baseline(result, "curiosity", 0.72)
+    _settle_toward_baseline(result, "social", 0.90)
     result["drives"]["libido"] *= 0.86
     result["drives"]["stress"] *= 0.82
     result["drives"]["fatigue"] = _clamp(result["drives"]["fatigue"] + 0.018)
     result["last_user_at"] = float(now_ts)
+    return result
+
+
+def satisfy_passive_drive(state: dict, drive_key: str, now_ts: float) -> dict:
+    """Resolve an inward drive through a lived scene without creating a DM."""
+    result = advance_state(state, now_ts)
+    factor = PASSIVE_SATISFY_FACTORS.get(drive_key)
+    if factor is not None:
+        _settle_toward_baseline(result, drive_key, factor)
     return result
 
 
@@ -295,12 +378,18 @@ def pick_intent(state: dict) -> dict:
     }
 
 
-def attention_candidate(state: dict, now_ts: float) -> dict | None:
+def attention_candidate(
+    state: dict,
+    now_ts: float,
+    allowed_drives: set[str] | None = None,
+) -> dict | None:
     if state["drives"]["fatigue"] >= 0.72:
         return None
     scores = score_state(state)
     eligible = []
-    for key in ACTIONABLE_DRIVES:
+    for key in TRIGGERABLE_DRIVES:
+        if allowed_drives is not None and key not in allowed_drives:
+            continue
         if state["refractory_until"].get(key, 0.0) > now_ts:
             continue
         if scores[key] >= ACTION_THRESHOLDS[key]:
@@ -311,7 +400,7 @@ def attention_candidate(state: dict, now_ts: float) -> dict | None:
     return {
         "character_id": state["character_id"],
         "drive_key": drive_key,
-        "want_action": "dm",
+        "want_action": INTENTS[drive_key]["want_action"],
         "reason": INTENTS[drive_key]["reason"],
         "score": round(scores[drive_key], 4),
         "last_action_at": float(state.get("last_action_at", 0.0) or 0.0),
@@ -362,8 +451,13 @@ def evaluate_household_gate(
 def satisfy_action(state: dict, drive_key: str, now_ts: float) -> dict:
     result = advance_state(state, now_ts)
     if drive_key in SATISFY_FACTORS:
-        result["drives"][drive_key] *= SATISFY_FACTORS[drive_key]
-        result["refractory_until"][drive_key] = float(now_ts) + 18 * 3600
+        if drive_key in ACTIONABLE_DRIVES:
+            result["drives"][drive_key] *= SATISFY_FACTORS[drive_key]
+        else:
+            _settle_toward_baseline(result, drive_key, SATISFY_FACTORS[drive_key])
+        result["refractory_until"][drive_key] = (
+            float(now_ts) + ACTION_REFRACTORY_SECONDS[drive_key]
+        )
     result["drives"]["fatigue"] = _clamp(result["drives"]["fatigue"] + 0.10)
     result["last_action_at"] = float(now_ts)
     result["actions_taken"] = int(result.get("actions_taken", 0)) + 1

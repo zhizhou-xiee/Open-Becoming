@@ -205,6 +205,10 @@
   const historyLoaded = new Set();
   let currentChar = "char1";
   let singleReplyTarget = null;
+  let singleLatestPinToken = 0;
+  let singleLatestPinActive = false;
+  let singleLatestMediaCleanup = null;
+  let singleHistoryRenderToken = 0;
   const HISTORY_PAGE_SIZE = 60;
   const historyState = {};
   function ensureHistoryState(charId) {
@@ -256,6 +260,38 @@
     char5: "/static/char5.svg",
     char6: "/static/char6.svg",
   };
+  const IMPERIAL_CHARACTER_ART = {
+    char1: "/static/imperial/portrait-char1.webp",
+    char2: "/static/imperial/portrait-char2.webp",
+    char3: "/static/imperial/portrait-char3.webp",
+    char4: "/static/imperial/portrait-char4.webp",
+    char5: "/static/imperial/portrait-char5.webp",
+    char6: "/static/imperial/portrait-char6.webp",
+  };
+  const IMPERIAL_MODEL_MARKS = {
+    openai: "/static/imperial/logo-openai.svg",
+    claude: "/static/imperial/logo-claude.svg",
+    gemini: "/static/imperial/logo-gemini.svg",
+    grok: "/static/imperial/logo-grok.svg",
+    openrouter: "/static/imperial/logo-openrouter.svg",
+  };
+
+  function imperialModelMark(model) {
+    const normalized = String(model || "").toLowerCase();
+    if (normalized.includes("gemini") || normalized.includes("google/")) {
+      return { key: "gemini", label: "Gemini" };
+    }
+    if (normalized.includes("grok") || normalized.includes("x-ai/")) {
+      return { key: "grok", label: "Grok" };
+    }
+    if (normalized.includes("gpt") || normalized.includes("openai/")) {
+      return { key: "openai", label: "OpenAI" };
+    }
+    if (normalized.includes("claude") || normalized.includes("anthropic/")) {
+      return { key: "claude", label: "Claude" };
+    }
+    return { key: "openrouter", label: "OpenRouter" };
+  }
   let userAvatar = "/static/user.svg";
   let appearanceState = null;
 
@@ -585,6 +621,13 @@
       root.style.setProperty("--list-background-image", `url("${safeListUrl}")`);
     }
     root.dataset.theme = theme.id;
+    const backToList = document.getElementById("backToList");
+    if (backToList) {
+      backToList.setAttribute(
+        "aria-label",
+        theme.id === "imperial" ? "退朝" : "返回角色列表"
+      );
+    }
   }
 
   function replaceVisibleImageSources(oldUrl, newUrl) {
@@ -888,6 +931,12 @@
     }
     const bubble = document.createElement("div");
     bubble.className = "bubble image-bubble " + (who === "user" ? "user" : "ai");
+    const imageWidth = Number(data.width);
+    const imageHeight = Number(data.height);
+    if (imageWidth > 0 && imageHeight > 0) {
+      bubble.style.aspectRatio = `${imageWidth} / ${imageHeight}`;
+      bubble.classList.add("has-image-aspect");
+    }
     if (messageId) bubble.dataset.messageId = messageId;
     const img = document.createElement("img");
     img.src = data.url || "";
@@ -1286,12 +1335,84 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
+  function scrollSingleToLatest({ settle = false, charId = currentChar } = {}) {
+    if (singleLatestMediaCleanup) {
+      singleLatestMediaCleanup();
+      singleLatestMediaCleanup = null;
+    }
+    const token = ++singleLatestPinToken;
+    singleLatestPinActive = true;
+    let finishTimer = null;
+    let maxTimer = null;
+    const mediaListeners = [];
+    const pin = () => {
+      if (token !== singleLatestPinToken || !singleLatestPinActive || charId !== currentChar) return;
+      const chatView = document.getElementById("singleChatView");
+      if (chatView.style.display === "none") return;
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+    const teardown = () => {
+      clearTimeout(finishTimer);
+      clearTimeout(maxTimer);
+      mediaListeners.forEach(({ image, done }) => {
+        image.removeEventListener("load", done);
+        image.removeEventListener("error", done);
+      });
+    };
+    const finish = () => {
+      pin();
+      if (token === singleLatestPinToken) singleLatestPinActive = false;
+      teardown();
+      if (singleLatestMediaCleanup === teardown) singleLatestMediaCleanup = null;
+    };
+    requestAnimationFrame(() => {
+      pin();
+      requestAnimationFrame(pin);
+    });
+    if (document.fonts?.ready) document.fonts.ready.then(pin).catch(() => {});
+    if (settle) {
+      setTimeout(pin, 100);
+      const pendingMedia = new Set(
+        [...messagesEl.querySelectorAll("img")].filter(image => !image.complete)
+      );
+      pendingMedia.forEach(image => {
+        const done = () => {
+          pendingMedia.delete(image);
+          pin();
+          requestAnimationFrame(pin);
+          if (!pendingMedia.size) finishTimer = setTimeout(finish, 180);
+        };
+        mediaListeners.push({ image, done });
+        image.addEventListener("load", done, { once: true });
+        image.addEventListener("error", done, { once: true });
+        if (image.complete) done();
+      });
+      if (pendingMedia.size) {
+        maxTimer = setTimeout(finish, 4500);
+      } else {
+        finishTimer = setTimeout(finish, 320);
+      }
+    } else {
+      finishTimer = setTimeout(finish, 80);
+    }
+    singleLatestMediaCleanup = teardown;
+  }
+
+  async function revealSingleHistoryAtLatest(charId, renderToken) {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (renderToken !== singleHistoryRenderToken || charId !== currentChar) return;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    document.getElementById("singleChatView").classList.remove("history-positioning");
+    scrollSingleToLatest({ settle: true, charId });
+  }
+
   function renderFromCache(charId) {
     messagesEl.innerHTML = "";
     histories[charId].forEach(({ id, text, who, time, toolsCalled, metrics, quote }) => {
       messagesEl.appendChild(buildSingleBlock(text, who, time, id, toolsCalled, metrics, quote));
     });
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    scrollSingleToLatest({ settle: true, charId });
     refreshSleepStates();
   }
 
@@ -1353,6 +1474,7 @@
     }
   }
   messagesEl.addEventListener("scroll", () => {
+    if (singleLatestPinActive) return;
     if (messagesEl.scrollTop < 80) loadOlderMessages(currentChar);
   });
 
@@ -1449,6 +1571,10 @@
         if (!c) return;
         const row = document.createElement("div");
         row.className = "char-list-row";
+        row.dataset.characterId = cid;
+        row.tabIndex = 0;
+        row.setAttribute("role", "button");
+        row.setAttribute("aria-label", `召见 ${nickName(cid)}`);
 
         const avatarWrap = document.createElement("div");
         avatarWrap.className = "char-list-avatar-wrap";
@@ -1463,7 +1589,40 @@
         avatarWrap.appendChild(img);
         avatarWrap.appendChild(dot);
 
+        const imperialArt = document.createElement("div");
+        imperialArt.className = "imperial-character-art";
+        imperialArt.setAttribute("aria-hidden", "true");
+        const imperialPortrait = document.createElement("img");
+        imperialPortrait.className = "imperial-character-figure";
+        imperialPortrait.src = IMPERIAL_CHARACTER_ART[cid] || "";
+        imperialPortrait.alt = "";
+        imperialPortrait.draggable = false;
+        imperialPortrait.onerror = function() {
+          this.closest(".imperial-character-art")?.classList.add("asset-missing");
+          console.warn("imperial portrait missing", this.src);
+        };
+        const modelMark = imperialModelMark(c.model);
+        const imperialBadge = document.createElement("span");
+        imperialBadge.className = `imperial-model-badge imperial-model-${modelMark.key}`;
+        imperialBadge.title = `${modelMark.label} · ${c.model || "未配置模型"}`;
+        const imperialLogo = document.createElement("img");
+        imperialLogo.src = IMPERIAL_MODEL_MARKS[modelMark.key];
+        imperialLogo.alt = modelMark.label;
+        imperialLogo.draggable = false;
+        imperialLogo.onerror = function() {
+          this.closest(".imperial-model-badge")?.classList.add("asset-missing");
+          console.warn("imperial model mark missing", this.src);
+        };
+        imperialBadge.appendChild(imperialLogo);
+        const imperialDot = document.createElement("div");
+        imperialDot.className = "unread-dot imperial-unread-dot hidden";
+        imperialDot.dataset.cid = cid;
+        imperialArt.appendChild(imperialPortrait);
+        imperialArt.appendChild(imperialBadge);
+        imperialArt.appendChild(imperialDot);
+
         const info = document.createElement("div");
+        info.className = "char-list-info";
         info.style.cssText = "margin-left:12px;flex:1;min-width:0;";
         const nameEl = document.createElement("div");
         nameEl.className = "char-list-name";
@@ -1478,6 +1637,7 @@
         info.appendChild(previewEl);
 
         row.appendChild(avatarWrap);
+        row.appendChild(imperialArt);
         row.appendChild(info);
 
         charPreviewEls[cid] = previewEl;
@@ -1486,31 +1646,33 @@
 
         let relationPressTimer = null;
         let relationPressStart = null;
-        avatarWrap.addEventListener("pointerdown", event => {
-          if (event.pointerType === "mouse" && event.button !== 0) return;
-          relationPressStart = { x: event.clientX, y: event.clientY };
-          relationPressTimer = setTimeout(() => {
-            clearNativeSelection(true);
-            row._friendshipSuppressClick = true;
-            setTimeout(() => { row._friendshipSuppressClick = false; }, 900);
-            openFriendshipActionSheet(cid);
-          }, 600);
-        });
-        bindNativeLongPressGuard(avatarWrap);
-        avatarWrap.addEventListener("pointermove", event => {
-          if (!relationPressStart) return;
-          if (
-            Math.abs(event.clientX - relationPressStart.x) > 8
-            || Math.abs(event.clientY - relationPressStart.y) > 8
-          ) clearTimeout(relationPressTimer);
-        });
-        ["pointerup", "pointercancel", "pointerleave"].forEach(type => {
-          avatarWrap.addEventListener(type, () => {
-            clearTimeout(relationPressTimer);
-            relationPressStart = null;
+        [avatarWrap, imperialArt].forEach(pressTarget => {
+          pressTarget.addEventListener("pointerdown", event => {
+            if (event.pointerType === "mouse" && event.button !== 0) return;
+            relationPressStart = { x: event.clientX, y: event.clientY };
+            relationPressTimer = setTimeout(() => {
+              clearNativeSelection(true);
+              row._friendshipSuppressClick = true;
+              setTimeout(() => { row._friendshipSuppressClick = false; }, 900);
+              openFriendshipActionSheet(cid);
+            }, 600);
+          });
+          bindNativeLongPressGuard(pressTarget);
+          pressTarget.addEventListener("pointermove", event => {
+            if (!relationPressStart) return;
+            if (
+              Math.abs(event.clientX - relationPressStart.x) > 8
+              || Math.abs(event.clientY - relationPressStart.y) > 8
+            ) clearTimeout(relationPressTimer);
+          });
+          ["pointerup", "pointercancel", "pointerleave"].forEach(type => {
+            pressTarget.addEventListener(type, () => {
+              clearTimeout(relationPressTimer);
+              relationPressStart = null;
+            });
           });
         });
-        row.addEventListener("click", () => {
+        const openCharacter = () => {
           if (row._friendshipSuppressClick) {
             row._friendshipSuppressClick = false;
             return;
@@ -1520,11 +1682,19 @@
             return;
           }
           dot.classList.add("hidden");
+          imperialDot.classList.add("hidden");
           fetch(`/api/unread/${cid}/clear`, { method: "POST" }).catch(() => {});
           document.getElementById("char-name").textContent = nickName(cid);
           charSubEl.textContent = CHAR_META[cid]?.label ?? cid;
           showSingleSub("chat");
           switchChar(cid);
+        };
+        row.addEventListener("click", openCharacter);
+        row.addEventListener("keydown", event => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openCharacter();
+          }
         });
         container.appendChild(row);
         updateFriendshipListItem(cid);
@@ -1594,14 +1764,24 @@
   });
 
   async function switchChar(charId) {
+    const renderToken = ++singleHistoryRenderToken;
+    const chatView = document.getElementById("singleChatView");
+    chatView.classList.add("history-positioning");
     setSingleReplyTarget(null);
     currentChar = charId;
     charSubEl.textContent = CHAR_META[charId]?.label ?? charId;
     messagesEl.innerHTML = "";
-    await fetchFriendship(charId);
-    updateFriendshipInputState();
-    loadHistory(charId);
-    refreshSleepStates();
+    try {
+      await Promise.all([fetchFriendship(charId), loadHistory(charId)]);
+      if (renderToken !== singleHistoryRenderToken || charId !== currentChar) return;
+      updateFriendshipInputState();
+      refreshSleepStates();
+      await revealSingleHistoryAtLatest(charId, renderToken);
+    } finally {
+      if (renderToken === singleHistoryRenderToken && charId === currentChar) {
+        chatView.classList.remove("history-positioning");
+      }
+    }
   }
 
   function addPendingAiBlock() {
@@ -2437,6 +2617,52 @@
     }
   }
 
+  async function compressChatImageFile(file) {
+    if (file.type === "image/gif") return file;
+    const browserReadyTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (file.size <= 1_800_000 && browserReadyTypes.has(file.type)) return file;
+
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      image.src = objectUrl;
+      if (typeof image.decode === "function") {
+        await image.decode();
+      } else {
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = reject;
+        });
+      }
+      const sourceWidth = image.naturalWidth || image.width;
+      const sourceHeight = image.naturalHeight || image.height;
+      if (!sourceWidth || !sourceHeight) return file;
+      const scale = Math.min(1, 2048 / Math.max(sourceWidth, sourceHeight));
+      const width = Math.max(1, Math.round(sourceWidth * scale));
+      const height = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) return file;
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, width, height);
+      context.drawImage(image, 0, 0, width, height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.82));
+      if (!blob) return file;
+      const baseName = (file.name || "image").replace(/\.[^.]+$/, "") || "image";
+      return new File([blob], `${baseName}.jpg`, {
+        type: "image/jpeg",
+        lastModified: file.lastModified || Date.now(),
+      });
+    } catch (error) {
+      console.warn("client image compression skipped", error);
+      return file;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
   async function sendImageFile(file) {
     if (!file) return;
     if (!ensureNormalFriendship()) return;
@@ -2444,14 +2670,10 @@
       showToast("🐱 选一张图片嘛～");
       return;
     }
-    if (file.size > 7 * 1024 * 1024) {
-      showToast("🐱 图片有点大，换张 7MB 内的～");
+    if (file.size > 25 * 1024 * 1024) {
+      showToast("🐱 原图有点大，换张 25MB 内的～");
       return;
     }
-    const form = new FormData();
-    form.append("character_id", currentChar);
-    form.append("session_id", "default");
-    form.append("image", file);
     sendBtn.disabled = true;
     const localUrl = URL.createObjectURL(file);
     const localImage = { url: localUrl, name: file.name, mime: file.type, from: "user" };
@@ -2459,6 +2681,11 @@
     const imageBlock = messagesEl.lastElementChild;
     const pending = addPendingAiBlock();
     try {
+      const uploadFile = await compressChatImageFile(file);
+      const form = new FormData();
+      form.append("character_id", currentChar);
+      form.append("session_id", "default");
+      form.append("image", uploadFile, uploadFile.name);
       const res = await fetch("/api/image", { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok || !data.image) throw new Error(data.error || "图片发送失败");
@@ -2466,7 +2693,13 @@
       const imageEl = imageBlock?.querySelector(".image-bubble img");
       if (imageEl) imageEl.src = data.image.url;
       const imageBubble = imageBlock?.querySelector(".image-bubble");
-      if (imageBubble && data.user_msg_id) imageBubble.dataset.messageId = data.user_msg_id;
+      if (imageBubble) {
+        if (data.user_msg_id) imageBubble.dataset.messageId = data.user_msg_id;
+        if (Number(data.image.width) > 0 && Number(data.image.height) > 0) {
+          imageBubble.style.aspectRatio = `${data.image.width} / ${data.image.height}`;
+          imageBubble.classList.add("has-image-aspect");
+        }
+      }
       const userEntry = histories[currentChar][histories[currentChar].length - 1];
       if (userEntry?.who === "user") {
         userEntry.id = data.user_msg_id || data.id;
@@ -6183,12 +6416,30 @@
   let musicArtworkObjectUrl = "";
   let musicArtworkTrackKey = "";
   let musicArtworkRenderToken = 0;
+  let musicLyricTrackKey = "";
+  let musicLyricLines = [];
+  let musicLyricIndex = null;
   let musicLibraryArtworkUrls = [];
   let musicDatabasePromise = null;
   let musicLibrarySyncPromise = null;
   let musicLibraryServerAvailable = true;
   let musicLibraryRefreshedAt = 0;
   const MUSIC_LIBRARY_RESET_KEY = "becoming-music-library-reset-20260718";
+  const MUSIC_PLAYBACK_MODE_KEY = "becoming-music-playback-mode";
+  const MUSIC_PLAYBACK_MODES = ["sequence", "shuffle", "repeat_one"];
+  const MUSIC_PLAYBACK_MODE_META = {
+    sequence: { label: "顺序播放", icon: "format_list_numbered" },
+    shuffle: { label: "随机播放", icon: "shuffle" },
+    repeat_one: { label: "单曲循环", icon: "repeat_one" },
+  };
+  let musicPlaybackMode = (() => {
+    try {
+      const saved = localStorage.getItem(MUSIC_PLAYBACK_MODE_KEY);
+      return MUSIC_PLAYBACK_MODES.includes(saved) ? saved : "sequence";
+    } catch (_) {
+      return "sequence";
+    }
+  })();
   let musicLocalReady = false;
   let musicLoadingTrack = false;
   let musicRoomPollTimer = null;
@@ -6363,6 +6614,92 @@
     }
     const saved = Number(track?.duration);
     return Number.isFinite(saved) && saved >= 0 ? saved : 0;
+  }
+
+  function parseTimedMusicLyrics(rawLyrics) {
+    const source = String(rawLyrics || "");
+    const offsetMatch = source.match(/\[offset:([+-]?\d+)\]/i);
+    const offsetSeconds = offsetMatch ? Number(offsetMatch[1]) / 1000 : 0;
+    const timeline = [];
+    for (const rawLine of source.split(/\r?\n/)) {
+      const timestamps = [...rawLine.matchAll(/\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g)];
+      if (!timestamps.length) continue;
+      const text = rawLine.replace(/\[[^\]]+\]/g, "").trim();
+      if (!text) continue;
+      for (const match of timestamps) {
+        const fraction = match[3] ? Number(`0.${match[3]}`) : 0;
+        timeline.push({
+          time: Math.max(
+            0,
+            Number(match[1]) * 60 + Number(match[2]) + fraction + offsetSeconds,
+          ),
+          text,
+        });
+      }
+    }
+    timeline.sort((left, right) => left.time - right.time);
+    return timeline.filter((line, index) => (
+      !index
+      || line.time !== timeline[index - 1].time
+      || line.text !== timeline[index - 1].text
+    ));
+  }
+
+  async function hydrateMusicTrackLyrics(track) {
+    if (!track || track.lyrics || !track.has_lyrics || !track.lyrics_url) return track;
+    try {
+      const data = await musicRequest(track.lyrics_url);
+      return {
+        ...track,
+        lyrics: data.lyrics || data.translated_lyrics || "",
+        translated_lyrics: data.translated_lyrics || "",
+      };
+    } catch (_) {
+      return track;
+    }
+  }
+
+  function prepareMusicLyrics(track) {
+    const key = track ? `${track.id || track.name}:${String(track.lyrics || "").length}` : "";
+    if (key === musicLyricTrackKey) return;
+    musicLyricTrackKey = key;
+    musicLyricLines = parseTimedMusicLyrics(track?.lyrics);
+    musicLyricIndex = null;
+    renderMusicLyrics(0);
+  }
+
+  function renderMusicLyrics(positionSeconds) {
+    const wrap = document.getElementById("musicLyrics");
+    const current = document.getElementById("musicLyricCurrent");
+    const next = document.getElementById("musicLyricNext");
+    if (!musicLyricLines.length) {
+      wrap.classList.add("hidden");
+      current.textContent = "";
+      next.textContent = "";
+      return;
+    }
+    let low = 0;
+    let high = musicLyricLines.length - 1;
+    let index = -1;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      if (musicLyricLines[middle].time <= positionSeconds + 0.08) {
+        index = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    const shownIndex = Math.max(0, index);
+    if (shownIndex === musicLyricIndex && !wrap.classList.contains("hidden")) return;
+    musicLyricIndex = shownIndex;
+    current.textContent = musicLyricLines[shownIndex]?.text || "";
+    next.textContent = musicLyricLines[shownIndex + 1]?.text || "";
+    wrap.classList.toggle("is-upcoming", index < 0);
+    wrap.classList.remove("is-changing");
+    void wrap.offsetWidth;
+    wrap.classList.add("is-changing");
+    wrap.classList.remove("hidden");
   }
 
   function openMusicDatabase() {
@@ -7296,6 +7633,7 @@
     const isOnlineTrack = track.source === "netease" || String(track.id || "").startsWith("netease:");
     const blob = isOnlineTrack ? null : await getLocalMusicBlob(track.id);
     if (blob) track = await enrichLocalMusicTrack(track, blob);
+    track = await hydrateMusicTrackLyrics(track);
     if (!blob && !track.audio_url) throw new Error("这首歌的音频文件不见了");
 
     const audio = document.getElementById("musicAudio");
@@ -7305,6 +7643,7 @@
     if (musicObjectUrl.startsWith("blob:")) URL.revokeObjectURL(musicObjectUrl);
     musicObjectUrl = blob ? URL.createObjectURL(blob) : track.audio_url;
     activeMusicTrack = { ...track, playback_unavailable: false };
+    prepareMusicLyrics(activeMusicTrack);
     renderMusicRoom();
     try {
       if (isOnlineTrack) {
@@ -7342,6 +7681,7 @@
       audio.removeAttribute("src");
       audio.load();
       activeMusicTrack = { ...track, playback_unavailable: true };
+      prepareMusicLyrics(activeMusicTrack);
       musicRoom = {
         ...(musicRoom || {}),
         song_id: track.id,
@@ -7500,16 +7840,13 @@
       persistLocalMusicState();
     });
     audio.addEventListener("ended", () => {
-      const queue = musicQueue.length ? musicQueue : musicOnlineSearchItems;
-      if (queue.length > 1 && localMusicDuration(audio) > 0) {
-        runMusicAction("next").catch(() => persistLocalMusicState());
-        return;
-      }
-      audio.pause();
-      try { audio.currentTime = 0; } catch (_) {}
-      musicRoom = { ...(musicRoom || {}), ...currentLocalMusicState() };
-      renderMusicPlaybackState();
-      persistLocalMusicState();
+      runMusicAction("next", { automatic: true }).catch(() => {
+        audio.pause();
+        try { audio.currentTime = 0; } catch (_) {}
+        musicRoom = { ...(musicRoom || {}), ...currentLocalMusicState() };
+        renderMusicPlaybackState();
+        persistLocalMusicState();
+      });
     });
     if ("mediaSession" in navigator) {
       for (const [action, handler] of [
@@ -7524,7 +7861,40 @@
     musicRoomSyncTimer = setInterval(() => {
       if (activeNestPane === "music" && activeMusicTrack && !audio.paused) persistLocalMusicState();
     }, 8000);
+    renderMusicPlaybackMode();
     musicLocalReady = true;
+  }
+
+  function renderMusicPlaybackMode() {
+    const button = document.getElementById("musicPlaybackModeBtn");
+    const meta = MUSIC_PLAYBACK_MODE_META[musicPlaybackMode];
+    button.dataset.mode = musicPlaybackMode;
+    button.setAttribute("aria-label", meta.label);
+    button.title = meta.label;
+    button.querySelector(".material-symbols-outlined").textContent = meta.icon;
+  }
+
+  function cycleMusicPlaybackMode() {
+    const currentIndex = MUSIC_PLAYBACK_MODES.indexOf(musicPlaybackMode);
+    musicPlaybackMode = MUSIC_PLAYBACK_MODES[(currentIndex + 1) % MUSIC_PLAYBACK_MODES.length];
+    try { localStorage.setItem(MUSIC_PLAYBACK_MODE_KEY, musicPlaybackMode); } catch (_) {}
+    renderMusicPlaybackMode();
+    showToast(MUSIC_PLAYBACK_MODE_META[musicPlaybackMode].label);
+  }
+
+  function musicQueueIndex(queue, action, automatic = false) {
+    let currentIndex = queue.findIndex(track => track.id === activeMusicTrack?.id);
+    if (currentIndex < 0) currentIndex = 0;
+
+    if (automatic && musicPlaybackMode === "repeat_one") return currentIndex;
+    if (musicPlaybackMode === "shuffle" && queue.length > 1) {
+      const choices = queue.map((_, index) => index).filter(index => index !== currentIndex);
+      return choices[Math.floor(Math.random() * choices.length)];
+    }
+    if (automatic && action === "next" && currentIndex >= queue.length - 1) return -1;
+    return action === "previous"
+      ? (currentIndex - 1 + queue.length) % queue.length
+      : (currentIndex + 1) % queue.length;
   }
 
   function renderMusicPlaybackState() {
@@ -7548,6 +7918,7 @@
     document.getElementById("musicPreviousBtn").disabled = !canPlay;
     document.getElementById("musicPlayBtn").disabled = !canPlay;
     document.getElementById("musicNextBtn").disabled = !canPlay;
+    renderMusicLyrics(positionSeconds);
   }
 
   function renderMusicRoom() {
@@ -7583,6 +7954,7 @@
     } : null);
     const hasTrack = Boolean(shownTrack);
     document.getElementById("musicNowPlaying").classList.toggle("music-now-empty", !hasTrack);
+    if (!hasTrack) prepareMusicLyrics(null);
     renderMusicArtwork(shownTrack);
     document.getElementById("musicTrackName").textContent = hasTrack
       ? shownTrack.name : "房间还安安静静的";
@@ -7600,7 +7972,7 @@
       message.id,
       message.author_id,
       message.author_name,
-      message.avatar,
+      message.author_id === "user" ? userAvatar : message.avatar,
       message.content,
       message.details,
     ]));
@@ -7612,6 +7984,7 @@
     }
     wrap.innerHTML = visibleMessages.map(message => {
       const isUser = message.author_id === "user";
+      const messageAvatar = isUser ? userAvatar : message.avatar;
       const details = message.details || {};
       const traces = Array.isArray(details.tools) && details.tools.length
         ? details.tools
@@ -7626,7 +7999,7 @@
           <summary>${escapeReadingHtml(toolLabels[trace.name] || trace.name || "音乐工具")}</summary>
           <pre>${escapeReadingHtml(JSON.stringify({ input: trace.arguments || {}, output: trace.output, status: trace.status }, null, 2))}</pre>
         </details>`).join("");
-      const avatarImg = `<img class="music-message-avatar" src="${escapeReadingHtml(message.avatar)}" alt="">`;
+      const avatarImg = `<img class="music-message-avatar" src="${escapeReadingHtml(messageAvatar)}" alt="">`;
       return `
         <div class="music-room-message${isUser ? " from-user" : ""}">
           ${isUser ? "" : avatarImg}
@@ -7750,7 +8123,7 @@
     } catch (error) { showToast(error.message || "这首歌没有放起来"); }
   });
 
-  async function runMusicAction(action, { announce = true } = {}) {
+  async function runMusicAction(action, { announce = true, automatic = false } = {}) {
     const audio = document.getElementById("musicAudio");
     if (!activeMusicTrack) throw new Error("曲库里还没有正在播放的歌");
     if (action === "pause") audio.pause();
@@ -7758,11 +8131,22 @@
     else if (action === "previous" || action === "next") {
       const queue = musicQueue.length ? musicQueue : musicOnlineSearchItems;
       if (!queue.length) throw new Error("当前曲库还是空的");
-      let index = queue.findIndex(track => track.id === activeMusicTrack.id);
-      if (index < 0) index = 0;
-      index = action === "previous"
-        ? (index - 1 + queue.length) % queue.length
-        : (index + 1) % queue.length;
+      if (queue.length === 1 && !automatic) throw new Error("播放队列里暂时只有这一首");
+      const index = musicQueueIndex(queue, action, automatic);
+      if (index < 0) {
+        audio.pause();
+        try { audio.currentTime = 0; } catch (_) {}
+        await persistLocalMusicState();
+        renderMusicRoom();
+        return;
+      }
+      if (automatic && musicPlaybackMode === "repeat_one") {
+        try { audio.currentTime = 0; } catch (_) {}
+        await audio.play();
+        await persistLocalMusicState();
+        renderMusicRoom();
+        return;
+      }
       await loadLocalMusicTrack(queue[index].id, { announce });
       return;
     }
@@ -7772,6 +8156,7 @@
 
   document.getElementById("musicPreviousBtn").addEventListener("click", () => runMusicAction("previous").catch(error => showToast(error.message)));
   document.getElementById("musicNextBtn").addEventListener("click", () => runMusicAction("next").catch(error => showToast(error.message)));
+  document.getElementById("musicPlaybackModeBtn").addEventListener("click", cycleMusicPlaybackMode);
   document.getElementById("musicPlayBtn").addEventListener("click", () => {
     const action = document.getElementById("musicAudio").paused ? "play" : "pause";
     runMusicAction(action).catch(error => showToast(error.message));
@@ -7799,7 +8184,16 @@
           if (!track || track.source !== "netease" || !track.id || !track.audio_url) {
             throw new Error("在线点歌资料不完整");
           }
-          musicOnlineSearchItems = [track, ...musicOnlineSearchItems.filter(item => item.id !== track.id)];
+          const suggestedQueue = Array.isArray(command.arguments?.queue)
+            ? command.arguments.queue.filter(item => (
+              item && item.source === "netease" && item.id && item.audio_url
+            )).slice(0, 6)
+            : [];
+          const nextQueue = [track, ...suggestedQueue.filter(item => item.id !== track.id)];
+          musicOnlineSearchItems = [
+            ...nextQueue,
+            ...musicOnlineSearchItems.filter(item => !nextQueue.some(candidate => candidate.id === item.id)),
+          ];
           musicQueue = [...musicOnlineSearchItems];
           const playback = await loadLocalMusicTrack(track.id, { announce: false });
           output = playback.autoplayBlocked

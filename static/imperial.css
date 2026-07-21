@@ -1,0 +1,740 @@
+/* ═══════════════════════════════════════════════════════════════
+   登基：只换宫廷皮肤，不改聊天、长按、侧滑和数据流。
+   ═══════════════════════════════════════════════════════════════ */
+.imperial-plaque-title,
+.imperial-character-art {
+  display: none;
+}
+html[data-theme="imperial"] {
+  --nav-h: 90px;
+  background: #2a1009;
+}
+
+html[data-theme="imperial"] body {
+  font-family: "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+  background: #2a1009;
+}
+
+html[data-theme="imperial"] :is(
+  #singleListView,
+  #singleChatView,
+  #groupView,
+  #memoryView,
+  #momentsView,
+  #moreView
+) {
+  --imperial-gold: #d9ac4a;
+  --imperial-deep-gold: #8b5a19;
+  --imperial-lacquer: #571711;
+  --imperial-ink: #3a2115;
+  --imperial-paper: #f1dfad;
+}
+
+/* 上朝：背景直出，不叠通用水彩蒙版。 */
+html[data-theme="imperial"] #singleListView {
+  background: #1b0c06;
+}
+
+html[data-theme="imperial"] #charListContainer {
+  position: relative;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background-color: #1b0c06;
+  background-image: url("/static/imperial/court.webp");
+  background-size: cover;
+  background-position: center center;
+  isolation: isolate;
+}
+
+html[data-theme="imperial"] #charListContainer::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 220, 128, .04), rgba(31, 10, 5, .16) 78%),
+    linear-gradient(to bottom, rgba(28, 7, 3, .06), transparent 28%, rgba(24, 7, 3, .22));
+  pointer-events: none;
+}
+
+html[data-theme="imperial"] #singleListHeader {
+  position: absolute;
+  z-index: 20;
+  top: clamp(5px, 1.2dvh, 14px);
+  left: 50%;
+  width: min(58vw, 320px);
+  height: clamp(76px, 12dvh, 112px);
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+html[data-theme="imperial"] #singleListHeader::before {
+  display: none;
+}
+
+html[data-theme="imperial"] #singleListHeader :is(.header-paw, .becoming-title) {
+  display: none;
+}
+
+html[data-theme="imperial"] .imperial-plaque-title {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 0 18% 5%;
+  background: url("/static/imperial/plaque.png") center / contain no-repeat;
+  color: #2c1608;
+  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-size: clamp(18px, 5vw, 32px);
+  font-weight: 800;
+  letter-spacing: .16em;
+  text-shadow: 0 1px rgba(255, 229, 137, .54);
+  filter: drop-shadow(0 5px 5px rgba(17, 4, 1, .38));
+}
+
+html[data-theme="imperial"] .char-list-row {
+  --court-size: clamp(100px, 25vw, 165px);
+  position: absolute;
+  z-index: 2;
+  width: var(--court-size);
+  height: var(--court-size);
+  padding: 0;
+  display: block;
+  border: 0;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+  transition: filter 150ms ease, transform 150ms ease;
+}
+
+html[data-theme="imperial"] .char-list-row::after,
+html[data-theme="imperial"] .char-list-avatar-wrap,
+html[data-theme="imperial"] .char-list-preview {
+  display: none;
+}
+
+html[data-theme="imperial"] .char-list-row[data-character-id="char5"] {
+  --court-size: clamp(94px, 24vw, 148px);
+  z-index: 2;
+  top: 15%;
+  left: 17%;
+}
+
+html[data-theme="imperial"] .char-list-row[data-character-id="char6"] {
+  --court-size: clamp(94px, 24vw, 148px);
+  z-index: 2;
+  top: 15%;
+  right: 17%;
+}
+
+html[data-theme="imperial"] .char-list-row[data-character-id="char4"] {
+  --court-size: clamp(130px, 34vw, 212px);
+  z-index: 4;
+  top: 37%;
+  left: 5%;
+}
+
+html[data-theme="imperial"] .char-list-row[data-character-id="char3"] {
+  --court-size: clamp(130px, 34vw, 212px);
+  z-index: 4;
+  top: 37%;
+  right: 5%;
+}
+
+html[data-theme="imperial"] .char-list-row[data-character-id="char2"] {
+  --court-size: clamp(178px, 46vw, 284px);
+  z-index: 6;
+  bottom: -2%;
+  left: -3%;
+}
+
+html[data-theme="imperial"] .char-list-row[data-character-id="char1"] {
+  --court-size: clamp(178px, 46vw, 284px);
+  z-index: 6;
+  right: -3%;
+  bottom: -2%;
+}
+
+html[data-theme="imperial"] .imperial-character-art {
+  position: absolute;
+  display: block;
+  inset: 0;
+  touch-action: pan-y;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+html[data-theme="imperial"] .imperial-character-figure {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  filter: drop-shadow(0 8px 7px rgba(13, 3, 1, .52));
+}
+
+html[data-theme="imperial"] .imperial-character-art.asset-missing::after {
+  content: "候旨";
+  position: absolute;
+  inset: 20%;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(217, 172, 74, .72);
+  background: rgba(70, 20, 12, .84);
+  color: #f3d889;
+}
+
+html[data-theme="imperial"] .imperial-model-badge {
+  position: absolute;
+  z-index: 4;
+  top: 13%;
+  left: 50%;
+  width: clamp(25px, calc(var(--court-size) * .22), 51px);
+  height: clamp(25px, calc(var(--court-size) * .22), 51px);
+  display: grid;
+  place-items: center;
+  padding: clamp(4px, 1.25vw, 7px);
+  border: clamp(1px, .35vw, 2px) solid rgba(231, 191, 90, .92);
+  border-radius: 50%;
+  background: rgba(250, 244, 220, .94);
+  box-shadow: 0 3px 8px rgba(31, 7, 2, .44), inset 0 0 0 1px rgba(105, 55, 16, .25);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+html[data-theme="imperial"] .imperial-model-badge img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none;
+}
+
+html[data-theme="imperial"] .imperial-model-grok {
+  padding: clamp(2px, .75vw, 4px);
+  background: #f7efda;
+}
+
+html[data-theme="imperial"] .imperial-model-badge.asset-missing::after {
+  content: "?";
+  color: var(--imperial-lacquer);
+  font-weight: 800;
+}
+
+html[data-theme="imperial"] .imperial-model-badge.asset-missing img {
+  display: none;
+}
+
+html[data-theme="imperial"] .imperial-unread-dot {
+  top: 9%;
+  right: 11%;
+  width: clamp(10px, 3vw, 15px);
+  height: clamp(10px, 3vw, 15px);
+  border-color: #f1d88c;
+  background: #d5392e;
+}
+
+html[data-theme="imperial"] .char-list-row > .char-list-info {
+  position: absolute;
+  z-index: 5;
+  top: 61%;
+  left: 50%;
+  width: max-content;
+  max-width: 92%;
+  margin: 0 !important;
+  transform: translateX(-50%);
+}
+
+html[data-theme="imperial"] .char-list-name {
+  min-width: clamp(60px, calc(var(--court-size) * .55), 132px);
+  padding: clamp(3px, .8vw, 6px) clamp(8px, 2vw, 15px);
+  overflow: hidden;
+  border: 1px solid rgba(218, 175, 69, .92);
+  border-radius: 4px 4px 10px 10px;
+  background:
+    linear-gradient(90deg, rgba(255, 228, 136, .08), transparent 17% 83%, rgba(255, 228, 136, .08)),
+    #173c29;
+  color: #f7dda0 !important;
+  box-shadow: 0 5px 8px rgba(19, 4, 1, .4), inset 0 0 0 1px rgba(47, 15, 5, .44);
+  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-size: clamp(11px, calc(var(--court-size) * .075), 19px);
+  font-weight: 700 !important;
+  letter-spacing: .08em;
+  line-height: 1.25;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-theme="imperial"] .char-list-row:is(:active, :focus-visible) {
+  filter: drop-shadow(0 0 12px rgba(244, 190, 73, .88));
+  transform: translateY(-2px) scale(1.025);
+}
+
+/* 寝宫：牌匾门头、宣纸气泡、圣旨输入和玉玺发送。 */
+html[data-theme="imperial"] :is(#singleChatView, #groupView)::before {
+  background-image:
+    linear-gradient(to bottom, rgba(37, 7, 3, .12), rgba(37, 7, 3, .03) 44%, rgba(30, 8, 3, .26)),
+    var(--chat-background-image, url("/static/imperial/bedroom.webp"));
+  background-position: center top;
+}
+
+html[data-theme="imperial"] #singleChatView > header {
+  min-height: clamp(98px, 14dvh, 126px);
+  overflow: visible;
+  background: linear-gradient(to bottom, rgba(38, 9, 4, .74), transparent);
+}
+
+html[data-theme="imperial"] #singleChatView > header::before,
+html[data-theme="imperial"] .group-header::before,
+html[data-theme="imperial"] #memoryListHeader::before,
+html[data-theme="imperial"] #momentsListHeader::before,
+html[data-theme="imperial"] #moreHeader::before {
+  display: none;
+}
+
+html[data-theme="imperial"] :is(#singleChatView > header, .group-header) .header-paw {
+  display: none;
+}
+
+html[data-theme="imperial"] #singleChatView .chat-header-bar {
+  width: min(82vw, 430px);
+  min-height: clamp(72px, 10dvh, 98px);
+  margin: 1px auto 0;
+  padding: 0 18%;
+  background: url("/static/imperial/plaque.png") center / contain no-repeat;
+  filter: drop-shadow(0 5px 5px rgba(17, 4, 1, .42));
+}
+
+html[data-theme="imperial"] #char-name {
+  color: #2c1608;
+  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-size: clamp(17px, 4.8vw, 26px);
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-shadow: 0 1px rgba(255, 229, 137, .56);
+  white-space: nowrap;
+}
+
+html[data-theme="imperial"] #backToList {
+  position: absolute;
+  z-index: 3;
+  left: -7vw;
+  bottom: 9px;
+  width: auto;
+  min-width: 48px;
+  padding: 6px 8px;
+  border: 1px solid rgba(224, 181, 79, .72);
+  border-radius: 4px;
+  background: rgba(73, 20, 13, .88);
+  color: #f4d987;
+  font-size: 0;
+  box-shadow: 0 4px 8px rgba(20, 4, 1, .28);
+}
+
+html[data-theme="imperial"] #backToList::before {
+  content: "退朝";
+  font-size: 12px;
+  letter-spacing: .08em;
+}
+
+html[data-theme="imperial"] #searchToggle {
+  position: absolute;
+  z-index: 3;
+  right: -6vw;
+  bottom: 8px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid rgba(224, 181, 79, .72);
+  border-radius: 50%;
+  background: rgba(73, 20, 13, .88);
+  color: #f4d987;
+  font-size: 18px;
+}
+
+html[data-theme="imperial"] #char-online {
+  position: absolute;
+  z-index: 3;
+  right: 0;
+  bottom: 7px;
+  left: 0;
+  padding: 0;
+  color: #f2d88d;
+  font-size: 10px;
+  text-shadow: 0 1px 4px #1c0803;
+}
+
+html[data-theme="imperial"] .group-header {
+  min-height: clamp(82px, 12dvh, 108px);
+  padding: clamp(25px, 4.2dvh, 38px) 22% 0;
+  border: 0;
+  background:
+    url("/static/imperial/plaque.png") center / min(74vw, 390px) auto no-repeat,
+    linear-gradient(to bottom, rgba(38, 9, 4, .74), transparent);
+  color: #2c1608;
+  filter: drop-shadow(0 5px 5px rgba(17, 4, 1, .24));
+  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-size: clamp(15px, 4.1vw, 22px);
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-shadow: 0 1px rgba(255, 229, 137, .54);
+}
+
+html[data-theme="imperial"] :is(#messages, #groupMessages) {
+  scrollbar-color: rgba(206, 158, 62, .42) transparent;
+}
+
+html[data-theme="imperial"] .bubble {
+  border-width: 1px;
+  border-color: rgba(113, 62, 18, .48);
+  border-radius: 8px;
+  box-shadow: 0 4px 10px rgba(31, 8, 3, .19), inset 0 0 18px rgba(140, 84, 25, .07);
+  font-family: "Songti SC", "STSong", serif;
+}
+
+html[data-theme="imperial"] .bubble.ai {
+  background:
+    linear-gradient(100deg, rgba(255, 250, 218, .78), rgba(230, 204, 140, .93)),
+    var(--ai-bubble);
+  color: #3a2115;
+  border-bottom-left-radius: 2px;
+}
+
+html[data-theme="imperial"] .bubble.user {
+  background: linear-gradient(135deg, #7a241d, #50120e);
+  color: #f8e6b6;
+  border-color: rgba(222, 178, 75, .62);
+  border-bottom-right-radius: 2px;
+}
+
+html[data-theme="imperial"] :is(.msg-time, .group-sender-name) {
+  color: rgba(246, 226, 166, .78);
+  text-shadow: 0 1px 3px rgba(30, 6, 2, .72);
+}
+
+html[data-theme="imperial"] .loading-dots::after {
+  content: "正在揣摩圣意";
+  margin-left: 4px;
+  color: rgba(58, 33, 21, .68);
+  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-size: 12px;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+
+html[data-theme="imperial"] :is(#inputbar, #groupInputbar) {
+  min-height: clamp(86px, 12dvh, 106px);
+  padding: 22px 76px 18px 30px;
+  gap: 0;
+  overflow: visible;
+  border: 0;
+  background: linear-gradient(to top, rgba(30, 8, 3, .74), rgba(30, 8, 3, .08));
+  isolation: isolate;
+}
+
+html[data-theme="imperial"] :is(#inputbar, #groupInputbar)::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 5px 58px 3px 5px;
+  background: url("/static/imperial/edict-composer.png") center / 100% 100% no-repeat;
+  filter: drop-shadow(0 4px 5px rgba(25, 5, 2, .38));
+  pointer-events: none;
+}
+
+html[data-theme="imperial"] :is(#input, #groupInput) {
+  width: 100%;
+  min-width: 0;
+  padding: 11px 8px;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: #3a2115;
+  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-size: 16px;
+  caret-color: #7b2018;
+}
+
+html[data-theme="imperial"] :is(#input, #groupInput)::placeholder {
+  color: rgba(74, 39, 19, .58);
+}
+
+html[data-theme="imperial"] :is(#send, #groupSend) {
+  position: absolute;
+  z-index: 2;
+  right: 7px;
+  bottom: 9px;
+  width: clamp(58px, 16vw, 74px);
+  height: clamp(58px, 16vw, 74px);
+  border: 0;
+  border-radius: 0;
+  background: url("/static/imperial/nav-seal.png") center / contain no-repeat;
+  color: transparent;
+  box-shadow: none;
+  filter: drop-shadow(0 5px 4px rgba(30, 5, 2, .42));
+}
+
+html[data-theme="imperial"] :is(#send, #groupSend) .material-symbols-outlined {
+  display: none;
+}
+
+html[data-theme="imperial"] :is(#send, #groupSend):active {
+  transform: translateY(2px) rotate(-2deg) scale(.96);
+  box-shadow: none;
+}
+
+/* 奏折阁：总览和详情都卷成圣旨，而不是现代票据。 */
+html[data-theme="imperial"] :is(#memoryView, #momentsView, #moreView) {
+  background-color: #231008;
+  background-image:
+    linear-gradient(rgba(31, 11, 5, .44), rgba(31, 11, 5, .58)),
+    url("/static/imperial/court.webp");
+  background-size: cover;
+  background-position: center center;
+}
+
+html[data-theme="imperial"] :is(#memoryListHeader, #momentsListHeader, #moreHeader) {
+  min-height: clamp(84px, 12dvh, 108px);
+  padding: clamp(26px, 4.1dvh, 38px) 20% 0;
+  overflow: visible;
+  border: 0;
+  background:
+    url("/static/imperial/plaque.png") center / min(72vw, 380px) auto no-repeat,
+    linear-gradient(to bottom, rgba(36, 8, 3, .75), transparent);
+}
+
+html[data-theme="imperial"] :is(#memoryListHeader, #momentsListHeader, #moreHeader) .header-paw {
+  display: none;
+}
+
+html[data-theme="imperial"] :is(#memoryListHeader, #momentsListHeader, #moreHeader) .becoming-title {
+  color: #2c1608;
+  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-size: 0 !important;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-shadow: 0 1px rgba(255, 229, 137, .54);
+}
+
+html[data-theme="imperial"] #memoryListHeader .becoming-title::after {
+  content: "奏折阁";
+  font-size: clamp(17px, 4.5vw, 24px);
+}
+
+html[data-theme="imperial"] #momentsListHeader .becoming-title::after {
+  content: "御花苑";
+  font-size: clamp(17px, 4.5vw, 24px);
+}
+
+html[data-theme="imperial"] #moreHeader .becoming-title::after {
+  content: "内务府";
+  font-size: clamp(17px, 4.5vw, 24px);
+}
+
+html[data-theme="imperial"] :is(.memory-card, .memory-entry) {
+  position: relative;
+  overflow: visible;
+  clip-path: none;
+  border: 1px solid rgba(135, 77, 23, .58);
+  border-radius: 3px;
+  background:
+    linear-gradient(90deg, rgba(122, 61, 19, .08), transparent 11% 89%, rgba(122, 61, 19, .08)),
+    linear-gradient(105deg, #f4e8be, #e8d39b);
+  box-shadow: 0 8px 14px rgba(24, 5, 2, .3), inset 0 0 25px rgba(139, 78, 24, .08);
+  filter: none;
+}
+
+html[data-theme="imperial"] .memory-card {
+  margin: 10px 5px 22px;
+  padding: 22px 22px 24px;
+}
+
+html[data-theme="imperial"] .memory-entry {
+  margin: 12px 5px 22px;
+  padding: 20px 18px;
+}
+
+html[data-theme="imperial"] :is(.memory-card, .memory-entry)::before,
+html[data-theme="imperial"] :is(.memory-card, .memory-entry)::after {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  left: -8px;
+  width: calc(100% + 16px);
+  height: 9px;
+  border: 1px solid rgba(226, 179, 68, .72);
+  border-radius: 999px;
+  background: linear-gradient(#8c2a20, #5d130f 55%, #45100c);
+  box-shadow: 0 3px 5px rgba(30, 6, 2, .25), inset 0 1px rgba(255, 213, 104, .24);
+  pointer-events: none;
+}
+
+html[data-theme="imperial"] :is(.memory-card, .memory-entry)::before {
+  top: -5px;
+}
+
+html[data-theme="imperial"] :is(.memory-card, .memory-entry)::after {
+  inset: auto auto -5px -8px;
+}
+
+html[data-theme="imperial"] .memory-card > * {
+  position: relative;
+  z-index: 2;
+}
+
+html[data-theme="imperial"] .memory-card-preview {
+  border-top-color: rgba(105, 52, 16, .34);
+}
+
+html[data-theme="imperial"] :is(.memory-card-date, .memory-entry-head time, .memory-entry-meta > span) {
+  color: rgba(67, 37, 19, .66);
+}
+
+html[data-theme="imperial"] :is(.memory-card, .memory-entry):active {
+  transform: translateY(2px);
+  box-shadow: 0 4px 8px rgba(24, 5, 2, .24), inset 0 0 25px rgba(139, 78, 24, .08);
+  filter: none;
+}
+
+/* 笔墨纸砚玉玺：仍然是原五个视图，只改成宫廷导航语言。 */
+html[data-theme="imperial"] #bottomNav {
+  height: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px));
+  padding: 4px 5px max(5px, env(safe-area-inset-bottom, 0px));
+  align-items: flex-start;
+  border-top: 1px solid rgba(224, 177, 69, .62);
+  background:
+    linear-gradient(90deg, rgba(255, 211, 103, .08), transparent 15% 85%, rgba(255, 211, 103, .08)),
+    linear-gradient(#47130e, #260a06);
+  box-shadow: 0 -6px 18px rgba(19, 3, 1, .42), inset 0 1px rgba(255, 218, 126, .18);
+}
+
+html[data-theme="imperial"] .nav-item {
+  top: 0;
+  height: 80px;
+  padding: 0 2px 1px;
+  justify-content: flex-start;
+  gap: 0;
+  color: #d7b25e;
+  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+}
+
+html[data-theme="imperial"] .nav-item > * {
+  display: none;
+}
+
+html[data-theme="imperial"] .nav-item::before {
+  content: "";
+  position: relative;
+  z-index: 2;
+  top: auto;
+  left: auto;
+  right: auto;
+  display: block;
+  width: min(14vw, 58px);
+  height: 56px;
+  margin: 0 auto;
+  border: 0;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  filter: drop-shadow(0 3px 3px rgba(13, 2, 1, .52));
+  opacity: .77;
+  transform: none;
+  transition: opacity 150ms ease, transform 150ms ease, filter 150ms ease;
+}
+
+html[data-theme="imperial"] .nav-item[data-view="singleView"]::before {
+  background-image: url("/static/imperial/nav-court.png");
+}
+
+html[data-theme="imperial"] .nav-item[data-view="groupView"]::before {
+  background-image: url("/static/imperial/nav-council.png");
+}
+
+html[data-theme="imperial"] .nav-item[data-view="memoryView"]::before {
+  background-image: url("/static/imperial/nav-memory.png");
+}
+
+html[data-theme="imperial"] .nav-item[data-view="momentsView"]::before {
+  background-image: url("/static/imperial/nav-garden.png");
+}
+
+html[data-theme="imperial"] .nav-item[data-view="moreView"]::before {
+  background-image: url("/static/imperial/nav-seal.png");
+}
+
+html[data-theme="imperial"] .nav-item::after {
+  content: attr(data-imperial-label);
+  position: relative;
+  z-index: 3;
+  top: -2px;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  display: block;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(238, 208, 132, .72);
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  line-height: 1;
+  transition: color 150ms ease;
+}
+
+html[data-theme="imperial"] .nav-item.active::before {
+  opacity: 1;
+  filter: drop-shadow(0 0 6px rgba(245, 193, 70, .68)) drop-shadow(0 3px 3px rgba(13, 2, 1, .52));
+  transform: translateY(-2px) scale(1.06);
+}
+
+html[data-theme="imperial"] .nav-item.active::after {
+  background: transparent;
+  color: #f4d780;
+}
+
+html[data-theme="imperial"] .nav-item:active {
+  transform: translateY(2px);
+}
+
+html[data-theme="imperial"] .nav-item:focus-visible {
+  outline: 1px solid #e2b957;
+  outline-offset: -4px;
+}
+
+@media (max-height: 690px) {
+  html[data-theme="imperial"] .char-list-row[data-character-id="char5"],
+  html[data-theme="imperial"] .char-list-row[data-character-id="char6"] {
+    top: 13%;
+  }
+  html[data-theme="imperial"] .char-list-row[data-character-id="char4"],
+  html[data-theme="imperial"] .char-list-row[data-character-id="char3"] {
+    top: 35%;
+  }
+}
+
+@media (min-width: 720px) {
+  html[data-theme="imperial"] #charListContainer {
+    background-size: min(100%, 720px) auto;
+    background-repeat: no-repeat;
+    background-color: #1a0904;
+  }
+  html[data-theme="imperial"] .char-list-row[data-character-id="char5"] { left: calc(50% - 235px); }
+  html[data-theme="imperial"] .char-list-row[data-character-id="char6"] { right: calc(50% - 235px); }
+  html[data-theme="imperial"] .char-list-row[data-character-id="char4"] { left: calc(50% - 310px); }
+  html[data-theme="imperial"] .char-list-row[data-character-id="char3"] { right: calc(50% - 310px); }
+  html[data-theme="imperial"] .char-list-row[data-character-id="char2"] { left: calc(50% - 355px); }
+  html[data-theme="imperial"] .char-list-row[data-character-id="char1"] { right: calc(50% - 355px); }
+}

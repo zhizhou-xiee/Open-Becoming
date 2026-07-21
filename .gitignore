@@ -15,6 +15,7 @@ __pycache__/
 # 运行时文件
 becoming_memory/
 music_library/
+chat_images/
 static/uploads/chat_images/
 
 # macOS

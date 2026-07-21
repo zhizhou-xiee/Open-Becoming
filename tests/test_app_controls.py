@@ -154,7 +154,8 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn('bindNativeLongPressGuard(groupMessagesEl, ".bubble");', script)
         self.assertIn("bindNativeLongPressGuard(sendBtn);", script)
         self.assertIn("bindNativeLongPressGuard(groupSendBtn);", script)
-        self.assertIn("bindNativeLongPressGuard(avatarWrap);", script)
+        self.assertIn("[avatarWrap, imperialArt].forEach(pressTarget => {", script)
+        self.assertIn("bindNativeLongPressGuard(pressTarget);", script)
         self.assertIn("bindNativeLongPressGuard(el);", script)
         self.assertIn("#groupMessages .bubble *", styles)
         self.assertIn("-webkit-user-select: none !important;", styles)
@@ -884,8 +885,11 @@ class AppControlsTests(unittest.TestCase):
         self.assertEqual(appearance["chat_background"]["url"], "/static/theme_matcha.jpg")
         self.assertEqual(
             [theme["name"] for theme in appearance["themes"]],
-            ["恋人", "抹茶", "雾港", "丁香"],
+            ["恋人", "抹茶", "雾港", "丁香", "登基"],
         )
+        imperial = next(item for item in appearance["themes"] if item["id"] == "imperial")
+        self.assertEqual(imperial["chat_background"], "/static/imperial/bedroom.webp")
+        self.assertEqual(imperial["list_background"], "/static/imperial/court.webp")
         self.assertEqual(self.client.get("/api/appearance").get_json()["theme"], "dreamscape")
 
         invalid = self.client.post("/api/appearance", json={"theme": "unknown"})
@@ -2470,7 +2474,8 @@ class AppControlsTests(unittest.TestCase):
             "friendRequestModal", "friendDeletedModal",
         ):
             self.assertIn(f'id="{element_id}"', markup)
-        self.assertIn('avatarWrap.addEventListener("pointerdown"', script)
+        self.assertIn("[avatarWrap, imperialArt].forEach(pressTarget => {", script)
+        self.assertIn('pressTarget.addEventListener("pointerdown"', script)
         self.assertIn("openFriendshipActionSheet(cid)", script)
         self.assertIn("setTimeout(() => {", script)
         self.assertIn("}, 600);", script)
@@ -2723,6 +2728,179 @@ class AppControlsTests(unittest.TestCase):
             self.assertEqual(original["content"], "只属于Char 1的 API 记忆")
         finally:
             app_module.MEMORY_SERVICE.delete_memory("char1", memory_id)
+
+    def test_today_chat_image_pipeline_compresses_and_reuses_the_saved_bytes(self):
+        script = (
+            Path(app_module.__file__).with_name("static") / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("async function compressChatImageFile(file)", script)
+        self.assertIn("file.size > 25 * 1024 * 1024", script)
+
+        app_module._set_friendship("char5", "normal")
+        source = Image.new("RGB", (2600, 1300), (118, 143, 172))
+        raw = io.BytesIO()
+        source.save(raw, format="JPEG", quality=98)
+        raw.seek(0)
+        with tempfile.TemporaryDirectory() as upload_root, patch.object(
+            app_module, "UPLOAD_ROOT", upload_root
+        ), patch.object(
+            app_module,
+            "ask_character",
+            return_value=("我看见了。", None, None, [], {}),
+        ) as ask_character:
+            response = self.client.post(
+                "/api/image",
+                data={
+                    "character_id": "char5",
+                    "session_id": "chat-image-test-compress",
+                    "image": (raw, "iphone-photo.jpg", "image/jpeg"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()["image"]
+        self.assertTrue(payload["url"].startswith("/api/chat-images/"))
+        self.assertLessEqual(max(payload["width"], payload["height"]), 2048)
+        self.assertLessEqual(payload["size"], app_module.TARGET_CHAT_IMAGE_BYTES)
+        vision = ask_character.call_args.kwargs["image_payload"]
+        self.assertEqual(vision["mime"], payload["mime"])
+        self.assertEqual(
+            len(app_module.base64.b64decode(vision["data"])), payload["size"]
+        )
+
+    def test_today_music_room_keeps_private_context_and_saves_session_memories(self):
+        session_id = "music-context-test"
+        app_module.save_message(session_id, "char1", "user", "我们去一起听吧。")
+        app_module.save_message(session_id, "char1", "model", "好，我跟你过去。")
+        app_module.save_message(session_id, "char2", "user", "这是另一段私聊。")
+        context = app_module._music_private_context("char1", session_id)
+        self.assertIn("我们去一起听吧。", context)
+        self.assertIn("好，我跟你过去。", context)
+        self.assertNotIn("这是另一段私聊。", context)
+
+        conn = app_module.sqlite3.connect(app_module.DB_PATH)
+        conn.execute("DELETE FROM music_room_messages WHERE room_id=1")
+        conn.execute(
+            "UPDATE music_rooms SET song_name=?,artist_name=? WHERE id=1",
+            ("测试情歌", "测试歌手"),
+        )
+        conn.executemany(
+            "INSERT INTO music_room_messages(room_id,author_id,content,event_type) "
+            "VALUES (1,?,?,?)",
+            [
+                (app_module.USER_ID, "这首歌让我想到第一次见面。", "comment"),
+                ("char1", "我也记得。", "companion"),
+                (app_module.USER_ID, "以后每年都一起听一次。", "comment"),
+                ("char6", "说好了。", "companion"),
+            ],
+        )
+        conn.commit()
+        snapshot = app_module._music_memory_snapshot(conn, ["char1", "char6"])
+        conn.close()
+        self.assertIsNotNone(snapshot)
+
+        with patch.object(
+            app_module,
+            "_ask_character_for_music_memory",
+            side_effect=lambda cid, _prompt: f"{cid} 想记住这次一起听。",
+        ) as ask_memory, patch.object(
+            app_module, "push_summary_to_ombre"
+        ) as save_memory:
+            self.assertTrue(app_module._remember_music_session(snapshot))
+        self.assertEqual(ask_memory.call_count, 2)
+        self.assertEqual(save_memory.call_count, 2)
+        self.assertEqual(
+            {call.args[1] for call in save_memory.call_args_list},
+            {"char1", "char6"},
+        )
+
+    def test_today_tool_history_keeps_character_ownership(self):
+        for model, strict in (
+            ("claude-sonnet-4-6", False),
+            ("openai/gpt-5.5", False),
+            ("google/gemini-3-flash-preview", True),
+        ):
+            guard = app_module._tool_guard_text(model)
+            self.assertIn("动作主体就是调用工具的你本人", guard)
+            self.assertEqual("绝对不要在你的回复里复述" in guard, strict)
+
+        state = app_module._new_tool_chain_state()
+        first = app_module._execute_chat_tool(
+            "send_sticker", {"key": "tietie"}, "char5", state
+        )
+        duplicate = app_module._execute_chat_tool(
+            "send_sticker", {"key": "exhausted"}, "char5", state
+        )
+        self.assertIn("你亲自选择并发送", first)
+        self.assertIn("不是系统代发", first)
+        self.assertIn("第一次已成功送达", duplicate)
+
+        session_id = "sticker-ownership-test"
+        app_module.save_message(
+            session_id,
+            "char5",
+            "model",
+            "__STICKER__" + app_module.json.dumps(
+                {"key": "tietie", "from": "char"}, ensure_ascii=False
+            ),
+        )
+        history = app_module.load_active_messages(session_id, "char5")
+        self.assertEqual(history[-1]["role"], "user")
+        self.assertIn("你此前亲自调用 send_sticker", history[-1]["content"])
+        self.assertIn("不是系统代发", history[-1]["content"])
+
+    def test_today_reflection_drive_uses_a_moment_not_a_private_message(self):
+        cid = "char5"
+        winner = {
+            "character_id": cid,
+            "drive_key": "reflection",
+            "want_action": "reflect",
+            "reason": "想把最近的事情过一遍",
+            "score": 0.88,
+        }
+        app_module._write_setting("desire_enabled", "true")
+        app_module._write_setting("desire_enabled_chars", cid)
+        try:
+            with patch.object(
+                app_module, "load_desire_state", return_value={}
+            ), patch.object(
+                app_module, "save_desire_state"
+            ), patch.object(
+                app_module, "evaluate_household_gate", return_value=(True, "allowed")
+            ), patch.object(
+                app_module, "_get_sleep_state", return_value={"state": "awake"}
+            ), patch.object(
+                app_module, "_available_desire_drives", return_value={"reflection"}
+            ), patch.object(
+                app_module, "attention_candidate", return_value=winner
+            ), patch.object(
+                app_module, "choose_household_candidate", return_value=winner
+            ), patch.object(
+                app_module, "_generate_moment_core",
+                return_value=({"ok": True, "author_id": cid}, None),
+            ) as generate, patch.object(
+                app_module, "satisfy_action", side_effect=lambda state, *_args: state
+            ), patch.object(app_module, "ask_character") as private_ask:
+                app_module.do_desire_heartbeat()
+
+            generate.assert_called_once_with(
+                cid, autonomous_reason=winner["reason"]
+            )
+            private_ask.assert_not_called()
+            conn = app_module.sqlite3.connect(app_module.DB_PATH)
+            row = conn.execute(
+                "SELECT action_type FROM desire_actions "
+                "WHERE character_id=? ORDER BY id DESC LIMIT 1",
+                (cid,),
+            ).fetchone()
+            conn.close()
+            self.assertEqual(row[0], "moment")
+        finally:
+            app_module._write_setting("desire_enabled", "false")
+            app_module._write_setting(
+                "desire_enabled_chars", ",".join(app_module.CHARACTERS)
+            )
 
 
 if __name__ == "__main__":

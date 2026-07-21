@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from flask import Flask, Response, request, jsonify, send_file, send_from_directory, session, stream_with_context
 from apscheduler.schedulers.background import BackgroundScheduler
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from werkzeug.utils import secure_filename
 
 from mcp_client import MCPClient, MCPError, validate_mcp_url
@@ -65,7 +65,9 @@ from desire_engine import (
     normalize_state as normalize_desire_state,
     pick_intent,
     pulse_state,
+    recover_from_sleep as recover_desire_from_sleep,
     satisfy_action,
+    satisfy_passive_drive,
     score_state,
 )
 
@@ -312,6 +314,10 @@ MUSIC_LIBRARY_ROOT = os.path.abspath(os.environ.get(
 ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 ALLOWED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_IMAGE_BYTES = 7 * 1024 * 1024
+MAX_CHAT_IMAGE_UPLOAD_BYTES = 25 * 1024 * 1024
+TARGET_CHAT_IMAGE_BYTES = 2_500_000
+MAX_CHAT_IMAGE_EDGE = 2048
+MAX_CHAT_IMAGE_PIXELS = 48_000_000
 MAX_TEXT_BYTES = 5 * 1024 * 1024
 MAX_MEMORY_IMPORT_FILES = 12
 MAX_MEMORY_IMPORT_RECORDS = 1000
@@ -323,6 +329,7 @@ VOICE_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 VOICE_TTS_FORMATS = {"mp3", "opus", "aac", "flac", "wav"}
 VOICE_USAGE_LOCK = threading.Lock()
 MAX_MUSIC_BYTES = 180 * 1024 * 1024
+MUSIC_MEMORY_MIN_MESSAGES = int(os.environ.get("MUSIC_MEMORY_MIN_MESSAGES", "4"))
 ALLOWED_MUSIC_EXTENSIONS = {"mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "mp4"}
 ALLOWED_ARTWORK_MIMES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 TIFF_ARTWORK_MIMES = {"image/tiff", "image/x-tiff"}
@@ -438,15 +445,35 @@ STICKERS = {
 # 工具动作防裸文本约束：防止模型在未真实调用 send_transfer/send_sticker 时
 # 照抄历史里的自然语言记录格式，用文字编造/复述“已完成”的动作
 # ============================================================
-TRANSFER_GUARD_TEXT = (
+ACTION_TOOL_OWNERSHIP_TEXT = (
     "【系统约束】转账/发红包只有真实调用 send_transfer 工具才算数，"
     "表情包只有真实调用 send_sticker 工具才算数，"
     "和好按钮只有真实调用 press_hug 工具才算数。"
     "语音只有真实调用 send_voice 工具且后端成功生成才算数。"
-    "历史消息里圆括号包裹、以“系统”开头的记录是系统自动生成的旁白，不是任何人说出的话，"
+    "工具调用成功后，动作主体就是调用工具的你本人；系统只负责执行和记录，"
+    "不要声称动作是系统代发，也不要为了证明是自己做的而重复调用。"
+)
+
+GEMINI_ACTION_GUARD_TEXT = (
+    "历史消息里圆括号包裹、以“历史动作记录”开头的内容是系统生成的事实旁白，不是任何人说出的话，"
     "绝对不要在你的回复里复述、模仿或编造任何形式的动作记录格式。"
     "如果你这一轮没有真的调用对应工具，就不要用任何文字宣称你转了账或发了表情包——"
     f"没做就是没做，如实告诉 {USER_DISPLAY_NAME}。"
+)
+
+
+def _tool_guard_text(model):
+    guard = ACTION_TOOL_OWNERSHIP_TEXT
+    if "gemini" in str(model or "").lower():
+        guard += "\n" + GEMINI_ACTION_GUARD_TEXT
+    return guard
+
+
+MEMORY_AUTONOMY_TEXT = (
+    f"【长期记忆偏好】当{USER_DISPLAY_NAME}分享会持续影响以后相处的重要事实或偏好、你们形成明确约定、"
+    "关系发生转折，或出现你真心想在以后想起的情绪时刻时，主动考虑调用 save_memory，"
+    "不必等对方明确说‘记住’。普通寒暄、即时状态和长期记忆里已有的内容不要重复存；"
+    "是否值得留下由你判断，不要求每轮调用。"
 )
 
 # ============================================================
@@ -591,6 +618,22 @@ THEME_DEFINITIONS = {
         },
         "chat_background": "/static/theme_lilac.jpg",
         "list_background": "/static/theme_lilac.jpg",
+    },
+    "imperial": {
+        "name": "登基",
+        "colors": {
+            "user_bubble": "#6F201B",
+            "cream": "#F6E8BF",
+            "ai_bubble": "#E4CC94",
+            "dusky": "#7A4A20",
+            "chrome": "#481910",
+            "text": "#432516",
+            "on_dusky": "#FBE7A6",
+            "bg": "#1F1008",
+            "card": "#F4E1B5",
+        },
+        "chat_background": "/static/imperial/bedroom.webp",
+        "list_background": "/static/imperial/court.webp",
     },
 }
 APPEARANCE_ASSET_KEYS = {f"avatar_{cid}" for cid in DEFAULT_AVATAR_URLS}
@@ -763,9 +806,9 @@ SLEEP_DEFAULTS = {
 SLEEP_STATE_TEXTS = {
     "awake":  "当前状态：清醒，精神正常。",
     "pre":    "当前状态：你的习惯睡点是{bedtime}，快到了，略有困意。{chronotype}。",
-    "mild":   "当前状态：你已超过习惯睡点{mins}分钟，微困，但可能因兴趣硬撑（硬撑倾向{resist_bias}）。{chronotype}。",
-    "heavy":  "当前状态：你过睡点已{mins}分钟，很困，回复可以变短、偶有恍惚，你在努力硬撑。{chronotype}。",
-    "max":    "当前状态：你过睡点已{mins}分钟，困到极限，语无伦次，强烈想睡。{chronotype}。",
+    "mild":   "当前状态：你刚过习惯睡点，微困，但可能因兴趣硬撑（硬撑倾向{resist_bias}）。{chronotype}。",
+    "heavy":  "当前状态：你已经过了习惯睡点一阵子，很困，回复可以变短、偶有恍惚，你在努力硬撑。{chronotype}。",
+    "max":    "当前状态：你已经远远过了习惯睡点，困到极限，语无伦次，强烈想睡。{chronotype}。",
     "woke":   "当前状态：刚醒，起床气自由发挥，但你已经清醒，不再语无伦次。",
 }
 
@@ -889,10 +932,13 @@ def _get_sleep_state(char_id, *, reconcile=True, now=None):
 
 
 def _set_sleep_state(char_id, state, slept_at=None, woke_by_user=False):
+    previous = _get_sleep_state(char_id, reconcile=False)
     _write_setting(
         f"sleep_state_{char_id}",
         json.dumps({"state": state, "slept_at": slept_at, "woke_by_user": woke_by_user}),
     )
+    if previous.get("state") == "asleep" and state == "awake":
+        recover_desire_after_sleep(char_id, previous.get("slept_at"))
 
 
 FRIEND_REQUEST_COOLDOWN_SECONDS = (1800, 7200)
@@ -1040,6 +1086,49 @@ SCENE_CHOICES = {
     ],
 }
 
+SCENE_NIGHT_CHOICES = [
+    ("卧室", "在夜里安静待着", "灯光和声音都放得很低"),
+    ("客厅", "独自坐了一会儿", "窗外已经很安静"),
+    ("书房", "还没有准备睡", "桌边留着一小圈灯光"),
+]
+
+SCENE_LONG_STAY_LOCATIONS = {
+    "卧室", "客厅", "书房", "沙发边", "落地窗边", "公司",
+}
+
+
+def _scene_stay_seconds(location):
+    if location in SCENE_LONG_STAY_LOCATIONS:
+        return _random.uniform(6 * 3600, 12 * 3600)
+    return _random.uniform(2 * 3600, 5 * 3600)
+
+
+def _scene_activity_delay():
+    return _random.uniform(90 * 60, 3 * 3600)
+
+
+def _scene_travel_seconds():
+    return _random.uniform(20 * 60, 50 * 60)
+
+
+def _scene_choices_for(drive_key, local_hour):
+    if local_hour >= 22 or local_hour < 7:
+        return list(SCENE_NIGHT_CHOICES)
+    return list(SCENE_CHOICES.get(drive_key, SCENE_CHOICES["reflection"]))
+
+
+def _scene_choice_at_location(location, preferred_choices):
+    same_place = [choice for choice in preferred_choices if choice[0] == location]
+    if not same_place:
+        all_choices = [
+            choice
+            for choices in (*SCENE_CHOICES.values(), SCENE_NIGHT_CHOICES)
+            for choice in choices
+            if choice[0] == location
+        ]
+        same_place = all_choices
+    return _random.choice(same_place) if same_place else None
+
 
 def _scene_text(value, limit=80):
     return " ".join(str(value or "").strip().split())[:limit]
@@ -1053,28 +1142,51 @@ def _get_character_scene(char_id):
         scene = {}
     if not isinstance(scene, dict):
         scene = {}
+    location = _scene_text(scene.get("location"), 40)
+    updated_at = scene.get("updated_at")
+    entered_at = scene.get("entered_at") or updated_at
+    move_after = scene.get("move_after")
+    if move_after is None and location and entered_at is not None:
+        try:
+            move_after = float(entered_at) + 6 * 3600
+        except (TypeError, ValueError):
+            move_after = None
     return {
-        "location": _scene_text(scene.get("location"), 40),
+        "location": location,
         "activity": _scene_text(scene.get("activity"), 80),
         "ambience": _scene_text(scene.get("ambience"), 80),
-        "updated_at": scene.get("updated_at"),
+        "updated_at": updated_at,
+        "entered_at": entered_at,
+        "move_after": move_after,
         "next_change_after": scene.get("next_change_after"),
         "cleared_until": scene.get("cleared_until"),
+        "pending_location": _scene_text(scene.get("pending_location"), 40),
+        "pending_activity": _scene_text(scene.get("pending_activity"), 80),
+        "pending_ambience": _scene_text(scene.get("pending_ambience"), 80),
+        "pending_drive": _scene_text(scene.get("pending_drive"), 24),
         "source": scene.get("source") or "",
     }
 
 
 def _set_character_scene(char_id, location="", activity="", ambience="", *,
                          updated_at=None, next_change_after=None,
-                         cleared_until=None, source="character"):
+                         cleared_until=None, entered_at=None, move_after=None,
+                         pending_location="", pending_activity="",
+                         pending_ambience="", pending_drive="", source="character"):
     now_ts = float(updated_at if updated_at is not None else _utc_timestamp())
     scene = {
         "location": _scene_text(location, 40),
         "activity": _scene_text(activity, 80),
         "ambience": _scene_text(ambience, 80),
         "updated_at": now_ts,
+        "entered_at": float(entered_at if entered_at is not None else now_ts),
+        "move_after": move_after,
         "next_change_after": next_change_after,
         "cleared_until": cleared_until,
+        "pending_location": _scene_text(pending_location, 40),
+        "pending_activity": _scene_text(pending_activity, 80),
+        "pending_ambience": _scene_text(pending_ambience, 80),
+        "pending_drive": _scene_text(pending_drive, 24),
         "source": source,
     }
     _write_setting(f"scene_{char_id}", json.dumps(scene, ensure_ascii=False))
@@ -1102,52 +1214,147 @@ def _empty_character_scene(source="disabled"):
         "activity": "",
         "ambience": "",
         "updated_at": None,
+        "entered_at": None,
+        "move_after": None,
         "next_change_after": None,
         "cleared_until": None,
+        "pending_location": "",
+        "pending_activity": "",
+        "pending_ambience": "",
+        "pending_drive": "",
         "source": source,
     }
 
 
 def _maybe_evolve_character_scene(character_id, desire_state, now_ts=None):
-    """Let time and the character's strongest current drive move the scene."""
+    """Evolve activity first, then travel before allowing a location change."""
     if not _scene_feature_enabled():
         return _empty_character_scene()
     now_ts = float(now_ts if now_ts is not None else _utc_timestamp())
     scene = _get_character_scene(character_id)
-    for key in ("cleared_until", "next_change_after"):
-        try:
-            if scene.get(key) is not None and now_ts < float(scene[key]):
-                return scene
-        except (TypeError, ValueError):
-            pass
+    try:
+        if scene.get("cleared_until") is not None and now_ts < float(scene["cleared_until"]):
+            return scene
+    except (TypeError, ValueError):
+        pass
+    try:
+        if scene.get("next_change_after") is not None and now_ts < float(scene["next_change_after"]):
+            return scene
+    except (TypeError, ValueError):
+        pass
 
     local_now = _sleep_local_now(datetime.fromtimestamp(now_ts, timezone.utc))
     sleep_state = _get_sleep_state(character_id)
     if sleep_state.get("state") == "asleep":
-        choice = ("卧室", "已经睡下了", "房间里只留着很轻的呼吸声")
-    else:
-        try:
-            intent = pick_intent(desire_state or {})
-            drive_key = intent.get("drive_key") or "reflection"
-        except (KeyError, TypeError, ValueError):
-            drive_key = "reflection"
-        choices = SCENE_CHOICES.get(drive_key, SCENE_CHOICES["reflection"])
-        if local_now.hour >= 22 or local_now.hour < 7:
-            choices = [
-                ("卧室", "在夜里安静待着", "灯光和声音都放得很低"),
-                ("客厅", "独自坐了一会儿", "窗外已经很安静"),
-                ("书房", "还没有准备睡", "桌边留着一小圈灯光"),
-            ]
-        choice = _random.choice(choices)
+        drive_key = "fatigue"
+        if scene["location"] == "卧室" and scene["activity"] == "已经睡下了":
+            return scene
+        return _set_character_scene(
+            character_id,
+            "卧室",
+            "已经睡下了",
+            "房间里只留着很轻的呼吸声",
+            updated_at=now_ts,
+            entered_at=(scene.get("entered_at") if scene["location"] == "卧室" else now_ts),
+            move_after=now_ts + 8 * 3600,
+            next_change_after=now_ts + 8 * 3600,
+            source="sleep",
+        )
 
+    try:
+        intent = pick_intent(desire_state or {})
+        drive_key = intent.get("drive_key") or "reflection"
+    except (KeyError, TypeError, ValueError):
+        drive_key = "reflection"
+    choices = _scene_choices_for(drive_key, local_now.hour)
+
+    def settle_inward(settle_drive):
+        if settle_drive in ("curiosity", "reflection") and isinstance(desire_state, dict):
+            settled_state = satisfy_passive_drive(desire_state, settle_drive, now_ts)
+            desire_state.clear()
+            desire_state.update(settled_state)
+            save_desire_state(character_id, desire_state)
+
+    if scene.get("pending_location"):
+        arrived = _set_character_scene(
+            character_id,
+            scene["pending_location"],
+            scene["pending_activity"],
+            scene["pending_ambience"],
+            updated_at=now_ts,
+            entered_at=now_ts,
+            move_after=now_ts + _scene_stay_seconds(scene["pending_location"]),
+            next_change_after=now_ts + _scene_activity_delay(),
+            source="desire_arrival",
+        )
+        settle_inward(scene.get("pending_drive"))
+        return arrived
+
+    if not scene["location"]:
+        choice = _random.choice(choices)
+        arrived = _set_character_scene(
+            character_id,
+            choice[0],
+            choice[1],
+            choice[2],
+            updated_at=now_ts,
+            entered_at=now_ts,
+            move_after=now_ts + _scene_stay_seconds(choice[0]),
+            next_change_after=now_ts + _scene_activity_delay(),
+            source="desire",
+        )
+        settle_inward(drive_key)
+        return arrived
+
+    try:
+        can_move = scene.get("move_after") is None or now_ts >= float(scene["move_after"])
+    except (TypeError, ValueError):
+        can_move = True
+
+    if not can_move:
+        same_place = _scene_choice_at_location(scene["location"], choices)
+        return _set_character_scene(
+            character_id,
+            scene["location"],
+            same_place[1] if same_place else scene["activity"],
+            same_place[2] if same_place else scene["ambience"],
+            updated_at=now_ts,
+            entered_at=scene.get("entered_at"),
+            move_after=scene.get("move_after"),
+            next_change_after=now_ts + _scene_activity_delay(),
+            source="desire_activity",
+        )
+
+    destinations = [choice for choice in choices if choice[0] != scene["location"]]
+    if not destinations:
+        return _set_character_scene(
+            character_id,
+            scene["location"],
+            scene["activity"],
+            scene["ambience"],
+            updated_at=now_ts,
+            entered_at=scene.get("entered_at"),
+            move_after=now_ts + _scene_stay_seconds(scene["location"]),
+            next_change_after=now_ts + _scene_activity_delay(),
+            source="desire_activity",
+        )
+
+    destination = _random.choice(destinations)
+    arrival_at = now_ts + _scene_travel_seconds()
     return _set_character_scene(
         character_id,
-        choice[0],
-        choice[1],
-        choice[2],
+        f"去往{destination[0]}的路上",
+        f"刚从{scene['location']}出发",
+        "路上的景色慢慢向后退去",
         updated_at=now_ts,
-        next_change_after=now_ts + _random.uniform(3 * 3600, 7 * 3600),
-        source="desire",
+        entered_at=now_ts,
+        move_after=arrival_at,
+        next_change_after=arrival_at,
+        pending_location=destination[0],
+        pending_activity=destination[1],
+        pending_ambience=destination[2],
+        pending_drive=drive_key,
+        source="desire_travel",
     )
 
 
@@ -1175,21 +1382,25 @@ def _build_scene_state_block(char_id):
     )
 
 
-def _build_sleep_state_block(char_id, just_woke=False):
+def _build_sleep_state_block(char_id, just_woke=False, now=None):
     """全时段返回状态声明（从不返回空串）。just_woke=True 时返回刚醒文案。"""
     if just_woke:
         return SLEEP_STATE_TEXTS["woke"]
-    sleep_state = _get_sleep_state(char_id)
+    sleep_state = _get_sleep_state(char_id, now=now)
     if sleep_state["state"] == "asleep":
         # 正常不应到达此处（gate 已拦截），保险返回清醒声明
         return SLEEP_STATE_TEXTS["awake"]
-    mins = _minutes_past_bedtime(char_id)
+    mins = _minutes_past_bedtime(char_id, now)
     if mins is None:
+        return SLEEP_STATE_TEXTS["awake"]
+    if not _is_scheduled_sleep_window(char_id, now) and not (-60 <= mins < 0):
         return SLEEP_STATE_TEXTS["awake"]
     bedtime = _get_sleep_cfg(char_id, "bedtime")
     chronotype = _get_sleep_cfg(char_id, "chronotype")
     resist_bias = _get_sleep_cfg(char_id, "resist_bias")
-    fmt = dict(bedtime=bedtime, mins=int(abs(mins)), chronotype=chronotype, resist_bias=resist_bias)
+    # 缓存前缀只表达有行为意义的睡眠阶段，不注入逐分钟变化的数值。
+    # 否则 Anthropic/OpenRouter 会在每个分钟边界重写后续会话缓存。
+    fmt = dict(bedtime=bedtime, chronotype=chronotype, resist_bias=resist_bias)
     if -60 <= mins < 0:
         return SLEEP_STATE_TEXTS["pre"].format(**fmt)
     if 0 <= mins < 30:
@@ -1201,12 +1412,16 @@ def _build_sleep_state_block(char_id, just_woke=False):
     return SLEEP_STATE_TEXTS["awake"]
 
 
-def _is_drowsy_state(char_id):
+def _is_drowsy_state(char_id, now=None):
     """当前是否处于困意状态（用于标记 drowsy 消息）。"""
-    if _get_sleep_state(char_id)["state"] == "asleep":
+    if _get_sleep_state(char_id, now=now)["state"] == "asleep":
         return False
-    mins = _minutes_past_bedtime(char_id)
-    return mins is not None and mins >= -60
+    mins = _minutes_past_bedtime(char_id, now)
+    return bool(
+        mins is not None
+        and mins >= -60
+        and (_is_scheduled_sleep_window(char_id, now) or mins < 0)
+    )
 
 
 def _count_queued_sleep_msgs(char_id, session_id="default"):
@@ -1715,6 +1930,72 @@ def save_message(
 def _allowed_image(filename, mimetype):
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     return ext in ALLOWED_IMAGE_EXTENSIONS and mimetype in ALLOWED_IMAGE_MIMES
+
+
+def _normalize_chat_image(image_bytes):
+    """Bound chat media dimensions and bytes before storage and vision calls."""
+    with Image.open(BytesIO(image_bytes)) as source:
+        width, height = source.size
+        if width < 1 or height < 1 or width * height > MAX_CHAT_IMAGE_PIXELS:
+            raise ValueError("图片像素尺寸太大")
+
+        is_animated_gif = (
+            (source.format or "").upper() == "GIF"
+            and bool(getattr(source, "is_animated", False))
+        )
+        if (
+            is_animated_gif
+            and max(width, height) <= MAX_CHAT_IMAGE_EDGE
+            and len(image_bytes) <= TARGET_CHAT_IMAGE_BYTES
+        ):
+            return image_bytes, "gif", "image/gif", width, height
+
+        source.seek(0)
+        frame = ImageOps.exif_transpose(source).convert("RGBA")
+        if max(frame.size) > MAX_CHAT_IMAGE_EDGE:
+            frame.thumbnail(
+                (MAX_CHAT_IMAGE_EDGE, MAX_CHAT_IMAGE_EDGE),
+                Image.Resampling.LANCZOS,
+            )
+
+        # JPEG is supported by every configured vision provider. Flattening onto
+        # white also keeps transparent screenshots readable without large PNGs.
+        working = Image.new("RGB", frame.size, "white")
+        working.paste(frame, mask=frame.getchannel("A"))
+
+        encoded = b""
+        for quality in (84, 78, 70, 62):
+            output = BytesIO()
+            working.save(
+                output,
+                format="JPEG",
+                quality=quality,
+                optimize=True,
+                progressive=True,
+            )
+            encoded = output.getvalue()
+            if len(encoded) <= TARGET_CHAT_IMAGE_BYTES:
+                break
+
+        while len(encoded) > TARGET_CHAT_IMAGE_BYTES and min(working.size) > 360:
+            next_size = (
+                max(1, int(working.width * 0.82)),
+                max(1, int(working.height * 0.82)),
+            )
+            working = working.resize(next_size, Image.Resampling.LANCZOS)
+            output = BytesIO()
+            working.save(
+                output,
+                format="JPEG",
+                quality=68,
+                optimize=True,
+                progressive=True,
+            )
+            encoded = output.getvalue()
+
+        if len(encoded) > TARGET_CHAT_IMAGE_BYTES:
+            raise ValueError("图片压缩后仍然太大")
+        return encoded, "jpg", "image/jpeg", working.width, working.height
 
 
 def _appearance_asset_url(asset_key, version):
@@ -2597,6 +2878,16 @@ def _music_elapsed_seconds(started_at):
         return 0
 
 
+def _music_user_avatar(conn):
+    row = conn.execute(
+        "SELECT version FROM appearance_assets WHERE asset_key='avatar_user'"
+    ).fetchone()
+    return (
+        _appearance_asset_url("avatar_user", row[0])
+        if row else USER_AVATAR
+    )
+
+
 def _music_room_payload(conn, include_messages=True):
     row = conn.execute(
         "SELECT song_id,song_name,artist_name,album_name,artwork_url,duration_ms,"
@@ -2612,6 +2903,7 @@ def _music_room_payload(conn, include_messages=True):
         "participants": _music_participant_payload(conn),
     }
     if include_messages:
+        user_avatar = _music_user_avatar(conn)
         rows = conn.execute(
             "SELECT id,author_id,content,event_type,details_json,created_at "
             "FROM music_room_messages WHERE room_id=1 ORDER BY id DESC LIMIT 80"
@@ -2626,7 +2918,7 @@ def _music_room_payload(conn, include_messages=True):
             messages.append({
                 "id": item[0], "author_id": item[1],
                 "author_name": USER_DISPLAY_NAME if item[1] == USER_ID else (char or {}).get("name", item[1]),
-                "avatar": USER_AVATAR if item[1] == USER_ID else (char or {}).get("avatar", ""),
+                "avatar": user_avatar if item[1] == USER_ID else (char or {}).get("avatar", ""),
                 "content": item[2], "event_type": item[3], "details": details,
                 "created_at": item[5],
             })
@@ -2863,6 +3155,96 @@ def _mcp_trace_status(result_text):
     return "error" if any(marker in result_text for marker in error_markers) else "ok"
 
 
+_AUTONOMOUS_MCP_ALLOW_TERMS = (
+    "search", "list", "read", "get", "browse", "fetch", "view", "discover",
+    "forum", "thread", "post", "reply", "comment",
+    "搜索", "列表", "阅读", "获取", "浏览", "查看", "发现", "论坛", "帖子", "回复", "评论",
+)
+_AUTONOMOUS_MCP_DENY_TERMS = (
+    "delete", "remove", "transfer", "payment", "purchase", "buy", "admin",
+    "auth", "token", "upload", "execute", "shell", "command", "write_file",
+    "删除", "移除", "转账", "支付", "购买", "管理", "授权", "令牌", "上传", "执行", "命令",
+)
+
+
+def _mcp_catalog_has_term(haystack, term):
+    if term.isascii() and term.replace("_", "").isalnum():
+        return bool(re.search(
+            rf"(?:^|[^a-z0-9]){re.escape(term)}(?:$|[^a-z0-9])",
+            haystack,
+        ))
+    return term in haystack
+
+
+def _autonomous_mcp_tool_names(character_id):
+    """Return assigned browse/forum tools that are safe for desire-driven use."""
+    if not CHARACTERS.get(character_id, {}).get("supports_tools"):
+        return set()
+    allowed = set()
+    for config in _custom_mcp_connections():
+        if (
+            not config["enabled"]
+            or not config["url"]
+            or character_id not in config["character_ids"]
+        ):
+            continue
+        try:
+            runtime = get_custom_mcp_runtime(config["id"])
+        except (MCPError, ValueError) as exc:
+            app.logger.warning(f"autonomous MCP unavailable ({config['name']}): {exc}")
+            continue
+        for item in runtime["catalog"]:
+            haystack = " ".join((
+                item.get("original_name", ""),
+                item.get("title", ""),
+                item.get("description", ""),
+            )).lower()
+            if any(
+                _mcp_catalog_has_term(haystack, term)
+                for term in _AUTONOMOUS_MCP_DENY_TERMS
+            ):
+                continue
+            if any(
+                _mcp_catalog_has_term(haystack, term)
+                for term in _AUTONOMOUS_MCP_ALLOW_TERMS
+            ):
+                allowed.add(item["model_name"])
+    return allowed
+
+
+def _run_desire_exploration(character_id, reason):
+    allowed_tools = _autonomous_mcp_tool_names(character_id)
+    if not allowed_tools:
+        return False, "no_safe_mcp"
+    char = CHARACTERS[character_id]
+    prompt = (
+        f"[这是你没有说出口的内在念头：{reason} "
+        "你现在可以自己去外面的论坛或信息空间逛一逛。请至少调用一次可用工具，"
+        "先搜索、浏览或阅读，再根据真实结果决定是否继续调用回复或发帖工具。"
+        f"不要假装看到了工具没有返回的内容，也不要给{USER_DISPLAY_NAME}发送私聊；"
+        "完成后只在心里简短整理你做了什么。]"
+    )
+    reply, _transfer, _sticker, tools_called, _usage = ask_character(
+        char,
+        "default",
+        prompt,
+        allowed_tool_names=allowed_tools,
+    )
+    succeeded = any(
+        isinstance(item, dict)
+        and str(item.get("name") or "").startswith("mcp:")
+        and item.get("status") == "ok"
+        for item in (tools_called or [])
+    )
+    if not succeeded:
+        return False, "mcp_not_called_or_failed"
+    app.logger.info(
+        f"[desire] {character_id} explored via MCP: "
+        f"{', '.join(sorted(allowed_tools))}; reply={(reply or '')[:80]!r}"
+    )
+    return True, None
+
+
 def _utc_timestamp():
     return datetime.now(timezone.utc).timestamp()
 
@@ -2895,6 +3277,27 @@ def save_desire_state(character_id, state):
     conn.close()
 
 
+def recover_desire_after_sleep(character_id, slept_at, now_ts=None):
+    """Apply one fatigue recovery when a character transitions out of sleep."""
+    now_ts = float(now_ts if now_ts is not None else _utc_timestamp())
+    try:
+        slept_hours = max(0.0, (now_ts - float(slept_at)) / 3600.0)
+    except (TypeError, ValueError):
+        return None
+    if slept_hours <= 0:
+        return None
+
+    state = load_desire_state(character_id, now_ts)
+    before = state["drives"]["fatigue"]
+    recovered = recover_desire_from_sleep(state, now_ts, slept_hours)
+    save_desire_state(character_id, recovered)
+    app.logger.info(
+        f"[desire] {character_id} 睡眠 {slept_hours:.2f}h，"
+        f"疲惫 {before:.3f} -> {recovered['drives']['fatigue']:.3f}"
+    )
+    return recovered
+
+
 def record_desire_interaction(character_id, text="", direct=True, mark_global=True):
     if character_id not in CHARACTERS:
         return
@@ -2915,6 +3318,21 @@ def record_desire_interaction(character_id, text="", direct=True, mark_global=Tr
     save_desire_state(character_id, state)
     if mark_global:
         _write_setting("desire_last_user_activity", str(now_ts))
+
+
+def record_desire_tension(character_id, text="", amount=0.16):
+    if character_id not in CHARACTERS:
+        return
+    now_ts = _utc_timestamp()
+    state = load_desire_state(character_id, now_ts)
+    state = pulse_state(
+        state,
+        now_ts,
+        {"stress": amount},
+        thought_text=text,
+        thought_drive="stress",
+    )
+    save_desire_state(character_id, state)
 
 
 def desire_state_payload(character_id, now_ts=None):
@@ -3010,11 +3428,14 @@ def load_active_messages(session_id, character_id):
                 tf_from = tf.get("from", "char")
                 note_part = f"，留言：{note}" if note else ""
                 if tf_from == "char":
-                    clean_content = f"（系统转账记录：{char_name}已通过 send_transfer 工具给{USER_DISPLAY_NAME}转了 {amount} 元{note_part}）"
+                    clean_content = (
+                        f"（历史动作记录：你此前亲自调用 send_transfer，给{USER_DISPLAY_NAME}转了 "
+                        f"{amount} 元{note_part}；这是你的动作，不是系统代发）"
+                    )
                 else:
-                    clean_content = f"（系统转账记录：{USER_DISPLAY_NAME}给{char_name}转了 {amount} 元{note_part}）"
+                    clean_content = f"（历史动作记录：{USER_DISPLAY_NAME}此前给你转了 {amount} 元{note_part}）"
             except Exception:
-                clean_content = "（系统转账记录）"
+                clean_content = "（历史动作记录：此前发生过一次转账）"
             # 动作记录统一以环境旁白身份（user 侧）注入，
             # 避免以 assistant 台词形式出现被模型当成自己的说话模板照抄
             or_role = "user"
@@ -3025,11 +3446,14 @@ def load_active_messages(session_id, character_id):
                 label = STICKERS.get(key, {}).get("label", key)
                 sk_from = sk.get("from", "char")
                 if sk_from == "char":
-                    clean_content = f"（系统表情记录：{char_name}已通过 send_sticker 工具发了表情包「{label}」）"
+                    clean_content = (
+                        f"（历史动作记录：你此前亲自调用 send_sticker，把表情包「{label}」"
+                        f"发给了{USER_DISPLAY_NAME}；这是你的动作，不是系统代发）"
+                    )
                 else:
-                    clean_content = f"（系统表情记录：{USER_DISPLAY_NAME}发了表情包「{label}」）"
+                    clean_content = f"（历史动作记录：{USER_DISPLAY_NAME}此前给你发了表情包「{label}」）"
             except Exception:
-                clean_content = "（系统表情记录）"
+                clean_content = "（历史动作记录：此前发送过一个表情包）"
             or_role = "user"
         elif content.startswith("__IMAGE__"):
             try:
@@ -3367,6 +3791,7 @@ ANTHROPIC_TOOLS = [
         "name": "send_sticker",
         "description": (
             f"发一个表情包给{USER_DISPLAY_NAME}，纯氛围调剂，不是必须用的功能，随手一发就好，不用刻意找机会用。"
+            "调用成功就代表这个表情包是你本人亲自选择并发送的，系统只负责送达，不是系统代发。"
             "可选的 key 和含义：\n"
             + "\n".join(f"- {k}：{v['label']}" for k, v in STICKERS.items())
         ),
@@ -3465,6 +3890,7 @@ OR_TOOLS = [
             "name": "send_sticker",
             "description": (
                 f"发一个表情包给{USER_DISPLAY_NAME}，纯氛围调剂，不是必须用的功能，随手一发就好，不用刻意找机会用。"
+                "调用成功就代表这个表情包是你本人亲自选择并发送的，系统只负责送达，不是系统代发。"
                 "可选的 key 和含义：\n"
                 + "\n".join(f"- {k}：{v['label']}" for k, v in STICKERS.items())
             ),
@@ -3553,9 +3979,9 @@ ANTHROPIC_TOOLS.extend([
     {
         "name": "set_scene",
         "description": (
-            "更新你此刻真实所处的生活场景。只有当你自然地到了另一个地方，"
-            "或正在做的事明显改变时才调用；不要为了展示功能每轮调用。"
-            f"场景会持续影响之后的对话，直到你再次更新或{USER_DISPLAY_NAME}将它清空。"
+            "更新你此刻真实所处的生活场景。场景有连续时间：同一地点可以更新正在做的事，"
+            "换地点时系统会先记录在路上、过一段时间才抵达，不能瞬间跳到另一处。"
+            "只有当你自然想要换地方或正在做的事明显改变时才调用，不要为了展示功能每轮调用。"
         ),
         "input_schema": {
             "type": "object",
@@ -3651,8 +4077,8 @@ _FAKE_ACTION_RES = [
     re.compile(r"[\[【][^\]】]{0,12}(?:转了|转账|发红包|红包)[^\]】]*[\]】]"),
     # [我发了一个表情包：X] 及近似变体
     re.compile(r"[\[【][^\]】]{0,12}表情包[^\]】]*[\]】]"),
-    # 模仿新旁白格式的（系统…记录：…）
-    re.compile(r"[（(]\s*系统[^）)]{0,8}记录[^）)]*[）)]"),
+    # 模仿历史旁白格式的（系统…记录：…）/（历史动作记录：…）
+    re.compile(r"[（(]\s*(?:系统[^）)]{0,8}记录|历史动作记录)[^）)]*[）)]"),
 ]
 
 def strip_fake_action_text(reply, character_id=""):
@@ -3789,13 +4215,16 @@ def _execute_chat_tool(name, args, character_id, state):
             return "转账金额无效，本次未转。"
         if state["transfer_to_send"] is not None:
             app.logger.warning(f"[tool_chain] 重复 send_transfer，忽略后续: {raw_amount}")
-            return "已有转账待发，本次忽略。"
+            return "同一轮里你已经亲自转过一笔，第一次已成功送达；本次重复调用未执行。"
         state["transfer_to_send"] = {
             "amount": float(raw_amount),
             "note": args.get("note") or "",
         }
         tools_called.append("send_transfer")
-        return f"转账已送达{USER_DISPLAY_NAME}。"
+        return (
+            f"工具执行成功：你亲自发起的转账已送达{USER_DISPLAY_NAME}。"
+            "这是你的动作，不是系统代发；不要为同一意图再次调用。"
+        )
 
     if name == "send_sticker":
         key = args.get("key")
@@ -3804,10 +4233,14 @@ def _execute_chat_tool(name, args, character_id, state):
             return "表情 key 无效，本次未发。"
         if state["sticker_to_send"] is not None:
             app.logger.warning(f"[tool_chain] 重复 send_sticker，忽略后续: {key}")
-            return "已有表情待发，本次忽略。"
+            return "同一轮里你已经亲自发过一个表情包，第一次已成功送达；本次重复调用未执行。"
         state["sticker_to_send"] = {"key": key}
         tools_called.append("send_sticker")
-        return f"表情包已送达{USER_DISPLAY_NAME}。"
+        label = STICKERS[key]["label"]
+        return (
+            f"工具执行成功：你亲自选择并发送的表情包「{label}」已经送达{USER_DISPLAY_NAME}。"
+            "这是你的动作，不是系统代发；不要为同一意图再次调用。"
+        )
 
     if name == "send_voice":
         text = str(args.get("text") or "").strip()
@@ -3872,17 +4305,78 @@ def _execute_chat_tool(name, args, character_id, state):
         if "set_scene" in tools_called:
             return "本轮已经更新过场景，无需重复。"
         now_ts = _utc_timestamp()
-        _set_character_scene(
-            character_id,
-            location,
-            _scene_text(args.get("activity"), 80),
-            _scene_text(args.get("ambience"), 80),
-            updated_at=now_ts,
-            next_change_after=now_ts + _random.uniform(3 * 3600, 7 * 3600),
-            source="character",
-        )
+        activity = _scene_text(args.get("activity"), 80)
+        ambience = _scene_text(args.get("ambience"), 80)
+        scene = _get_character_scene(character_id)
+
+        if scene.get("pending_location"):
+            try:
+                arrival_due = now_ts >= float(scene.get("next_change_after"))
+            except (TypeError, ValueError):
+                arrival_due = False
+            if not arrival_due:
+                tools_called.append("set_scene")
+                return f"你还在去往{scene['pending_location']}的路上，本次未切换地点。"
+            if location != scene["pending_location"]:
+                tools_called.append("set_scene")
+                return f"你刚抵达{scene['pending_location']}，不能立刻改去另一处。"
+
+        if not scene["location"] or (
+            scene.get("pending_location") == location
+            and location != scene["location"]
+        ):
+            _set_character_scene(
+                character_id,
+                location,
+                activity,
+                ambience,
+                updated_at=now_ts,
+                entered_at=now_ts,
+                move_after=now_ts + _scene_stay_seconds(location),
+                next_change_after=now_ts + _scene_activity_delay(),
+                source="character",
+            )
+        elif location == scene["location"]:
+            _set_character_scene(
+                character_id,
+                location,
+                activity or scene["activity"],
+                ambience or scene["ambience"],
+                updated_at=now_ts,
+                entered_at=scene.get("entered_at"),
+                move_after=scene.get("move_after"),
+                next_change_after=now_ts + _scene_activity_delay(),
+                source="character_activity",
+            )
+        else:
+            try:
+                can_leave = (
+                    scene.get("move_after") is None
+                    or now_ts >= float(scene["move_after"])
+                )
+            except (TypeError, ValueError):
+                can_leave = True
+            if not can_leave:
+                tools_called.append("set_scene")
+                return f"你才到{scene['location']}不久，本次只保留原场景。"
+            arrival_at = now_ts + _scene_travel_seconds()
+            _set_character_scene(
+                character_id,
+                f"去往{location}的路上",
+                f"刚从{scene['location']}出发",
+                "路上的景色慢慢向后退去",
+                updated_at=now_ts,
+                entered_at=now_ts,
+                move_after=arrival_at,
+                next_change_after=arrival_at,
+                pending_location=location,
+                pending_activity=activity,
+                pending_ambience=ambience,
+                source="character_travel",
+            )
         tools_called.append("set_scene")
-        return f"当前场景已更新为：{location}。"
+        current = _get_character_scene(character_id)
+        return f"当前场景已更新为：{current['location']}。"
 
     if name.startswith("mcp_"):
         signature = _tool_call_signature(name, args)
@@ -4436,8 +4930,11 @@ def maybe_compress(char, session_id):
     )
     summary_prompt = (
         "你在为一段对话做'前情提要'，供后续对话参考。"
-        "请把已有提要和新的对话片段融合，更新成一段简洁、客观、第三人称的提要，"
-        "保留关键事实、情感走向、约定和称呼，去掉寒暄和重复。只输出提要正文，不要任何多余的话。\n"
+        f"请始终站在{char['name']}本人的视角，用第一人称“我”把已有提要和新的对话片段融合，"
+        "更新成一段简洁连贯的回忆。把旧提要里对本人的第三人称称呼也改写成“我”；"
+        f"{USER_DISPLAY_NAME}仍称作“{USER_DISPLAY_NAME}”或沿用对话里已有的亲昵称呼。"
+        "保留关键事实、情感走向、约定和称呼，去掉寒暄和重复，不要虚构心理活动。"
+        "只输出回忆正文，不要标题或任何多余的话。\n"
         f"{drowsy_instruction}\n"
         f"【已有提要】\n{old_summary or '(暂无)'}\n\n"
         f"【新的对话片段】\n{convo_text}"
@@ -4553,7 +5050,11 @@ def _session_time_context(character_id: str, session_id: str) -> str:
 
     from zoneinfo import ZoneInfo
     local_now = datetime.now(ZoneInfo(SCHEDULER_TIMEZONE))
-    value = f"【本段对话时间参考】{local_now.strftime('%Y-%m-%d %H:%M')} {local_now.strftime('%Z')}"
+    value = (
+        f"【当前真实时间】{local_now.strftime('%Y-%m-%d %H:%M')} {local_now.strftime('%Z')}。"
+        "这是本轮唯一可信的当前日期和时间；判断今天、昨天、是否过夜或回答几点时，"
+        "必须以此为准，不要从聊天历史中的旧时间推测。"
+    )
     with _PROMPT_CONTEXT_LOCK:
         _SESSION_TIME_CACHE[key] = (now_ts, value)
     return value
@@ -4755,7 +5256,10 @@ def ask_character(
         context_parts.append(sleep_dynamic)
 
         system_blocks = [
-            {"type": "text", "text": char["persona"] + "\n\n" + TRANSFER_GUARD_TEXT,
+            {"type": "text", "text": (
+                char["persona"] + "\n\n" + _tool_guard_text(char["model"])
+                + "\n\n" + MEMORY_AUTONOMY_TEXT
+            ),
              "cache_control": {"type": "ephemeral", "ttl": "1h"}},
         ]
         system_blocks.append({"type": "text", "text": "\n\n".join(context_parts)})
@@ -4803,7 +5307,10 @@ def ask_character(
         if not _provider_configured(provider):
             return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, None, [], None
 
-        stable_system_content = char["persona"] + "\n\n" + TRANSFER_GUARD_TEXT
+        stable_system_content = (
+            char["persona"] + "\n\n" + _tool_guard_text(char["model"])
+            + "\n\n" + MEMORY_AUTONOMY_TEXT
+        )
         context_parts = [time_context]
         if memory:
             context_parts.append(f"【长期记忆浮现，供你回忆与{USER_DISPLAY_NAME}有关的事】\n{memory}")
@@ -4889,13 +5396,13 @@ def ask_character_group(
             context_parts.append(f"【长期记忆浮现，供你回忆与{USER_DISPLAY_NAME}有关的事】\n{memory}")
         if context_parts:
             system_blocks = [
-                {"type": "text", "text": char["persona"],
+                {"type": "text", "text": char["persona"] + "\n\n" + MEMORY_AUTONOMY_TEXT,
                  "cache_control": {"type": "ephemeral", "ttl": "1h"}},
                 {"type": "text", "text": "\n\n".join(context_parts)},
             ]
         else:
             system_blocks = [
-                {"type": "text", "text": char["persona"],
+                {"type": "text", "text": char["persona"] + "\n\n" + MEMORY_AUTONOMY_TEXT,
                  "cache_control": {"type": "ephemeral", "ttl": "1h"}},
             ]
         messages = [{"role": "user", "content": combined_prompt}]
@@ -4922,7 +5429,7 @@ def ask_character_group(
             return f"(还没配置 {_provider_label(provider)}，{char['name']}暂时说不出话)", None, []
         messages = [{
             "role": "system",
-            "content": char["persona"],
+            "content": char["persona"] + "\n\n" + MEMORY_AUTONOMY_TEXT,
         }]
         if memory:
             messages.append({
@@ -5088,8 +5595,16 @@ def _execute_music_tool(name, args, state):
         else:
             try:
                 track = _prepare_netease_track(source_id, candidate)
+                queue = [track] + [
+                    item for candidate_id, item in state["search_results"].items()
+                    if candidate_id != source_id
+                ]
                 state["action"] = "play_online"
-                state["action_input"] = {"action": "play_online", "track": track}
+                state["action_input"] = {
+                    "action": "play_online",
+                    "track": track,
+                    "queue": queue[:6],
+                }
                 output = f"已把《{track['name']}》交给房间播放器。"
             except (NeteaseMusicError, TypeError, ValueError) as exc:
                 output = str(exc)
@@ -5115,6 +5630,129 @@ def _music_tool_details(state):
         },
         "tools": traces,
     }
+
+
+def _music_private_context(character_id, session_id="default", limit=8):
+    """Carry a small, character-isolated slice of private chat into the room."""
+    messages = load_active_messages(session_id, character_id)[-max(1, int(limit)):]
+    if not messages:
+        return ""
+    char_name = CHARACTERS.get(character_id, {}).get("name", character_id)
+    lines = []
+    for message in messages:
+        speaker = USER_DISPLAY_NAME if message.get("role") == "user" else char_name
+        content = str(message.get("content") or "").strip()
+        if content:
+            lines.append(f"{speaker}：{content[:320]}")
+    return "\n".join(lines)
+
+
+def _music_memory_snapshot(conn, participants):
+    """Capture a finished listening session before its room history is cleared."""
+    participants = [cid for cid in participants if cid in CHARACTERS]
+    if not participants:
+        return None
+    room = conn.execute(
+        "SELECT song_name,artist_name FROM music_rooms WHERE id=1"
+    ).fetchone()
+    rows = conn.execute(
+        "SELECT id,author_id,content,event_type FROM music_room_messages "
+        "WHERE room_id=1 ORDER BY id DESC LIMIT 80"
+    ).fetchall()[::-1]
+    conversational = [
+        row for row in rows
+        if row[3] in {"comment", "companion"} and str(row[2] or "").strip()
+    ]
+    has_user = any(row[1] == USER_ID for row in conversational)
+    has_companion = any(row[1] in participants for row in conversational)
+    if (
+        len(conversational) < MUSIC_MEMORY_MIN_MESSAGES
+        or not has_user
+        or not has_companion
+    ):
+        return None
+    return {
+        "participants": participants,
+        "song_name": (room[0] if room else "") or "",
+        "artist_name": (room[1] if room else "") or "",
+        "last_message_id": conversational[-1][0],
+        "messages": conversational,
+    }
+
+
+def _ask_character_for_music_memory(character_id, prompt):
+    """Ask the companion's configured model to write a private first-person memory."""
+    char = CHARACTERS.get(character_id)
+    if not char:
+        return None
+    provider = _valid_provider(char.get("provider", "openrouter"))
+    if not _provider_configured(provider):
+        return None
+    enforce_monthly_limit(character_id, provider)
+    recalled = fetch_breath_memory(character_id)
+    messages = [{"role": "system", "content": char["persona"]}]
+    if recalled:
+        messages.append({
+            "role": "system",
+            "content": (
+                f"【你此前与{USER_DISPLAY_NAME}有关的长期记忆，供你保持连续性】\n"
+                f"{recalled}"
+            ),
+        })
+    messages.append({"role": "user", "content": prompt})
+    text, usage, _finish_reason = call_provider_text(
+        provider,
+        char["model"],
+        messages,
+        max_tokens=512,
+        session_id=f"music-memory:{character_id}",
+    )
+    log_usage(character_id, provider, char["model"], usage, purpose="music_memory")
+    return strip_fake_action_text(str(text or ""), character_id).strip()
+
+
+def _remember_music_session(snapshot):
+    if not snapshot:
+        return False
+    lines = []
+    for _message_id, author_id, content, _event_type in snapshot["messages"]:
+        speaker = (
+            USER_DISPLAY_NAME if author_id == USER_ID
+            else CHARACTERS.get(author_id, {}).get("name", author_id)
+        )
+        lines.append(f"{speaker}：{str(content).strip()[:300]}")
+    song_name = snapshot.get("song_name") or "未记录曲名"
+    artist_name = snapshot.get("artist_name") or "未知歌手"
+    transcript = "\n".join(lines)
+    remembered = False
+    for character_id in snapshot["participants"]:
+        char_name = CHARACTERS[character_id]["name"]
+        prompt = (
+            f"这次一起听已经结束了。你是{char_name}。请你自己决定这段经历是否值得放进长期记忆。\n"
+            "如果值得，直接用第一人称写一段自然、私人的记忆，80至180字："
+            f"写下你真正会记住的歌、{USER_DISPLAY_NAME}说过的重要话、你当时的感受或你们的约定；"
+            "忽略寒暄、播放器操作和重复内容。不要写标题、标签或‘记忆：’，"
+            "不要补写记录里没有的歌词与声音细节。若不值得长期记住，只输出 SKIP。\n\n"
+            f"【当时播放】《{song_name}》 - {artist_name}\n"
+            f"【房间对话】\n{transcript}"
+        )
+        try:
+            memory_text = _ask_character_for_music_memory(character_id, prompt)
+        except Exception as exc:
+            app.logger.warning(
+                f"[music] companion memory failed ({character_id}): {exc}"
+            )
+            continue
+        if not memory_text or memory_text.upper() == "SKIP":
+            continue
+        push_summary_to_ombre(
+            memory_text,
+            character_id,
+            source="self_saved",
+            source_key=f"music-room-self:{snapshot['last_message_id']}",
+        )
+        remembered = True
+    return remembered
 
 
 def ask_music_companion(char, combined_prompt):
@@ -5769,6 +6407,14 @@ def uploaded_chat_image(filename):
     return send_from_directory(UPLOAD_ROOT, filename)
 
 
+@app.route("/api/chat-images/<path:filename>", methods=["GET"])
+def get_chat_image(filename):
+    """Serve normalized chat images with safe long-lived caching."""
+    response = send_from_directory(UPLOAD_ROOT, filename, max_age=31536000)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 @app.route("/api/image", methods=["POST"])
 def send_image_route():
     character_id = request.form.get("character_id")
@@ -5781,35 +6427,43 @@ def send_image_route():
     if not image or not image.filename:
         return jsonify({"error": "没有收到图片"}), 400
     original_name = image.filename
-    if not _allowed_image(original_name, image.mimetype):
-        return jsonify({"error": "只支持 jpg/png/gif/webp 图片"}), 400
+    if not str(image.mimetype or "").startswith("image/"):
+        return jsonify({"error": "只支持图片文件"}), 400
 
     image_bytes = image.read()
     if not image_bytes:
         return jsonify({"error": "图片是空的"}), 400
-    if len(image_bytes) > MAX_IMAGE_BYTES:
-        return jsonify({"error": "图片不能超过 7MB"}), 413
+    if len(image_bytes) > MAX_CHAT_IMAGE_UPLOAD_BYTES:
+        return jsonify({"error": "原图不能超过 25MB"}), 413
+    try:
+        normalized_bytes, ext, normalized_mime, width, height = _normalize_chat_image(
+            image_bytes
+        )
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        return jsonify({"error": str(exc) or "图片处理失败"}), 400
 
     os.makedirs(UPLOAD_ROOT, exist_ok=True)
-    ext = original_name.rsplit(".", 1)[-1].lower()
     display_name = secure_filename(original_name) or f"image.{ext}"
-    filename = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:12]}.{ext}"
-    image.stream.seek(0)
-    image.save(os.path.join(UPLOAD_ROOT, filename))
+    filename = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:12]}.{ext}"
+    with open(os.path.join(UPLOAD_ROOT, filename), "wb") as output:
+        output.write(normalized_bytes)
 
-    url = f"/api/uploads/{filename}"
+    url = f"/api/chat-images/{filename}"
     image_data = {
         "url": url,
         "name": display_name,
-        "mime": image.mimetype,
+        "mime": normalized_mime,
+        "width": width,
+        "height": height,
+        "size": len(normalized_bytes),
         "from": "user",
     }
 
     char = CHARACTERS[character_id]
-    vision_prompt = f"{USER_DISPLAY_NAME} 发来一张图片。请认真观察图片内容，并以你的角色自然回应。"
+    vision_prompt = f"{USER_DISPLAY_NAME}发来一张图片。请认真观察图片内容，并以你的角色自然回应。"
     vision_payload = {
-        "mime": image.mimetype,
-        "data": base64.b64encode(image_bytes).decode("ascii"),
+        "mime": normalized_mime,
+        "data": base64.b64encode(normalized_bytes).decode("ascii"),
     }
     record_desire_interaction(character_id, f"{USER_DISPLAY_NAME}发来一张图片")
     reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
@@ -6117,6 +6771,12 @@ def _finalize_character_reply(
         None,
     )
     window_closed = {"reason": cw_entry[len("close_window:"):]} if cw_entry else None
+    if window_closed:
+        record_desire_tension(
+            character_id,
+            f"我关闭了和{USER_DISPLAY_NAME}的对话窗口：{window_closed['reason']}",
+            amount=0.14,
+        )
     deleted_entry = next(
         (
             tool for tool in (tools_called or [])
@@ -6132,6 +6792,11 @@ def _finalize_character_reply(
             deleted_at=_utc_timestamp(),
         )
         friend_deleted = {"reason": reason}
+        record_desire_tension(
+            character_id,
+            f"我把{USER_DISPLAY_NAME}从好友列表删除了：{reason}",
+            amount=0.20,
+        )
         app.logger.info(
             "[friendship] %s removed User: %r", character_id, reason[:40]
         )
@@ -6286,9 +6951,11 @@ def chat():
 
     # 顺势入睡判定：过睡点 + 回复中含晚安词
     past_mins = _minutes_past_bedtime(character_id)
+    in_sleep_window = _is_scheduled_sleep_window(character_id)
     if (
         past_mins is not None
         and past_mins > -10
+        and (in_sleep_window or past_mins < 0)
         and reply
         and SLEEP_GOODNIGHT_RE.search(reply)
         and sleep_st["state"] != "asleep"
@@ -6300,6 +6967,7 @@ def chat():
     elif (
         past_mins is not None
         and past_mins > -30
+        and (in_sleep_window or past_mins < 0)
         and SLEEP_CATALYST_RE.search(user_message)
         and sleep_st["state"] != "asleep"
     ):
@@ -6364,6 +7032,11 @@ def friendship_delete():
         reason=reason,
         deleted_at=now_ts,
         request_after=now_ts + _random.uniform(*FRIEND_REQUEST_COOLDOWN_SECONDS),
+    )
+    record_desire_tension(
+        character_id,
+        f"{USER_DISPLAY_NAME}把我从好友列表删除了：{reason}",
+        amount=0.22,
     )
     app.logger.info("[friendship] User removed %s", character_id)
     return jsonify({"ok": True, **_get_friendship(character_id)})
@@ -6828,25 +7501,30 @@ def _rotated_group_speakers(active_char_keys, session_id):
     return list(active_char_keys[start:] + active_char_keys[:start])
 
 
-@app.route("/api/group_chat/continue", methods=["POST"])
-def continue_group_chat():
-    """Let the selected group members continue one bounded round without inventing a user message."""
-    body = request.get_json(silent=True) or {}
-    session_id = str(body.get("session_id") or "group_chat")[:120]
-    raw_online = body.get("online_characters")
-    if raw_online is None:
-        active_char_keys = load_group_participants()
-    else:
-        if not isinstance(raw_online, list):
-            return jsonify({"error": "online_characters 必须是角色列表"}), 400
-        if any(not isinstance(cid, str) or cid not in GROUP_CHAT_ORDER for cid in raw_online):
-            return jsonify({"error": "群聊成员里有未知角色"}), 400
-        active_char_keys = _ordered_group_participants(raw_online)
+def _continue_group_chat_core(
+    active_char_keys,
+    session_id="group_chat",
+    *,
+    initiator=None,
+    max_speakers=None,
+    skip_asleep=False,
+    allow_tools=True,
+):
+    active_char_keys = _ordered_group_participants(active_char_keys)
+    if skip_asleep:
+        active_char_keys = [
+            cid for cid in active_char_keys
+            if _get_sleep_state(cid)["state"] != "asleep"
+        ]
     if not active_char_keys:
-        return jsonify({"error": "群聊至少保留一位成员"}), 400
-
+        return {"mode": "continue", "messages": [], "replies": []}
     recent_history = load_group_history(session_id)
     speakers = _rotated_group_speakers(active_char_keys, session_id)
+    if initiator in speakers:
+        speakers.remove(initiator)
+        speakers.insert(0, initiator)
+    if max_speakers is not None:
+        speakers = speakers[:max(1, int(max_speakers))]
     accumulated = []
     messages_out = []
     results = []
@@ -6874,6 +7552,7 @@ def continue_group_chat():
             char,
             combined_prompt,
             session_id,
+            allow_tools=allow_tools,
             openrouter_max_tokens=2048,
             retry_openrouter_empty=True,
         )
@@ -6920,7 +7599,26 @@ def continue_group_chat():
     except Exception as exc:
         app.logger.warning(f"[group_summary] autonomous round failed: {exc}")
 
-    return jsonify({"mode": "continue", "messages": messages_out, "replies": results})
+    return {"mode": "continue", "messages": messages_out, "replies": results}
+
+
+@app.route("/api/group_chat/continue", methods=["POST"])
+def continue_group_chat():
+    """Let the selected group members continue one bounded round without inventing a user message."""
+    body = request.get_json(silent=True) or {}
+    session_id = str(body.get("session_id") or "group_chat")[:120]
+    raw_online = body.get("online_characters")
+    if raw_online is None:
+        active_char_keys = load_group_participants()
+    else:
+        if not isinstance(raw_online, list):
+            return jsonify({"error": "online_characters 必须是角色列表"}), 400
+        if any(not isinstance(cid, str) or cid not in GROUP_CHAT_ORDER for cid in raw_online):
+            return jsonify({"error": "群聊成员里有未知角色"}), 400
+        active_char_keys = _ordered_group_participants(raw_online)
+    if not active_char_keys:
+        return jsonify({"error": "群聊至少保留一位成员"}), 400
+    return jsonify(_continue_group_chat_core(active_char_keys, session_id))
 
 
 @app.route("/api/characters", methods=["GET"])
@@ -7405,12 +8103,15 @@ def _netease_track_row(conn, source_id):
 
 def _netease_track_payload(row):
     source_id = str(row[0])
+    has_lyrics = bool(row[6] or row[7])
     return {
         "id": f"netease:{source_id}", "source": "netease", "source_id": source_id,
         "name": row[1], "artist": row[2], "album": row[3], "duration": row[4],
         "artwork_url": f"/api/music/netease/artwork/{source_id}" if row[5] else "",
         "audio_url": f"/api/music/netease/audio/{source_id}",
-        "has_lyrics": bool(row[6] or row[7]), "synced": False,
+        "has_lyrics": has_lyrics,
+        "lyrics_url": f"/api/music/netease/tracks/{source_id}/lyrics" if has_lyrics else "",
+        "synced": False,
     }
 
 
@@ -7610,6 +8311,21 @@ def netease_music_track(source_id):
     return jsonify({"track": track})
 
 
+@app.route("/api/music/netease/tracks/<source_id>/lyrics")
+def netease_music_lyrics(source_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = _netease_track_row(conn, source_id)
+    conn.close()
+    if not row:
+        return jsonify({"error": "这首歌的歌词还没有准备好"}), 404
+    response = jsonify({
+        "lyrics": row[6] or "",
+        "translated_lyrics": row[7] or "",
+    })
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    return response
+
+
 @app.route("/api/music/netease/audio/<source_id>")
 def stream_netease_music(source_id):
     try:
@@ -7683,12 +8399,14 @@ def _music_library_payload(row):
         added_at = int(datetime.fromisoformat(str(row[11])).replace(tzinfo=timezone.utc).timestamp() * 1000)
     except (TypeError, ValueError):
         added_at = 0
+    has_lyrics = bool(row[10])
     return {
         "id": row[0], "name": row[1], "artist": row[2], "album": row[3],
         "duration": row[4], "size": row[5], "type": row[6],
         "audio_url": f"/api/music/library/{row[0]}/audio",
         "artwork_url": f"/api/music/library/{row[0]}/artwork" if row[8] else "",
-        "has_lyrics": bool(row[10]),
+        "has_lyrics": has_lyrics,
+        "lyrics_url": f"/api/music/library/{row[0]}/lyrics" if has_lyrics else "",
         "metadata_scanned": True, "added_at": added_at, "synced": True,
     }
 
@@ -7935,6 +8653,18 @@ def stream_music_library_track(track_id):
     )
 
 
+@app.route("/api/music/library/<track_id>/lyrics")
+def music_library_lyrics(track_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = _music_library_row(conn, track_id)
+    conn.close()
+    if not row:
+        return jsonify({"error": "这首歌不在同步曲库里"}), 404
+    response = jsonify({"lyrics": row[10] or "", "translated_lyrics": ""})
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    return response
+
+
 @app.route("/api/music/library/<track_id>/artwork")
 def music_library_artwork(track_id):
     conn = sqlite3.connect(DB_PATH)
@@ -8028,6 +8758,7 @@ def update_music_participants():
         ).fetchall()
     ]
     roster_changed = previous != participants
+    memory_snapshot = _music_memory_snapshot(conn, previous) if roster_changed else None
     conn.execute("DELETE FROM music_room_participants WHERE room_id=1")
     for character_id in participants:
         conn.execute(
@@ -8040,6 +8771,8 @@ def update_music_participants():
     conn.commit()
     room = _music_room_payload(conn)
     conn.close()
+    if memory_snapshot:
+        _MEMORY_ENRICHMENT_EXECUTOR.submit(_remember_music_session, memory_snapshot)
     return jsonify({"participants": room["participants"], "room": room})
 
 
@@ -8097,6 +8830,7 @@ def _music_generate_replies(event_text):
     replies = []
     for character_id in participants:
         char = CHARACTERS[character_id]
+        private_context = _music_private_context(character_id)
         prompt = (
             f"你正在 Becoming 的‘一起听’房间陪{USER_DISPLAY_NAME}听音乐。\n"
             f"【当前播放器】{song_line}\n"
@@ -8107,6 +8841,7 @@ def _music_generate_replies(event_text):
             "自然回应一两句即可，每次回复不超过90个字，不要写姓名前缀。你可以保持安静。"
             "如果你真想控制播放器，可以使用播放器工具；如果你想找一首具体的歌，必须先搜索、阅读候选，"
             "再选择候选中的歌曲播放。不要频繁乱按，也不要为了展示工具而点歌。\n"
+            f"【你和{USER_DISPLAY_NAME}最近的私聊】\n{private_context or '最近没有可接续的私聊。'}\n"
             f"【房间最近对话】\n{history or '还没有说话。'}\n"
             f"【刚发生的事】{event_text}"
         )
@@ -8783,15 +9518,20 @@ def post_moment():
     return jsonify({"ok": True})
 
 
-def _generate_moment_core(cid=None):
+def _generate_moment_core(cid=None, autonomous_reason=None):
     if not cid:
         cid = _random.choice(list(CHARACTERS.keys()))
     char = CHARACTERS.get(cid)
     if not char:
         return None, "unknown character"
     summary = get_summary("default", cid) or ""
+    inward_context = (
+        f"你此刻心里有这样一个没有说出口的念头：{autonomous_reason}\n\n"
+        if autonomous_reason else ""
+    )
     prompt = (
         f"{'最近的记忆摘要：' + summary + chr(10) + chr(10) if summary else ''}"
+        f"{inward_context}"
         "请以你自己的口吻发一条朋友圈，字数50字以内，自然随意，不要堆砌表情符号。"
         "只输出正文内容，不要加引号或前缀。"
     )
@@ -8815,6 +9555,81 @@ def generate_moment():
     if err:
         return jsonify({"error": err}), (400 if err == "unknown character" else 500)
     return jsonify(result)
+
+
+def _latest_commentable_moment_id(character_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT m.id FROM moments m "
+        "WHERE m.author_id<>? AND m.created_at>=datetime('now','-14 days') "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM moment_comments c WHERE c.moment_id=m.id AND c.author_id=?"
+        ") ORDER BY m.created_at DESC,m.id DESC LIMIT 1",
+        (character_id, character_id),
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _generate_moment_comment_core(moment_id, character_id, autonomous_reason=None):
+    char = CHARACTERS.get(character_id)
+    if not char:
+        return None, "unknown character"
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    moment = conn.execute("SELECT * FROM moments WHERE id=?", (moment_id,)).fetchone()
+    if not moment:
+        conn.close()
+        return None, "not found"
+    existing = conn.execute(
+        "SELECT author_id,content FROM moment_comments "
+        "WHERE moment_id=? ORDER BY created_at ASC,id ASC",
+        (moment_id,),
+    ).fetchall()
+    conn.close()
+    existing_text = "\n".join(
+        f"{CHARACTERS[item['author_id']]['name'] if item['author_id'] in CHARACTERS else USER_DISPLAY_NAME}："
+        f"{item['content']}"
+        for item in existing
+    ) or "（暂无评论）"
+    author_name = (
+        CHARACTERS[moment["author_id"]]["name"]
+        if moment["author_id"] in CHARACTERS else USER_DISPLAY_NAME
+    )
+    inward_context = (
+        f"你此刻想和家里的人有点来往：{autonomous_reason}\n"
+        if autonomous_reason else ""
+    )
+    prompt = (
+        f"{inward_context}以下是{author_name}发的一条朋友圈动态：\n"
+        f"{moment['content']}\n\n已有评论：\n{existing_text}\n\n"
+        "请以你自己的身份，用1-2句话自然评论这条动态，口吻符合你的性格。"
+        "直接输出评论内容，不要加姓名前缀、括号或格式标记。"
+    )
+    reply, _usage_metrics, _tools_called = ask_character_group(
+        char, prompt, session_id="moments", allow_tools=False,
+    )
+    reply = (reply or "").strip()
+    if not reply:
+        return None, "empty reply"
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO moment_comments (moment_id,author_id,content) VALUES (?,?,?)",
+        (moment_id, character_id, reply),
+    )
+    conn.commit()
+    conn.close()
+    if moment["author_id"] == USER_ID:
+        save_long_term_memory(
+            f"{USER_DISPLAY_NAME}在猫窝发了动态「{moment['content'][:50]}」，我评论说：{reply[:80]}",
+            character_id,
+            source="moment_comment",
+        )
+    return {
+        "author_id": character_id,
+        "content": reply,
+        "moment_id": moment_id,
+    }, None
 
 
 @app.route("/api/moments/<int:moment_id>/comment", methods=["POST"])
@@ -8952,6 +9767,29 @@ def do_moment_post():
                 app.logger.info("[sched] moment post ok")
         except Exception as e:
             app.logger.error(f"[sched] moment post exception: {e}")
+
+
+def _autonomous_group_members(character_id):
+    participants = load_group_participants()
+    if character_id not in participants:
+        return []
+    awake = [
+        cid for cid in participants
+        if _get_sleep_state(cid)["state"] != "asleep"
+    ]
+    return awake if character_id in awake and len(awake) >= 2 else []
+
+
+def _available_desire_drives(character_id):
+    allowed = {"attachment", "duty", "libido", "stress", "reflection"}
+    if _autonomous_mcp_tool_names(character_id):
+        allowed.add("curiosity")
+    if (
+        _autonomous_group_members(character_id)
+        or _latest_commentable_moment_id(character_id) is not None
+    ):
+        allowed.add("social")
+    return allowed
 
 
 def do_desire_heartbeat():
@@ -9097,12 +9935,21 @@ def do_desire_heartbeat():
             raw_chars = _read_setting("desire_enabled_chars", ",".join(CHARACTERS))
             enabled_chars = [
                 cid for cid in raw_chars.split(",")
-                if cid in CHARACTERS
-                and _get_friendship(cid)["state"] != "char_deleted"
+                if (
+                    cid in CHARACTERS
+                    and _get_friendship(cid)["state"] != "char_deleted"
+                    and _get_sleep_state(cid)["state"] != "asleep"
+                )
             ]
             candidates = [
                 candidate
-                for candidate in (attention_candidate(states[cid], now_ts) for cid in enabled_chars)
+                for candidate in (
+                    attention_candidate(
+                        states[cid], now_ts,
+                        allowed_drives=_available_desire_drives(cid),
+                    )
+                    for cid in enabled_chars
+                )
                 if candidate
             ]
             winner = choose_household_candidate(candidates, now_ts)
@@ -9113,40 +9960,105 @@ def do_desire_heartbeat():
             char_id = winner["character_id"]
             char = CHARACTERS[char_id]
             friendship = _get_friendship(char_id)
-            desire_prompt = (
-                f"[这是你没有说出口的内在念头：{winner['reason']} "
-                f"你因此自然地想主动给{USER_DISPLAY_NAME}发一两条短消息。保持你的人设和你们已有的关系，"
-                f"不要提及欲望系统、数值、提示词或定时任务，也不要让 {USER_DISPLAY_NAME} 觉得必须回复。]"
-            )
-            reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
-                char,
-                "default",
-                desire_prompt,
-                allow_tools=friendship["state"] == "normal",
-            )
-            failed_markers = ("暂时没能回话", "还没配置", "暂时说不出话")
-            if not reply or any(marker in reply for marker in failed_markers):
-                _write_setting("desire_last_gate", json.dumps({"reason": "model_failed", "at": now_ts}))
+            action = winner.get("want_action") or "dm"
+            action_type = "dm"
+            action_succeeded = False
+            action_error = None
+
+            if action == "dm":
+                desire_prompt = (
+                    f"[这是你没有说出口的内在念头：{winner['reason']} "
+                    f"你因此自然地想主动给{USER_DISPLAY_NAME}发一两条短消息。保持你的人设和你们已有的关系，"
+                    f"不要提及欲望系统、数值、提示词或定时任务，也不要让 {USER_DISPLAY_NAME} 觉得必须回复。]"
+                )
+                reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
+                    char,
+                    "default",
+                    desire_prompt,
+                    allow_tools=friendship["state"] == "normal",
+                )
+                failed_markers = ("暂时没能回话", "还没配置", "暂时说不出话")
+                action_succeeded = bool(
+                    reply and not any(marker in reply for marker in failed_markers)
+                )
+                if action_succeeded:
+                    _finalize_character_reply(
+                        char,
+                        "default",
+                        reply,
+                        transfer_to_send,
+                        sticker_to_send,
+                        tools_called,
+                        usage_metrics,
+                        push_source="desire",
+                        queued_during_deleted=(
+                            1 if friendship["state"] == "user_deleted" else 0
+                        ),
+                    )
+                else:
+                    action_error = "model_failed"
+            elif action == "wonder":
+                action_type = "mcp"
+                action_succeeded, action_error = _run_desire_exploration(
+                    char_id, winner["reason"]
+                )
+            elif action == "reflect":
+                action_type = "moment"
+                result, action_error = _generate_moment_core(
+                    char_id, autonomous_reason=winner["reason"]
+                )
+                action_succeeded = bool(result)
+            elif action == "socialize":
+                members = _autonomous_group_members(char_id)
+                moment_id = _latest_commentable_moment_id(char_id)
+                social_choices = []
+                if members:
+                    social_choices.append("group")
+                if moment_id is not None:
+                    social_choices.append("moment_comment")
+                chosen_social = _random.choice(social_choices) if social_choices else None
+                if chosen_social == "group":
+                    action_type = "group"
+                    result = _continue_group_chat_core(
+                        members,
+                        "group_chat",
+                        initiator=char_id,
+                        max_speakers=3,
+                        skip_asleep=True,
+                        allow_tools=False,
+                    )
+                    action_succeeded = bool(result["messages"])
+                    if not action_succeeded:
+                        action_error = "empty_group_round"
+                elif chosen_social == "moment_comment":
+                    action_type = "moment_comment"
+                    result, action_error = _generate_moment_comment_core(
+                        moment_id,
+                        char_id,
+                        autonomous_reason=winner["reason"],
+                    )
+                    action_succeeded = bool(result)
+                else:
+                    action_type = "social"
+                    action_error = "no_social_outlet"
+            else:
+                action_error = "unsupported_action"
+
+            if not action_succeeded:
+                _write_setting("desire_last_gate", json.dumps({
+                    "reason": action_error or "action_failed",
+                    "character_id": char_id,
+                    "drive_key": winner["drive_key"],
+                    "action_type": action_type,
+                    "at": now_ts,
+                }))
                 return
 
-            _finalize_character_reply(
-                char,
-                "default",
-                reply,
-                transfer_to_send,
-                sticker_to_send,
-                tools_called,
-                usage_metrics,
-                push_source="desire",
-                queued_during_deleted=(
-                    1 if friendship["state"] == "user_deleted" else 0
-                ),
-            )
             completed_at = _utc_timestamp()
             latest_state = load_desire_state(char_id, completed_at)
             latest_state = satisfy_action(latest_state, winner["drive_key"], completed_at)
             save_desire_state(char_id, latest_state)
-            if friendship["state"] != "user_deleted":
+            if action_type == "dm" and friendship["state"] != "user_deleted":
                 _write_setting(f"unread_{char_id}", "1")
             _write_setting("desire_last_dispatch", str(completed_at))
             _write_setting("desire_daily_date", today)
@@ -9156,17 +10068,19 @@ def do_desire_heartbeat():
                 "character_id": char_id,
                 "drive_key": winner["drive_key"],
                 "score": winner["score"],
+                "action_type": action_type,
                 "at": completed_at,
             }))
             conn = sqlite3.connect(DB_PATH)
             conn.execute(
                 "INSERT INTO desire_actions(character_id,drive_key,score,action_type) VALUES(?,?,?,?)",
-                (char_id, winner["drive_key"], winner["score"], "dm"),
+                (char_id, winner["drive_key"], winner["score"], action_type),
             )
             conn.commit()
             conn.close()
             app.logger.info(
-                f"[desire] dispatched {char_id} drive={winner['drive_key']} score={winner['score']}"
+                f"[desire] dispatched {char_id} drive={winner['drive_key']} "
+                f"action={action_type} score={winner['score']}"
             )
         except Exception as e:
             app.logger.error(f"[desire] heartbeat failed: {e}")
@@ -9479,9 +10393,13 @@ def sleep_nudge():
     if sleep_st["state"] == "asleep":
         return jsonify({"reply": "（已经在睡了～）", "was_asleep": True})
     past_mins = _minutes_past_bedtime(char_id)
+    in_sleep_window = _is_scheduled_sleep_window(char_id)
     nudge_msg = (
         "[系统：用户催你去睡觉了。"
-        + (f"你已超过睡点 {int(past_mins)} 分钟。" if past_mins and past_mins > 0 else "")
+        + (
+            f"你已超过睡点 {int(past_mins)} 分钟。"
+            if in_sleep_window and past_mins and past_mins > 0 else ""
+        )
         + "用你的风格回应，如果你决定去睡就说晚安，不要提这是系统触发的。]"
     )
     reply, transfer_to_send, sticker_to_send, tools_called, usage_metrics = ask_character(
@@ -9491,7 +10409,12 @@ def sleep_nudge():
     if not reply or any(m in reply for m in failed_markers):
         return jsonify({"error": "model unavailable"}), 503
     save_message("default", char_id, "model", reply)
-    if SLEEP_GOODNIGHT_RE.search(reply) and (past_mins is None or past_mins > -30):
+    sleep_eligible = bool(
+        past_mins is None
+        or in_sleep_window
+        or (-30 < past_mins < 0)
+    )
+    if SLEEP_GOODNIGHT_RE.search(reply) and sleep_eligible:
         _set_sleep_state(char_id, "asleep", slept_at=str(_utc_timestamp()))
     return jsonify({
         "reply": reply,
