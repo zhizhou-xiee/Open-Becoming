@@ -273,24 +273,59 @@
     claude: "/static/imperial/logo-claude.svg",
     gemini: "/static/imperial/logo-gemini.svg",
     grok: "/static/imperial/logo-grok.svg",
+    deepseek: "/static/imperial/logo-deepseek.svg",
     openrouter: "/static/imperial/logo-openrouter.svg",
+    generic: "/static/imperial/logo-generic.svg",
   };
 
-  function imperialModelMark(model) {
-    const normalized = String(model || "").toLowerCase();
-    if (normalized.includes("gemini") || normalized.includes("google/")) {
-      return { key: "gemini", label: "Gemini" };
+  function getModelBrand(modelId) {
+    const normalized = String(modelId || "").trim().toLowerCase();
+    const hasPrefix = prefix => (
+      normalized.startsWith(prefix) || normalized.includes(`/${prefix}`)
+    );
+
+    // Brand follows the actual model id, never the API transport/provider.
+    if (hasPrefix("openai/") || /(^|[/_.:-])gpt(?:[-/_.:]|$)/.test(normalized)) {
+      return { key: "openai", label: "OpenAI", logo: IMPERIAL_MODEL_MARKS.openai };
     }
-    if (normalized.includes("grok") || normalized.includes("x-ai/")) {
-      return { key: "grok", label: "Grok" };
+    if (hasPrefix("anthropic/") || normalized.includes("claude")) {
+      return { key: "claude", label: "Anthropic", logo: IMPERIAL_MODEL_MARKS.claude };
     }
-    if (normalized.includes("gpt") || normalized.includes("openai/")) {
-      return { key: "openai", label: "OpenAI" };
+    if (hasPrefix("google/") || normalized.includes("gemini")) {
+      return { key: "gemini", label: "Google Gemini", logo: IMPERIAL_MODEL_MARKS.gemini };
     }
-    if (normalized.includes("claude") || normalized.includes("anthropic/")) {
-      return { key: "claude", label: "Claude" };
+    if (hasPrefix("x-ai/") || hasPrefix("xai/") || normalized.includes("grok")) {
+      return { key: "grok", label: "xAI Grok", logo: IMPERIAL_MODEL_MARKS.grok };
     }
-    return { key: "openrouter", label: "OpenRouter" };
+    if (hasPrefix("deepseek/") || normalized.includes("deepseek")) {
+      return { key: "deepseek", label: "DeepSeek", logo: IMPERIAL_MODEL_MARKS.deepseek };
+    }
+    if (normalized.includes("openrouter")) {
+      return { key: "openrouter", label: "OpenRouter", logo: IMPERIAL_MODEL_MARKS.openrouter };
+    }
+    return { key: "generic", label: "自定义模型", logo: IMPERIAL_MODEL_MARKS.generic };
+  }
+
+  function applyImperialModelBrand(badge, modelId) {
+    if (!badge) return;
+    const brand = getModelBrand(modelId);
+    badge.className = `imperial-model-badge imperial-model-${brand.key}`;
+    badge.dataset.modelId = modelId || "";
+    badge.title = `${brand.label} · ${modelId || "未配置模型"}`;
+    badge.classList.remove("asset-missing");
+    const logo = badge.querySelector("img");
+    if (logo) {
+      logo.src = brand.logo;
+      logo.alt = brand.label;
+      logo.style.display = "";
+    }
+  }
+
+  function updateImperialModelBadge(characterId, modelId) {
+    const badge = document.querySelector(
+      `.char-list-row[data-character-id="${characterId}"] .imperial-model-badge`
+    );
+    applyImperialModelBrand(badge, modelId);
   }
   let userAvatar = "/static/user.svg";
   let appearanceState = null;
@@ -1601,19 +1636,16 @@
           this.closest(".imperial-character-art")?.classList.add("asset-missing");
           console.warn("imperial portrait missing", this.src);
         };
-        const modelMark = imperialModelMark(c.model);
         const imperialBadge = document.createElement("span");
-        imperialBadge.className = `imperial-model-badge imperial-model-${modelMark.key}`;
-        imperialBadge.title = `${modelMark.label} · ${c.model || "未配置模型"}`;
+        imperialBadge.className = "imperial-model-badge";
         const imperialLogo = document.createElement("img");
-        imperialLogo.src = IMPERIAL_MODEL_MARKS[modelMark.key];
-        imperialLogo.alt = modelMark.label;
         imperialLogo.draggable = false;
         imperialLogo.onerror = function() {
           this.closest(".imperial-model-badge")?.classList.add("asset-missing");
           console.warn("imperial model mark missing", this.src);
         };
         imperialBadge.appendChild(imperialLogo);
+        applyImperialModelBrand(imperialBadge, c.model);
         const imperialDot = document.createElement("div");
         imperialDot.className = "unread-dot imperial-unread-dot hidden";
         imperialDot.dataset.cid = cid;
@@ -5566,6 +5598,7 @@
           if (res.ok) {
             originalProvider = providerPicker.value;
             originalModel = modelInput.value.trim();
+            updateImperialModelBadge(cid, originalModel);
             savedMsg.textContent = "✓ 已保存";
             setTimeout(() => { savedMsg.textContent = ""; }, 2000);
           } else {

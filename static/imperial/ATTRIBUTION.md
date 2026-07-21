@@ -7,5 +7,7 @@ These marks are bundled locally so the theme does not depend on remote image URL
 - Gemini icon: Wikimedia Commons `Google Gemini icon 2025.svg`. Gemini is a trademark of Google.
 - Grok mark: symbol-only crop of Wikimedia Commons `Grok logo (2023-2025).svg`, whose source is identified as xAI. Grok is a trademark of xAI.
 - OpenRouter mark: Simple Icons' OpenRouter mark. OpenRouter is a trademark of OpenRouter.
+- DeepSeek mark: Simple Icons' DeepSeek mark. DeepSeek is a trademark of DeepSeek.
+- Generic model mark: original local SVG for unidentified or custom model ids.
 
 The marks identify the model selected for a character. They do not imply sponsorship or endorsement.

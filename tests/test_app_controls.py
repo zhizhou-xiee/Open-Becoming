@@ -163,6 +163,22 @@ class AppControlsTests(unittest.TestCase):
             "/* Custom long-press actions own these surfaces.", 1
         )[1].split("}", 1)[0])
 
+    def test_imperial_model_badges_follow_model_ids_not_transport_provider(self):
+        static_dir = Path(app_module.__file__).with_name("static")
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function getModelBrand(modelId)", script)
+        self.assertIn('hasPrefix("openai/")', script)
+        self.assertIn('hasPrefix("anthropic/")', script)
+        self.assertIn('hasPrefix("google/")', script)
+        self.assertIn('hasPrefix("x-ai/")', script)
+        for model_name in ("gpt", "claude", "gemini", "grok", "deepseek"):
+            self.assertIn(model_name, script)
+        self.assertIn("applyImperialModelBrand(imperialBadge, c.model);", script)
+        self.assertIn("updateImperialModelBadge(cid, originalModel);", script)
+        self.assertNotIn("getModelBrand(c.provider", script)
+        self.assertTrue((static_dir / "imperial" / "logo-generic.svg").is_file())
+
     def test_group_history_pins_to_latest_after_layout_settles(self):
         script = (
             Path(app_module.__file__).with_name("static") / "app.js"

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Custom model</title>
+  <g fill="none" stroke="#6f201b" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 18h24M16 32h32M20 46h24"/>
+    <circle cx="26" cy="18" r="5" fill="#f3d889"/>
+    <circle cx="40" cy="32" r="5" fill="#f3d889"/>
+    <circle cx="28" cy="46" r="5" fill="#f3d889"/>
+  </g>
+</svg>
