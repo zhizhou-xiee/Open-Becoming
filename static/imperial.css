@@ -7,6 +7,7 @@
 }
 html[data-theme="imperial"] {
   --nav-h: 90px;
+  --imperial-heading-font: "Xingkai SC", "Kaiti SC", "STKaiti", "KaiTi", "Songti SC", serif;
   background: #2a1009;
 }
 
@@ -84,10 +85,10 @@ html[data-theme="imperial"] .imperial-plaque-title {
   place-items: center;
   width: 100%;
   height: 100%;
-  padding: 0 18% 5%;
+  padding: clamp(7px, 1.1dvh, 11px) 18% 0;
   background: url("/static/imperial/plaque.png") center / contain no-repeat;
   color: #2c1608;
-  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-family: var(--imperial-heading-font);
   font-size: clamp(18px, 5vw, 32px);
   font-weight: 800;
   letter-spacing: .16em;
@@ -313,11 +314,12 @@ html[data-theme="imperial"] #singleChatView .chat-header-bar {
 
 html[data-theme="imperial"] #char-name {
   color: #2c1608;
-  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-family: var(--imperial-heading-font);
   font-size: clamp(17px, 4.8vw, 26px);
   font-weight: 800;
   letter-spacing: .1em;
   text-shadow: 0 1px rgba(255, 229, 137, .56);
+  transform: translateY(clamp(4px, .7dvh, 7px));
   white-space: nowrap;
 }
 
@@ -373,14 +375,14 @@ html[data-theme="imperial"] #char-online {
 
 html[data-theme="imperial"] .group-header {
   min-height: clamp(82px, 12dvh, 108px);
-  padding: clamp(25px, 4.2dvh, 38px) 22% 0;
+  padding: calc(clamp(25px, 4.2dvh, 38px) + 5px) 22% 0;
   border: 0;
   background:
     url("/static/imperial/plaque.png") center / min(74vw, 390px) auto no-repeat,
     linear-gradient(to bottom, rgba(38, 9, 4, .74), transparent);
   color: #2c1608;
   filter: drop-shadow(0 5px 5px rgba(17, 4, 1, .24));
-  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-family: var(--imperial-heading-font);
   font-size: clamp(15px, 4.1vw, 22px);
   font-weight: 800;
   letter-spacing: .08em;
@@ -431,12 +433,16 @@ html[data-theme="imperial"] .loading-dots::after {
 
 html[data-theme="imperial"] :is(#inputbar, #groupInputbar) {
   min-height: clamp(86px, 12dvh, 106px);
-  padding: 22px 76px 18px 30px;
+  padding: 22px clamp(82px, 23vw, 96px) 18px clamp(46px, 13.5vw, 58px);
   gap: 0;
   overflow: visible;
   border: 0;
   background: linear-gradient(to top, rgba(30, 8, 3, .74), rgba(30, 8, 3, .08));
   isolation: isolate;
+}
+
+html[data-theme="imperial"] #inputbar {
+  z-index: 110;
 }
 
 html[data-theme="imperial"] :is(#inputbar, #groupInputbar)::before {
@@ -452,7 +458,7 @@ html[data-theme="imperial"] :is(#inputbar, #groupInputbar)::before {
 html[data-theme="imperial"] :is(#input, #groupInput) {
   width: 100%;
   min-width: 0;
-  padding: 11px 8px;
+  padding: 11px 4px;
   border: 0;
   border-radius: 0;
   outline: 0;
@@ -482,6 +488,24 @@ html[data-theme="imperial"] :is(#send, #groupSend) {
   filter: drop-shadow(0 5px 4px rgba(30, 5, 2, .42));
 }
 
+html[data-theme="imperial"] #send {
+  touch-action: none;
+}
+
+html[data-theme="imperial"] #pawMenu {
+  z-index: 8;
+  pointer-events: auto;
+  border-color: rgba(132, 73, 22, .62);
+  background: #f3e2b7;
+  color: #3a2115;
+  box-shadow: 0 9px 22px rgba(29, 7, 2, .42);
+}
+
+html[data-theme="imperial"] #pawMenu .paw-menu-item {
+  color: #3a2115;
+  pointer-events: auto;
+}
+
 html[data-theme="imperial"] :is(#send, #groupSend) .material-symbols-outlined {
   display: none;
 }
@@ -503,7 +527,7 @@ html[data-theme="imperial"] :is(#memoryView, #momentsView, #moreView) {
 
 html[data-theme="imperial"] :is(#memoryListHeader, #momentsListHeader, #moreHeader) {
   min-height: clamp(84px, 12dvh, 108px);
-  padding: clamp(26px, 4.1dvh, 38px) 20% 0;
+  padding: calc(clamp(26px, 4.1dvh, 38px) + 5px) 20% 0;
   overflow: visible;
   border: 0;
   background:
@@ -517,7 +541,7 @@ html[data-theme="imperial"] :is(#memoryListHeader, #momentsListHeader, #moreHead
 
 html[data-theme="imperial"] :is(#memoryListHeader, #momentsListHeader, #moreHeader) .becoming-title {
   color: #2c1608;
-  font-family: "STKaiti", "KaiTi", "Songti SC", serif;
+  font-family: var(--imperial-heading-font);
   font-size: 0 !important;
   font-weight: 800;
   letter-spacing: .1em;
@@ -537,6 +561,71 @@ html[data-theme="imperial"] #momentsListHeader .becoming-title::after {
 html[data-theme="imperial"] #moreHeader .becoming-title::after {
   content: "内务府";
   font-size: clamp(17px, 4.5vw, 24px);
+}
+
+/* 深色宫殿背景上的用量文字用金墨；纸面表单则保持深墨可读。 */
+html[data-theme="imperial"] #usagePanel :is(.usage-label, .usage-amt) {
+  color: #f1d994;
+  text-shadow: 0 1px 3px rgba(24, 5, 1, .78);
+}
+
+html[data-theme="imperial"] #usagePanel .usage-row :is(.usage-label, .usage-amt)[style] {
+  color: #f8e5aa !important;
+}
+
+html[data-theme="imperial"] #moreContent :is(
+  #personaPanel,
+  #appearancePanel,
+  #toolsPanel,
+  #schedulerPanel,
+  #memoryImportPanel,
+  #gestureHelpPanel,
+  #voicePanel
+) {
+  color: #3a2115;
+}
+
+html[data-theme="imperial"] #moreContent :is(
+  #personaPanel,
+  #appearancePanel,
+  #toolsPanel,
+  #schedulerPanel,
+  #memoryImportPanel,
+  #gestureHelpPanel,
+  #voicePanel
+) :is(input[type="text"], input[type="number"], input[type="time"], input[type="url"], input[type="password"], textarea, select, .provider-picker-trigger) {
+  border-color: rgba(132, 73, 22, .46) !important;
+  background: #fff3cf !important;
+  color: #3a2115 !important;
+  -webkit-text-fill-color: #3a2115;
+}
+
+html[data-theme="imperial"] #moreContent :is(
+  #personaPanel,
+  #appearancePanel,
+  #toolsPanel,
+  #schedulerPanel,
+  #memoryImportPanel,
+  #gestureHelpPanel,
+  #voicePanel
+) :is(input, textarea)::placeholder {
+  color: rgba(58, 33, 21, .52);
+  -webkit-text-fill-color: rgba(58, 33, 21, .52);
+}
+
+html[data-theme="imperial"] #schedulerPanel :is(
+  .scheduler-limit-grid label,
+  .scheduler-time-row label,
+  .scheduler-frequency-scale,
+  [style*="color:var(--muted)"]
+) {
+  color: rgba(58, 33, 21, .72) !important;
+}
+
+html[data-theme="imperial"] #schedulerPanel .scheduler-limit-input-wrap {
+  border-color: rgba(132, 73, 22, .46);
+  background: #fff3cf;
+  color: #3a2115;
 }
 
 html[data-theme="imperial"] :is(.memory-card, .memory-entry) {
@@ -607,7 +696,9 @@ html[data-theme="imperial"] :is(.memory-card, .memory-entry):active {
 /* 笔墨纸砚玉玺：仍然是原五个视图，只改成宫廷导航语言。 */
 html[data-theme="imperial"] #bottomNav {
   height: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px));
-  padding: 4px 5px max(5px, env(safe-area-inset-bottom, 0px));
+  justify-content: center;
+  gap: clamp(8px, 3.8vw, 24px);
+  padding: 4px 10px max(5px, env(safe-area-inset-bottom, 0px));
   align-items: flex-start;
   border-top: 1px solid rgba(224, 177, 69, .62);
   background:
@@ -618,7 +709,9 @@ html[data-theme="imperial"] #bottomNav {
 
 html[data-theme="imperial"] .nav-item {
   top: 0;
+  width: min(14.5vw, 64px);
   height: 80px;
+  flex: 0 1 64px;
   padding: 0 2px 1px;
   justify-content: flex-start;
   gap: 0;
@@ -638,8 +731,8 @@ html[data-theme="imperial"] .nav-item::before {
   left: auto;
   right: auto;
   display: block;
-  width: min(14vw, 58px);
-  height: 56px;
+  width: min(12.8vw, 52px);
+  height: 54px;
   margin: 0 auto;
   border: 0;
   background-position: center;
