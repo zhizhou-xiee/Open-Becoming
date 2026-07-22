@@ -187,7 +187,10 @@ class AppControlsTests(unittest.TestCase):
 
         self.assertIn('id="imperialInput"', markup)
         self.assertIn('id="imperialGroupInput"', markup)
+        self.assertEqual(markup.count('placeholder="朕在酝酿旨意…"'), 2)
         self.assertIn("function fitImperialComposer(editor)", script)
+        self.assertIn('const IMPERIAL_COMPOSER_PLACEHOLDER = "朕在酝酿旨意…";', script)
+        self.assertIn("imperialComposerPlaceholder(source.placeholder)", script)
         self.assertIn("const maxHeight = 126;", script)
         self.assertIn('if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;', script)
         self.assertIn(".imperial-composer-input {\n  display: none;", styles)

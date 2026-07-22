@@ -194,9 +194,17 @@
   const voiceFileInput = document.getElementById("voiceFileInput");
   const charSubEl  = document.getElementById("char-sub");
   let voiceConfigState = null;
+  const DEFAULT_COMPOSER_PLACEHOLDER = "小猫酝酿坏主意中…";
+  const IMPERIAL_COMPOSER_PLACEHOLDER = "朕在酝酿旨意…";
 
   function isImperialTheme() {
     return document.documentElement.dataset.theme === "imperial";
+  }
+
+  function imperialComposerPlaceholder(value) {
+    return value === DEFAULT_COMPOSER_PLACEHOLDER
+      ? IMPERIAL_COMPOSER_PLACEHOLDER
+      : value;
   }
 
   function fitImperialComposer(editor) {
@@ -212,7 +220,7 @@
   function syncComposer(source, imperialEditor) {
     if (!source || !imperialEditor) return;
     imperialEditor.value = source.value;
-    imperialEditor.placeholder = source.placeholder;
+    imperialEditor.placeholder = imperialComposerPlaceholder(source.placeholder);
     imperialEditor.disabled = source.disabled;
     fitImperialComposer(imperialEditor);
   }
@@ -236,7 +244,9 @@
 
   function setSingleComposerPlaceholder(value) {
     inputEl.placeholder = value;
-    if (imperialInputEl) imperialInputEl.placeholder = value;
+    if (imperialInputEl) {
+      imperialInputEl.placeholder = imperialComposerPlaceholder(value);
+    }
   }
 
   function setSingleComposerDisabled(disabled) {
@@ -261,7 +271,7 @@
     groupInputEl.placeholder = placeholder;
     if (imperialGroupInputEl) {
       imperialGroupInputEl.disabled = disabled;
-      imperialGroupInputEl.placeholder = placeholder;
+      imperialGroupInputEl.placeholder = imperialComposerPlaceholder(placeholder);
     }
   }
 
