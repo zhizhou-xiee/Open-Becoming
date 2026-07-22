@@ -14,4 +14,4 @@ The marks identify the model selected for a character. They do not imply sponsor
 
 ## Plaque typeface
 
-The plaque headings use the self-hosted **Zhi Mang Xing** typeface from the Google Fonts repository. The font is distributed under the SIL Open Font License 1.1; its complete license is stored at `fonts/OFL.txt`.
+The plaque headings use the self-hosted **Ma Shan Zheng** typeface from the Google Fonts repository. The font is distributed under the SIL Open Font License 1.1; its complete license is stored at `fonts/OFL.txt`.

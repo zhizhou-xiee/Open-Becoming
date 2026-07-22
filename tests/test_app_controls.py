@@ -196,10 +196,11 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn("max-height: 126px;", styles)
         self.assertIn('@font-face {', styles)
         self.assertIn('font-family: "Becoming Imperial Xing";', styles)
-        self.assertIn('/static/imperial/fonts/ZhiMangXing-Regular.ttf', styles)
+        self.assertIn('/static/imperial/fonts/MaShanZheng-Regular.ttf', styles)
         self.assertIn('--imperial-heading-font: "Becoming Imperial Xing"', styles)
         self.assertIn("font-synthesis: none;", styles)
-        self.assertTrue((static_dir / "imperial" / "fonts" / "ZhiMangXing-Regular.ttf").is_file())
+        self.assertTrue((static_dir / "imperial" / "fonts" / "MaShanZheng-Regular.ttf").is_file())
+        self.assertFalse((static_dir / "imperial" / "fonts" / "ZhiMangXing-Regular.ttf").exists())
         self.assertTrue((static_dir / "imperial" / "fonts" / "OFL.txt").is_file())
 
     def test_group_history_pins_to_latest_after_layout_settles(self):
