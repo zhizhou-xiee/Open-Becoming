@@ -203,7 +203,7 @@
     if (!editor || !isImperialTheme()) return;
     editor.style.height = "0px";
     const minHeight = 38;
-    const maxHeight = 78;
+    const maxHeight = 126;
     const nextHeight = Math.min(maxHeight, Math.max(minHeight, editor.scrollHeight));
     editor.style.height = `${nextHeight}px`;
     editor.style.overflowY = editor.scrollHeight > maxHeight ? "auto" : "hidden";

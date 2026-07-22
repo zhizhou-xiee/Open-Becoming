@@ -188,12 +188,13 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn('id="imperialInput"', markup)
         self.assertIn('id="imperialGroupInput"', markup)
         self.assertIn("function fitImperialComposer(editor)", script)
+        self.assertIn("const maxHeight = 126;", script)
         self.assertIn('if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;', script)
         self.assertIn(".imperial-composer-input {\n  display: none;", styles)
         self.assertIn('html[data-theme="imperial"] :is(#input, #groupInput)', styles)
         self.assertIn("overflow-wrap: anywhere;", styles)
-        self.assertIn("max-height: 78px;", styles)
-        self.assertIn('--imperial-heading-font: "Kaiti SC"', styles)
+        self.assertIn("max-height: 126px;", styles)
+        self.assertIn('--imperial-heading-font: "Xingkai SC"', styles)
         self.assertIn("font-synthesis: none;", styles)
 
     def test_group_history_pins_to_latest_after_layout_settles(self):
