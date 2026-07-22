@@ -93,6 +93,21 @@ class EmbeddedMemoryTests(unittest.TestCase):
         self.assertEqual(len(memories), 1)
         self.assertEqual(memories[0]["content"], "第二版摘要")
 
+    def test_deleted_memory_stays_deleted_after_service_restart(self):
+        memory_id, _ = self.service.save(
+            "会被删掉的摘要",
+            "char1",
+            source="conversation_summary",
+            source_key="summary:default",
+        )
+
+        self.assertTrue(self.service.delete_memory("char1", memory_id))
+
+        restarted = EmbeddedMemoryService(
+            self.temp_dir.name, ["char1", "char2"]
+        )
+        self.assertEqual(restarted.list_memories("char1"), [])
+
     def test_pinned_memory_returns_to_dynamic_storage_when_unpinned(self):
         memory_id, _ = self.service.save(
             "先固定，再放回普通记忆",

@@ -406,6 +406,7 @@ class EmbeddedMemoryService:
             "preview": content[:160],
             "owner_id": meta.get("owner_id"),
             "source": meta.get("source", "legacy"),
+            "source_key": meta.get("source_key"),
             "tags": meta.get("tags", []),
             "importance": meta.get("importance", 5),
             "valence": meta.get("valence", 0.5),

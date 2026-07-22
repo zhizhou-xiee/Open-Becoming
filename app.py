@@ -1565,6 +1565,15 @@ def init_db():
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_deletions (
+            owner_id    TEXT NOT NULL,
+            source_key  TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            deleted_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(owner_id, source_key)
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS appearance_assets (
             asset_key TEXT PRIMARY KEY,
             mime_type TEXT NOT NULL,
@@ -5034,6 +5043,50 @@ def _invalidate_breath_memory(domain: str) -> None:
         _BREATH_MEMORY_CACHE.pop(domain, None)
 
 
+def _memory_content_hash(content: str) -> str:
+    normalized = str(content or "").strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _memory_deleted_content_hash(owner_id: str, source_key: str | None) -> str | None:
+    if not source_key:
+        return None
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT content_hash FROM memory_deletions WHERE owner_id=? AND source_key=?",
+        (owner_id, source_key),
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _remember_memory_deletion(owner_id: str, memory: dict) -> None:
+    source_key = str(memory.get("source_key") or "").strip()
+    if not source_key:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO memory_deletions(owner_id,source_key,content_hash) VALUES(?,?,?) "
+        "ON CONFLICT(owner_id,source_key) DO UPDATE SET "
+        "content_hash=excluded.content_hash,deleted_at=CURRENT_TIMESTAMP",
+        (owner_id, source_key, _memory_content_hash(memory.get("content", ""))),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _clear_memory_deletion(owner_id: str, source_key: str | None) -> None:
+    if not source_key:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "DELETE FROM memory_deletions WHERE owner_id=? AND source_key=?",
+        (owner_id, source_key),
+    )
+    conn.commit()
+    conn.close()
+
+
 def _session_time_context(character_id: str, session_id: str) -> str:
     key = (character_id, session_id)
     now_ts = time.time()
@@ -5201,6 +5254,12 @@ def save_long_term_memory(
 ) -> None:
     if not _memory_supports("write"):
         return
+    deleted_hash = _memory_deleted_content_hash(domain, source_key)
+    if deleted_hash == _memory_content_hash(summary_text):
+        app.logger.info(
+            f"long-term memory write skipped after user deletion ({domain}/{source_key})"
+        )
+        return
     try:
         bucket_id, _created = MEMORY_SERVICE.save(
             summary_text,
@@ -5210,6 +5269,8 @@ def save_long_term_memory(
             enrichment_status="pending" if MEMORY_ANALYZER.enabled else "unconfigured",
             embedding_status="pending" if MEMORY_EMBEDDINGS.enabled else "unconfigured",
         )
+        if deleted_hash:
+            _clear_memory_deletion(domain, source_key)
         _invalidate_breath_memory(domain)
         _queue_memory_enrichment(bucket_id, domain, summary_text)
     except Exception as e:
@@ -7753,9 +7814,13 @@ def api_character_memory_detail(character_id, bucket_id):
     if not _memory_supports("admin"):
         return jsonify({"error": "当前记忆后端不提供内置编辑功能"}), 501
     if request.method == "DELETE":
+        memory = MEMORY_SERVICE.get_memory(character_id, bucket_id)
+        if not memory:
+            return jsonify({"error": "记忆不存在"}), 404
         deleted = MEMORY_SERVICE.delete_memory(character_id, bucket_id)
         if not deleted:
             return jsonify({"error": "记忆不存在"}), 404
+        _remember_memory_deletion(character_id, memory)
         try:
             MEMORY_EMBEDDINGS.delete(bucket_id)
         except Exception as exc:
@@ -10462,20 +10527,6 @@ os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
 os.makedirs(UPLOAD_ROOT, exist_ok=True)
 init_db()
 _refresh_appearance_urls()
-for _character_id in CHARACTERS:
-    _existing_summary = get_summary("default", _character_id)
-    if _existing_summary:
-        try:
-            save_long_term_memory(
-                _existing_summary,
-                _character_id,
-                source="conversation_summary",
-                source_key="summary:default",
-            )
-        except Exception as _memory_seed_error:
-            app.logger.warning(
-                f"memory summary seed failed ({_character_id}): {_memory_seed_error}"
-            )
 start_background_services()
 
 if __name__ == "__main__":

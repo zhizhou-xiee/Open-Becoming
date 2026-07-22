@@ -4187,7 +4187,10 @@
         showConfirmDialog("确定要删除这段记忆吗？", async () => {
           const response = await fetch(`/api/memory/${currentMemoryCharacter}/${memory.id}`, { method: "DELETE" });
           if (!response.ok) { showToast("没有删掉，再试一次"); return; }
-          await loadCharacterMemories(currentMemoryCharacter, currentMemoryName, false);
+          await Promise.all([
+            loadCharacterMemories(currentMemoryCharacter, currentMemoryName, false),
+            loadMemoryView(),
+          ]);
         });
       }));
 

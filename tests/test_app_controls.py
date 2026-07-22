@@ -68,6 +68,7 @@ class AppControlsTests(unittest.TestCase):
         conn.execute("DELETE FROM settings WHERE key LIKE 'scene_%'")
         conn.execute("DELETE FROM settings WHERE key='tool_enabled_set_scene'")
         conn.execute("DELETE FROM messages WHERE session_id LIKE 'friendship-test%'")
+        conn.execute("DELETE FROM memory_deletions")
         conn.commit()
         conn.close()
 
@@ -2782,6 +2783,58 @@ class AppControlsTests(unittest.TestCase):
             self.assertEqual(original["content"], "只属于Char 1的 API 记忆")
         finally:
             app_module.MEMORY_SERVICE.delete_memory("char1", memory_id)
+
+    def test_deleted_automatic_memory_is_not_recreated_after_restart_sync(self):
+        owner_id = "char1"
+        source_key = "summary:deleted-redeploy-test"
+        original_content = "这段自动摘要已经由用户在前端删除"
+        changed_content = f"{original_content}，后来聊天产生了真正的新内容"
+        memory_id, _ = app_module.MEMORY_SERVICE.save(
+            original_content,
+            owner_id,
+            source="conversation_summary",
+            source_key=source_key,
+        )
+        recreated_id = None
+        try:
+            response = self.client.delete(f"/api/memory/{owner_id}/{memory_id}")
+            self.assertEqual(response.status_code, 200)
+
+            app_module.save_long_term_memory(
+                original_content,
+                owner_id,
+                source="conversation_summary",
+                source_key=source_key,
+            )
+            memories = app_module.MEMORY_SERVICE.list_memories(owner_id)
+            self.assertFalse(any(
+                memory.get("source_key") == source_key for memory in memories
+            ))
+
+            app_module.save_long_term_memory(
+                changed_content,
+                owner_id,
+                source="conversation_summary",
+                source_key=source_key,
+            )
+            recreated = next(
+                memory for memory in app_module.MEMORY_SERVICE.list_memories(owner_id)
+                if memory.get("source_key") == source_key
+            )
+            recreated_id = recreated["id"]
+            self.assertEqual(recreated["content"], changed_content)
+            self.assertIsNone(
+                app_module._memory_deleted_content_hash(owner_id, source_key)
+            )
+        finally:
+            if recreated_id:
+                app_module.MEMORY_SERVICE.delete_memory(owner_id, recreated_id)
+            else:
+                app_module.MEMORY_SERVICE.delete_memory(owner_id, memory_id)
+
+    def test_startup_does_not_unconditionally_reseed_old_summaries(self):
+        source = Path(app_module.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("memory summary seed failed", source)
 
     def test_today_chat_image_pipeline_compresses_and_reuses_the_saved_bytes(self):
         script = (
