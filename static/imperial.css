@@ -133,6 +133,8 @@ html[data-theme="imperial"] .char-list-preview {
 
 html[data-theme="imperial"] .char-list-row[data-character-id="char5"] {
   --court-size: clamp(94px, 24vw, 148px);
+  --imperial-badge-top: 15%;
+  --imperial-badge-left: 51%;
   z-index: 2;
   top: 15%;
   left: 17%;
@@ -140,6 +142,8 @@ html[data-theme="imperial"] .char-list-row[data-character-id="char5"] {
 
 html[data-theme="imperial"] .char-list-row[data-character-id="char6"] {
   --court-size: clamp(94px, 24vw, 148px);
+  --imperial-badge-top: 13%;
+  --imperial-badge-left: 50%;
   z-index: 2;
   top: 15%;
   right: 17%;
@@ -147,6 +151,8 @@ html[data-theme="imperial"] .char-list-row[data-character-id="char6"] {
 
 html[data-theme="imperial"] .char-list-row[data-character-id="char4"] {
   --court-size: clamp(130px, 34vw, 212px);
+  --imperial-badge-top: 12.5%;
+  --imperial-badge-left: 50%;
   z-index: 4;
   top: 37%;
   left: 5%;
@@ -154,6 +160,8 @@ html[data-theme="imperial"] .char-list-row[data-character-id="char4"] {
 
 html[data-theme="imperial"] .char-list-row[data-character-id="char3"] {
   --court-size: clamp(130px, 34vw, 212px);
+  --imperial-badge-top: 12.5%;
+  --imperial-badge-left: 51%;
   z-index: 4;
   top: 37%;
   right: 5%;
@@ -161,6 +169,8 @@ html[data-theme="imperial"] .char-list-row[data-character-id="char3"] {
 
 html[data-theme="imperial"] .char-list-row[data-character-id="char2"] {
   --court-size: clamp(178px, 46vw, 284px);
+  --imperial-badge-top: 15%;
+  --imperial-badge-left: 51%;
   z-index: 6;
   bottom: -2%;
   left: -3%;
@@ -168,6 +178,8 @@ html[data-theme="imperial"] .char-list-row[data-character-id="char2"] {
 
 html[data-theme="imperial"] .char-list-row[data-character-id="char1"] {
   --court-size: clamp(178px, 46vw, 284px);
+  --imperial-badge-top: 18.5%;
+  --imperial-badge-left: 47.5%;
   z-index: 6;
   right: -3%;
   bottom: -2%;
@@ -206,10 +218,10 @@ html[data-theme="imperial"] .imperial-character-art.asset-missing::after {
 html[data-theme="imperial"] .imperial-model-badge {
   position: absolute;
   z-index: 4;
-  top: 13%;
-  left: 50%;
-  width: clamp(25px, calc(var(--court-size) * .22), 51px);
-  height: clamp(25px, calc(var(--court-size) * .22), 51px);
+  top: var(--imperial-badge-top, 13%);
+  left: var(--imperial-badge-left, 50%);
+  width: clamp(27px, calc(var(--court-size) * .25), 60px);
+  height: clamp(27px, calc(var(--court-size) * .25), 60px);
   display: grid;
   place-items: center;
   padding: clamp(4px, 1.25vw, 7px);
