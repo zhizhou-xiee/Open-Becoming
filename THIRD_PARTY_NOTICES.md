@@ -21,6 +21,12 @@ The web interface loads Mrs Saint Delafield from Google Fonts and Material Symbo
 
 Loading the interface therefore makes requests to Google Fonts unless the deployment replaces those links with self-hosted assets.
 
+## Zhi Mang Xing
+
+The imperial theme self-hosts the Zhi Mang Xing typeface from the Google Fonts repository. It is used for the plaque headings so the intended Chinese running-script style remains consistent across browsers.
+
+Zhi Mang Xing is licensed under the SIL Open Font License 1.1. The complete license text is preserved at `static/imperial/fonts/OFL.txt`.
+
 ## Project visual assets
 
 Other bundled visual assets are distributed under the project's PolyForm Noncommercial License 1.0.0 unless a nearby notice says otherwise.

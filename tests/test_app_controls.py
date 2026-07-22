@@ -194,8 +194,13 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn('html[data-theme="imperial"] :is(#input, #groupInput)', styles)
         self.assertIn("overflow-wrap: anywhere;", styles)
         self.assertIn("max-height: 126px;", styles)
-        self.assertIn('--imperial-heading-font: "Xingkai SC"', styles)
+        self.assertIn('@font-face {', styles)
+        self.assertIn('font-family: "Becoming Imperial Xing";', styles)
+        self.assertIn('/static/imperial/fonts/ZhiMangXing-Regular.ttf', styles)
+        self.assertIn('--imperial-heading-font: "Becoming Imperial Xing"', styles)
         self.assertIn("font-synthesis: none;", styles)
+        self.assertTrue((static_dir / "imperial" / "fonts" / "ZhiMangXing-Regular.ttf").is_file())
+        self.assertTrue((static_dir / "imperial" / "fonts" / "OFL.txt").is_file())
 
     def test_group_history_pins_to_latest_after_layout_settles(self):
         script = (

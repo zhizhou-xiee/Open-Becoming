@@ -11,3 +11,7 @@ These marks are bundled locally so the theme does not depend on remote image URL
 - Generic model mark: original local SVG for unidentified or custom model ids.
 
 The marks identify the model selected for a character. They do not imply sponsorship or endorsement.
+
+## Plaque typeface
+
+The plaque headings use the self-hosted **Zhi Mang Xing** typeface from the Google Fonts repository. The font is distributed under the SIL Open Font License 1.1; its complete license is stored at `fonts/OFL.txt`.
