@@ -196,15 +196,23 @@
   let voiceConfigState = null;
   const DEFAULT_COMPOSER_PLACEHOLDER = "小猫酝酿坏主意中…";
   const IMPERIAL_COMPOSER_PLACEHOLDER = "朕在酝酿旨意…";
+  const IMPERIAL_DELIVERY_PLACEHOLDER = "旨意宣读中…";
+  const GROUP_REPLY_PLACEHOLDER = "角色们正在回复…";
+  const GROUP_CONTINUE_PLACEHOLDER = "祂们聊起来了…";
+  const IMPERIAL_GROUP_REPLY_PLACEHOLDER = "群臣正在商议回奏…";
 
   function isImperialTheme() {
     return document.documentElement.dataset.theme === "imperial";
   }
 
   function imperialComposerPlaceholder(value) {
-    return value === DEFAULT_COMPOSER_PLACEHOLDER
-      ? IMPERIAL_COMPOSER_PLACEHOLDER
-      : value;
+    if (value === DEFAULT_COMPOSER_PLACEHOLDER) {
+      return IMPERIAL_COMPOSER_PLACEHOLDER;
+    }
+    if (value === GROUP_REPLY_PLACEHOLDER || value === GROUP_CONTINUE_PLACEHOLDER) {
+      return IMPERIAL_GROUP_REPLY_PLACEHOLDER;
+    }
+    return value;
   }
 
   function fitImperialComposer(editor) {
@@ -247,6 +255,13 @@
     if (imperialInputEl) {
       imperialInputEl.placeholder = imperialComposerPlaceholder(value);
     }
+  }
+
+  function setSingleComposerDeliveryState(delivering) {
+    if (!imperialInputEl) return;
+    imperialInputEl.placeholder = delivering
+      ? IMPERIAL_DELIVERY_PLACEHOLDER
+      : imperialComposerPlaceholder(inputEl.placeholder);
   }
 
   function setSingleComposerDisabled(disabled) {
@@ -2031,6 +2046,7 @@
     setSingleComposerValue("");
     closePawMenu();
     sendBtn.disabled = true;
+    setSingleComposerDeliveryState(true);
     const pendingQuote = singleReplyTarget;
     addBubble(text, "user", null, pendingQuote);
     const optimisticUserBlock = messagesEl.lastElementChild;
@@ -2085,6 +2101,7 @@
       renderAiError(pending, e);
     } finally {
       sendBtn.disabled = false;
+      setSingleComposerDeliveryState(false);
       focusSingleComposer();
     }
   }
@@ -2799,6 +2816,7 @@
       return;
     }
     sendBtn.disabled = true;
+    setSingleComposerDeliveryState(true);
     const localUrl = URL.createObjectURL(file);
     const localImage = { url: localUrl, name: file.name, mime: file.type, from: "user" };
     addImageBubble(localImage, "user");
@@ -2836,6 +2854,7 @@
       showToast("🐱 图片发送失败，再试试？");
     } finally {
       sendBtn.disabled = false;
+      setSingleComposerDeliveryState(false);
       imageInput.value = "";
       cameraInput.value = "";
       fileImageInput.value = "";
@@ -3597,7 +3616,7 @@
     if (!text) return;
     const pendingQuote = groupReplyTarget ? { ...groupReplyTarget } : null;
     setGroupComposerValue("");
-    setGroupBusy(true, "角色们正在回复…");
+    setGroupBusy(true, GROUP_REPLY_PLACEHOLDER);
 
     try {
       const resp = await fetch("/api/group_chat", {
@@ -3655,7 +3674,7 @@
   async function continueGroup() {
     if (groupBusy || onlineCharacters.size === 0) return;
     blurGroupComposer();
-    setGroupBusy(true, "祂们聊起来了…");
+    setGroupBusy(true, GROUP_CONTINUE_PLACEHOLDER);
     try {
       const resp = await fetch("/api/group_chat/continue", {
         method: "POST",

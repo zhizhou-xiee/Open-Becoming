@@ -449,7 +449,7 @@ html[data-theme="imperial"] :is(.msg-time, .group-sender-name) {
 }
 
 html[data-theme="imperial"] .loading-dots::after {
-  content: "正在揣摩圣意";
+  content: "正在揣摩圣意…";
   margin-left: 4px;
   color: rgba(58, 33, 21, .68);
   font-family: "STKaiti", "KaiTi", "Songti SC", serif;
