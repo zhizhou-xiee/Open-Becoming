@@ -193,6 +193,8 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn('html[data-theme="imperial"] :is(#input, #groupInput)', styles)
         self.assertIn("overflow-wrap: anywhere;", styles)
         self.assertIn("max-height: 78px;", styles)
+        self.assertIn('--imperial-heading-font: "Kaiti SC"', styles)
+        self.assertIn("font-synthesis: none;", styles)
 
     def test_group_history_pins_to_latest_after_layout_settles(self):
         script = (
