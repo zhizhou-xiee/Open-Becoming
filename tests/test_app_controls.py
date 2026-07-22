@@ -269,6 +269,7 @@ class AppControlsTests(unittest.TestCase):
         static_dir = Path(app_module.__file__).with_name("static")
         script = (static_dir / "app.js").read_text(encoding="utf-8")
         markup = (static_dir / "index.html").read_text(encoding="utf-8")
+        imperial_styles = (static_dir / "imperial.css").read_text(encoding="utf-8")
 
         self.assertNotIn('data-action="voice"', markup)
         self.assertIn('voiceLink.className = "scheduler-feature-link"', script)
@@ -280,6 +281,12 @@ class AppControlsTests(unittest.TestCase):
         self.assertNotIn("graphic_eq", script[voice_start:voice_end])
         self.assertIn('voiceLink.textContent = "说说喵°语音收发"', script)
         self.assertIn("panel.appendChild(voiceLink)", script)
+        voice_rule = imperial_styles.split(
+            'html[data-theme="imperial"] #moreContent .scheduler-feature-link {', 1
+        )[1].split("}", 1)[0]
+        self.assertIn("border-radius: 999px;", voice_rule)
+        self.assertIn("background: var(--cream);", voice_rule)
+        self.assertNotIn("linear-gradient", voice_rule)
         self.assertLess(
             script.index('makeAccordion("眠眠喵°睡眠节律"'),
             script.index('makeAccordion("路由喵°模型供应商"'),
