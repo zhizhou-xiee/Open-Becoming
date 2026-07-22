@@ -179,6 +179,21 @@ class AppControlsTests(unittest.TestCase):
         self.assertNotIn("getModelBrand(c.provider", script)
         self.assertTrue((static_dir / "imperial" / "logo-generic.svg").is_file())
 
+    def test_imperial_composers_wrap_without_replacing_other_theme_inputs(self):
+        static_dir = Path(app_module.__file__).with_name("static")
+        markup = (static_dir / "index.html").read_text(encoding="utf-8")
+        script = (static_dir / "app.js").read_text(encoding="utf-8")
+        styles = (static_dir / "imperial.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="imperialInput"', markup)
+        self.assertIn('id="imperialGroupInput"', markup)
+        self.assertIn("function fitImperialComposer(editor)", script)
+        self.assertIn('if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;', script)
+        self.assertIn(".imperial-composer-input {\n  display: none;", styles)
+        self.assertIn('html[data-theme="imperial"] :is(#input, #groupInput)', styles)
+        self.assertIn("overflow-wrap: anywhere;", styles)
+        self.assertIn("max-height: 78px;", styles)
+
     def test_group_history_pins_to_latest_after_layout_settles(self):
         script = (
             Path(app_module.__file__).with_name("static") / "app.js"

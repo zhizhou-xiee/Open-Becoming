@@ -5,6 +5,10 @@
 .imperial-character-art {
   display: none;
 }
+
+.imperial-composer-input {
+  display: none;
+}
 html[data-theme="imperial"] {
   --nav-h: 90px;
   --imperial-heading-font: "Xingkai SC", "Kaiti SC", "STKaiti", "KaiTi", "Songti SC", serif;
@@ -455,10 +459,36 @@ html[data-theme="imperial"] :is(#inputbar, #groupInputbar)::before {
   pointer-events: none;
 }
 
+html[data-theme="imperial"] :is(#inputbar, #groupInputbar)::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 22px;
+  right: clamp(82px, 23vw, 96px);
+  bottom: 18px;
+  left: clamp(46px, 13.5vw, 58px);
+  border: 1px solid rgba(143, 78, 24, .68);
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(255, 245, 205, .42);
+  pointer-events: none;
+}
+
 html[data-theme="imperial"] :is(#input, #groupInput) {
+  display: none;
+}
+
+html[data-theme="imperial"] .imperial-composer-input {
+  position: relative;
+  z-index: 1;
+  display: block;
+  flex: 1 1 auto;
   width: 100%;
   min-width: 0;
-  padding: 11px 4px;
+  min-height: 38px;
+  max-height: 78px;
+  margin: 0;
+  padding: 9px 8px;
+  box-sizing: border-box;
   border: 0;
   border-radius: 0;
   outline: 0;
@@ -466,10 +496,15 @@ html[data-theme="imperial"] :is(#input, #groupInput) {
   color: #3a2115;
   font-family: "STKaiti", "KaiTi", "Songti SC", serif;
   font-size: 16px;
+  line-height: 1.35;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   caret-color: #7b2018;
+  scrollbar-width: thin;
 }
 
-html[data-theme="imperial"] :is(#input, #groupInput)::placeholder {
+html[data-theme="imperial"] .imperial-composer-input::placeholder {
   color: rgba(74, 39, 19, .58);
 }
 
@@ -593,7 +628,7 @@ html[data-theme="imperial"] #moreContent :is(
   #memoryImportPanel,
   #gestureHelpPanel,
   #voicePanel
-) :is(input[type="text"], input[type="number"], input[type="time"], input[type="url"], input[type="password"], textarea, select, .provider-picker-trigger) {
+) :is(input[type="text"], input[type="number"], input[type="time"], input[type="url"], input[type="password"], input[type="file"], textarea, select, .provider-picker-trigger) {
   border-color: rgba(132, 73, 22, .46) !important;
   background: #fff3cf !important;
   color: #3a2115 !important;
@@ -626,6 +661,110 @@ html[data-theme="imperial"] #schedulerPanel .scheduler-limit-input-wrap {
   border-color: rgba(132, 73, 22, .46);
   background: #fff3cf;
   color: #3a2115;
+}
+
+html[data-theme="imperial"] #moreContent .persona-close-btn {
+  color: #f1d994;
+  text-shadow: 0 1px 3px rgba(24, 5, 1, .78);
+}
+
+html[data-theme="imperial"] #memoryImportPanel input[type="file"]::file-selector-button {
+  border: 1px solid rgba(132, 73, 22, .38);
+  background: #ead49b;
+  color: #3a2115;
+}
+
+html[data-theme="imperial"] #memoryImportPanel input[type="file"]::-webkit-file-upload-button {
+  border: 1px solid rgba(132, 73, 22, .38);
+  background: #ead49b;
+  color: #3a2115;
+}
+
+html[data-theme="imperial"] #toolsPanel .mcp-connections-section {
+  padding: 12px;
+  border: 1px solid rgba(132, 73, 22, .46);
+  border-radius: 12px;
+  background: #f3e2b7;
+  box-shadow: 0 7px 16px rgba(29, 7, 2, .22);
+}
+
+html[data-theme="imperial"] #toolsPanel :is(
+  .mcp-connections-head > div,
+  .mcp-list-empty,
+  .custom-mcp-head > div,
+  .custom-mcp-field,
+  .custom-mcp-status
+) {
+  color: rgba(58, 33, 21, .78);
+  text-shadow: none;
+}
+
+/* 御花苑里的纸卡用深墨；没有纸面的宫殿区域才用亮金字。 */
+html[data-theme="imperial"] #nestTabs .nest-tab:not(.active) {
+  color: rgba(58, 33, 21, .68);
+}
+
+html[data-theme="imperial"] .moment-card :is(.moment-time, .moment-delete-btn) {
+  color: rgba(58, 33, 21, .56);
+}
+
+html[data-theme="imperial"] .moment-card .moment-comment-input::placeholder {
+  color: rgba(58, 33, 21, .56);
+}
+
+html[data-theme="imperial"] .moment-card .moment-comment-btn {
+  border-color: rgba(132, 73, 22, .42);
+  color: #3a2115;
+}
+
+html[data-theme="imperial"] #readingPane {
+  background: transparent;
+}
+
+html[data-theme="imperial"] #readingLibraryToolbar :is(h2, p) {
+  color: #f1d994;
+  text-shadow: 0 1px 3px rgba(24, 5, 1, .78);
+}
+
+html[data-theme="imperial"] #readingLibraryToolbar .reading-icon-btn {
+  border-color: rgba(132, 73, 22, .55);
+  background: #f3e2b7;
+  color: #3a2115;
+}
+
+html[data-theme="imperial"] .reading-book-row {
+  border-bottom-color: rgba(220, 177, 81, .3);
+}
+
+html[data-theme="imperial"] .reading-book-row .reading-book-open.swipe-reveal-foreground {
+  border: 1px solid rgba(132, 73, 22, .42);
+  background: #f3e2b7;
+  color: #3a2115;
+  box-shadow: 0 6px 14px rgba(29, 7, 2, .2);
+}
+
+html[data-theme="imperial"] .reading-book-row :is(.reading-book-title, .reading-book-meta) {
+  color: #3a2115;
+}
+
+html[data-theme="imperial"] .reading-book-row .reading-book-meta {
+  opacity: .68;
+}
+
+html[data-theme="imperial"] #readingReaderHeader {
+  border-color: rgba(132, 73, 22, .42);
+  background: #f3e2b7;
+  color: #3a2115;
+}
+
+html[data-theme="imperial"] #readingReaderHeader :is(h2, #readingReaderProgress) {
+  color: #3a2115;
+  text-shadow: none;
+}
+
+html[data-theme="imperial"] #readingContent .reading-block {
+  color: #f7e3aa;
+  text-shadow: 0 1px 3px rgba(24, 5, 1, .78);
 }
 
 html[data-theme="imperial"] :is(.memory-card, .memory-entry) {

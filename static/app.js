@@ -186,11 +186,92 @@
   // ════════════════════════════════════════════
   const messagesEl = document.getElementById("messages");
   const inputEl    = document.getElementById("input");
+  const imperialInputEl = document.getElementById("imperialInput");
+  const groupInputEl = document.getElementById("groupInput");
+  const imperialGroupInputEl = document.getElementById("imperialGroupInput");
   const sendBtn    = document.getElementById("send");
   const voiceRecordBtn = document.getElementById("voiceRecord");
   const voiceFileInput = document.getElementById("voiceFileInput");
   const charSubEl  = document.getElementById("char-sub");
   let voiceConfigState = null;
+
+  function isImperialTheme() {
+    return document.documentElement.dataset.theme === "imperial";
+  }
+
+  function fitImperialComposer(editor) {
+    if (!editor || !isImperialTheme()) return;
+    editor.style.height = "0px";
+    const minHeight = 38;
+    const maxHeight = 78;
+    const nextHeight = Math.min(maxHeight, Math.max(minHeight, editor.scrollHeight));
+    editor.style.height = `${nextHeight}px`;
+    editor.style.overflowY = editor.scrollHeight > maxHeight ? "auto" : "hidden";
+  }
+
+  function syncComposer(source, imperialEditor) {
+    if (!source || !imperialEditor) return;
+    imperialEditor.value = source.value;
+    imperialEditor.placeholder = source.placeholder;
+    imperialEditor.disabled = source.disabled;
+    fitImperialComposer(imperialEditor);
+  }
+
+  function syncImperialComposers() {
+    syncComposer(inputEl, imperialInputEl);
+    syncComposer(groupInputEl, imperialGroupInputEl);
+    requestAnimationFrame(() => {
+      fitImperialComposer(imperialInputEl);
+      fitImperialComposer(imperialGroupInputEl);
+    });
+  }
+
+  function setSingleComposerValue(value) {
+    inputEl.value = value;
+    if (imperialInputEl) {
+      imperialInputEl.value = value;
+      fitImperialComposer(imperialInputEl);
+    }
+  }
+
+  function setSingleComposerPlaceholder(value) {
+    inputEl.placeholder = value;
+    if (imperialInputEl) imperialInputEl.placeholder = value;
+  }
+
+  function setSingleComposerDisabled(disabled) {
+    inputEl.disabled = disabled;
+    if (imperialInputEl) imperialInputEl.disabled = disabled;
+  }
+
+  function focusSingleComposer() {
+    (isImperialTheme() ? imperialInputEl : inputEl)?.focus();
+  }
+
+  function setGroupComposerValue(value) {
+    groupInputEl.value = value;
+    if (imperialGroupInputEl) {
+      imperialGroupInputEl.value = value;
+      fitImperialComposer(imperialGroupInputEl);
+    }
+  }
+
+  function setGroupComposerState(disabled, placeholder) {
+    groupInputEl.disabled = disabled;
+    groupInputEl.placeholder = placeholder;
+    if (imperialGroupInputEl) {
+      imperialGroupInputEl.disabled = disabled;
+      imperialGroupInputEl.placeholder = placeholder;
+    }
+  }
+
+  function focusGroupComposer() {
+    (isImperialTheme() ? imperialGroupInputEl : groupInputEl)?.focus();
+  }
+
+  function blurGroupComposer() {
+    (isImperialTheme() ? imperialGroupInputEl : groupInputEl)?.blur();
+  }
 
   const CHAR_META = {
     char1: { label: "角色槽 1" },
@@ -553,7 +634,7 @@
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "申请没送到");
       closeFriendVerification();
-      inputEl.value = "";
+      setSingleComposerValue("");
       if (data.approved) {
         setFriendshipState(cid, FRIENDSHIP_NORMAL);
         await reloadSingleHistory(cid);
@@ -656,6 +737,7 @@
       root.style.setProperty("--list-background-image", `url("${safeListUrl}")`);
     }
     root.dataset.theme = theme.id;
+    syncImperialComposers();
     const backToList = document.getElementById("backToList");
     if (backToList) {
       backToList.setAttribute(
@@ -1920,7 +2002,7 @@
 
   document.getElementById("singleQuoteClear").addEventListener("click", () => {
     setSingleReplyTarget(null);
-    inputEl.focus();
+    focusSingleComposer();
   });
 
   async function send() {
@@ -1936,7 +2018,7 @@
       showToast("你已删除对方，可以先恢复好友");
       return;
     }
-    inputEl.value = "";
+    setSingleComposerValue("");
     closePawMenu();
     sendBtn.disabled = true;
     const pendingQuote = singleReplyTarget;
@@ -1962,7 +2044,7 @@
         optimisticUserBlock?.remove();
         pending.aiBlock?.remove();
         histories[currentChar].pop();
-        inputEl.value = text;
+        setSingleComposerValue(text);
         const status = await fetchFriendship(currentChar);
         if (data.friendship_state === "char_deleted") {
           setFriendshipState(currentChar, { ...status, state: "char_deleted" });
@@ -1993,7 +2075,7 @@
       renderAiError(pending, e);
     } finally {
       sendBtn.disabled = false;
-      inputEl.focus();
+      focusSingleComposer();
     }
   }
 
@@ -2225,7 +2307,7 @@
         character_name: bubble.classList.contains("user") ? GROUP_CHAR_NAMES.user : nickName(currentChar),
         content: bubble.dataset.bubbleText || bubble.textContent || "",
       });
-      inputEl.focus();
+      focusSingleComposer();
     };
 
     // 删除
@@ -2271,14 +2353,14 @@
     cwLearnBtn.textContent = "No Learn More";
     cwGivePlead.disabled   = false;
     cwGivePlead.textContent = "Give Plead";
-    inputEl.disabled  = true;
+    setSingleComposerDisabled(true);
     sendBtn.disabled  = true;
     cwModal.classList.remove("hidden");
   }
 
   function hideCloseWindowModal() {
     cwModal.classList.add("hidden");
-    inputEl.disabled = false;
+    setSingleComposerDisabled(false);
     sendBtn.disabled = false;
   }
 
@@ -2788,14 +2870,27 @@
   // 滚动消息区关闭
   document.getElementById("messages").addEventListener("scroll", closePawMenu, { passive: true });
 
-  inputEl.addEventListener("keydown", e => { if (e.key === "Enter") send(); });
-  inputEl.addEventListener('focus', () => {
+  function keepSingleComposerVisible() {
     setTimeout(() => {
       window.scrollTo(0, 0);
       const msgs = document.getElementById('messages');
       if (msgs) msgs.scrollTop = msgs.scrollHeight;
     }, 350);
+  }
+
+  inputEl.addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+  inputEl.addEventListener("focus", keepSingleComposerVisible);
+  imperialInputEl?.addEventListener("input", () => {
+    inputEl.value = imperialInputEl.value;
+    fitImperialComposer(imperialInputEl);
   });
+  imperialInputEl?.addEventListener("keydown", e => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    e.preventDefault();
+    inputEl.value = imperialInputEl.value;
+    send();
+  });
+  imperialInputEl?.addEventListener("focus", keepSingleComposerVisible);
 
   async function loadVoiceFeatureState() {
     try {
@@ -2842,7 +2937,7 @@
     const form = new FormData();
     form.append("audio", file, file.name || "recording.webm");
     voiceRecordBtn.disabled = true;
-    inputEl.placeholder = "小猫正在听写录音…";
+    setSingleComposerPlaceholder("小猫正在听写录音…");
     try {
       const response = await fetch("/api/voice/transcribe", {
         method: "POST",
@@ -2850,7 +2945,7 @@
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "没有听清这段录音");
-      inputEl.value = data.text || "";
+      setSingleComposerValue(data.text || "");
       if (!inputEl.value.trim()) throw new Error("没有识别出文字");
       showToast("已经听写成文字，帮你发出去啦");
       await send();
@@ -2858,7 +2953,7 @@
       showToast(error.message || "录音没有发送成功");
     } finally {
       voiceRecordBtn.disabled = false;
-      inputEl.placeholder = "小猫酝酿坏主意中…";
+      setSingleComposerPlaceholder("小猫酝酿坏主意中…");
       voiceFileInput.value = "";
     }
   }
@@ -2939,17 +3034,29 @@
   // 群聊
   // ════════════════════════════════════════════
   const groupMessagesEl = document.getElementById("groupMessages");
-  const groupInputEl    = document.getElementById("groupInput");
   const groupSendBtn    = document.getElementById("groupSend");
   const groupContinuePickerBtn = document.getElementById("charPickerContinue");
   bindNativeLongPressGuard(groupMessagesEl, ".bubble");
 
-  groupInputEl.addEventListener('focus', () => {
+  function keepGroupComposerVisible() {
     setTimeout(() => {
       window.scrollTo(0, 0);
       groupMessagesEl.scrollTop = groupMessagesEl.scrollHeight;
     }, 350);
+  }
+
+  groupInputEl.addEventListener("focus", keepGroupComposerVisible);
+  imperialGroupInputEl?.addEventListener("input", () => {
+    groupInputEl.value = imperialGroupInputEl.value;
+    fitImperialComposer(imperialGroupInputEl);
   });
+  imperialGroupInputEl?.addEventListener("keydown", e => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    e.preventDefault();
+    groupInputEl.value = imperialGroupInputEl.value;
+    sendGroup();
+  });
+  imperialGroupInputEl?.addEventListener("focus", keepGroupComposerVisible);
 
   const onlineCharacters = new Set();
 
@@ -3178,7 +3285,7 @@
 
   document.getElementById("groupQuoteClear").addEventListener("click", () => {
     setGroupReplyTarget(null);
-    groupInputEl.focus();
+    focusGroupComposer();
   });
 
   function appendGroupBubble(block, kind, text, quote = null, animated = false) {
@@ -3433,7 +3540,7 @@
         character_name: block.dataset.characterName,
         content: bubbleText,
       });
-      groupInputEl.focus();
+      focusGroupComposer();
     };
     document.getElementById("bubbleDeleteBtn").onclick = () => {
       closeMenu();
@@ -3469,10 +3576,9 @@
   let groupBusy = false;
   function setGroupBusy(busy, placeholder = "小猫酝酿坏主意中…") {
     groupBusy = busy;
-    groupInputEl.disabled = busy;
+    setGroupComposerState(busy, placeholder);
     groupSendBtn.disabled = busy;
     groupContinuePickerBtn.disabled = busy;
-    groupInputEl.placeholder = placeholder;
   }
 
   async function sendGroup() {
@@ -3480,7 +3586,7 @@
     const text = groupInputEl.value.trim();
     if (!text) return;
     const pendingQuote = groupReplyTarget ? { ...groupReplyTarget } : null;
-    groupInputEl.value = "";
+    setGroupComposerValue("");
     setGroupBusy(true, "角色们正在回复…");
 
     try {
@@ -3532,13 +3638,13 @@
       groupMessagesEl.scrollTop = groupMessagesEl.scrollHeight;
     } finally {
       setGroupBusy(false);
-      groupInputEl.focus();
+      focusGroupComposer();
     }
   }
 
   async function continueGroup() {
     if (groupBusy || onlineCharacters.size === 0) return;
-    groupInputEl.blur();
+    blurGroupComposer();
     setGroupBusy(true, "祂们聊起来了…");
     try {
       const resp = await fetch("/api/group_chat/continue", {
