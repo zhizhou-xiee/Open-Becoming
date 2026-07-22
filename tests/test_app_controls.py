@@ -188,9 +188,9 @@ class AppControlsTests(unittest.TestCase):
 
         self.assertIn('id="imperialInput"', markup)
         self.assertIn('id="imperialGroupInput"', markup)
-        self.assertEqual(markup.count('placeholder="朕在酝酿旨意…"'), 2)
+        self.assertEqual(markup.count('placeholder="传朕旨意…"'), 2)
         self.assertIn("function fitImperialComposer(editor)", script)
-        self.assertIn('const IMPERIAL_COMPOSER_PLACEHOLDER = "朕在酝酿旨意…";', script)
+        self.assertIn('const IMPERIAL_COMPOSER_PLACEHOLDER = "传朕旨意…";', script)
         self.assertIn('const IMPERIAL_DELIVERY_PLACEHOLDER = "旨意宣读中…";', script)
         self.assertIn('const IMPERIAL_GROUP_REPLY_PLACEHOLDER = "群臣正在商议回奏…";', script)
         self.assertIn("imperialComposerPlaceholder(source.placeholder)", script)

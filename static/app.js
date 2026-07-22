@@ -195,7 +195,7 @@
   const charSubEl  = document.getElementById("char-sub");
   let voiceConfigState = null;
   const DEFAULT_COMPOSER_PLACEHOLDER = "小猫酝酿坏主意中…";
-  const IMPERIAL_COMPOSER_PLACEHOLDER = "朕在酝酿旨意…";
+  const IMPERIAL_COMPOSER_PLACEHOLDER = "传朕旨意…";
   const IMPERIAL_DELIVERY_PLACEHOLDER = "旨意宣读中…";
   const GROUP_REPLY_PLACEHOLDER = "角色们正在回复…";
   const GROUP_CONTINUE_PLACEHOLDER = "祂们聊起来了…";
