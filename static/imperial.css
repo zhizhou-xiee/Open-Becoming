@@ -142,8 +142,8 @@ html[data-theme="imperial"] .char-list-row[data-character-id="char5"] {
 
 html[data-theme="imperial"] .char-list-row[data-character-id="char6"] {
   --court-size: clamp(94px, 24vw, 148px);
-  --imperial-badge-top: 13%;
-  --imperial-badge-left: 50%;
+  --imperial-badge-top: 16.5%;
+  --imperial-badge-left: 48.5%;
   z-index: 2;
   top: 15%;
   right: 17%;

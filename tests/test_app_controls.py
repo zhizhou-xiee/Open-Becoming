@@ -208,6 +208,8 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn('content: "正在揣摩圣意…";', styles)
         self.assertIn("--imperial-badge-top: 18.5%;", styles)
         self.assertIn("--imperial-badge-left: 47.5%;", styles)
+        self.assertIn("--imperial-badge-top: 16.5%;", styles)
+        self.assertIn("--imperial-badge-left: 48.5%;", styles)
         self.assertIn("width: clamp(27px, calc(var(--court-size) * .25), 60px);", styles)
         self.assertIn("top: var(--imperial-badge-top, 13%);", styles)
         self.assertIn("left: var(--imperial-badge-left, 50%);", styles)
