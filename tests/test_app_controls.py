@@ -218,6 +218,24 @@ class AppControlsTests(unittest.TestCase):
         self.assertFalse((static_dir / "imperial" / "fonts" / "ZhiMangXing-Regular.ttf").exists())
         self.assertTrue((static_dir / "imperial" / "fonts" / "OFL.txt").is_file())
 
+    def test_imperial_secondary_views_use_ornate_theme_scoped_controls(self):
+        styles = (
+            Path(app_module.__file__).with_name("static") / "imperial.css"
+        ).read_text(encoding="utf-8")
+
+        for selector in (
+            'html[data-theme="imperial"] .moment-card {',
+            'html[data-theme="imperial"] #momentsFab {',
+            'html[data-theme="imperial"] #musicProgress::-webkit-slider-runnable-track {',
+            'html[data-theme="imperial"] #musicPlayBtn {',
+            'html[data-theme="imperial"] #moreContent .more-pill {',
+            'html[data-theme="imperial"] #moreContent .more-icon-btn {',
+        ):
+            self.assertIn(selector, styles)
+        self.assertIn("transform: rotate(45deg);", styles)
+        self.assertIn("linear-gradient(145deg, #8b2a1e, #4c100c 74%)", styles)
+        self.assertIn("inset 0 0 0 3px rgba(255, 240, 181, .68)", styles)
+
     def test_group_history_pins_to_latest_after_layout_settles(self):
         script = (
             Path(app_module.__file__).with_name("static") / "app.js"

@@ -862,6 +862,458 @@ html[data-theme="imperial"] :is(.memory-card, .memory-entry):active {
   filter: none;
 }
 
+/* 御花苑：朋友圈不是现代白卡，而是一封封压着金线的宫笺。 */
+html[data-theme="imperial"] #nestTabs {
+  gap: 7px;
+  padding: 7px 14px 9px;
+  border-top: 1px solid rgba(255, 230, 151, .54);
+  border-bottom: 2px solid #8a551a;
+  background:
+    linear-gradient(90deg, rgba(136, 78, 18, .12), transparent 15% 85%, rgba(136, 78, 18, .12)),
+    linear-gradient(#f4e7bd, #e5cf94);
+  box-shadow: inset 0 -1px rgba(255, 244, 192, .74), 0 4px 12px rgba(25, 5, 1, .24);
+}
+
+html[data-theme="imperial"] #nestTabs .nest-tab {
+  position: relative;
+  min-height: 36px;
+  border: 1px solid rgba(133, 76, 21, .24);
+  border-radius: 4px;
+  color: rgba(66, 37, 18, .68);
+  letter-spacing: .08em;
+}
+
+html[data-theme="imperial"] #nestTabs .nest-tab.active {
+  border-color: #d8ad4e;
+  background:
+    radial-gradient(circle at 50% 0, rgba(255, 226, 133, .2), transparent 48%),
+    linear-gradient(#6e2018, #48100c);
+  color: #f9e7ae;
+  box-shadow:
+    inset 0 0 0 1px rgba(87, 34, 13, .9),
+    inset 0 0 0 2px rgba(236, 195, 90, .36),
+    0 3px 7px rgba(45, 9, 3, .28);
+  text-shadow: 0 1px 2px #260704;
+}
+
+html[data-theme="imperial"] .moment-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  margin: 3px 2px 10px;
+  padding: 18px 17px 16px;
+  border: 2px solid #9a641f;
+  border-radius: 6px;
+  background:
+    radial-gradient(circle at 0 0, rgba(192, 126, 31, .2), transparent 34px),
+    radial-gradient(circle at 100% 100%, rgba(192, 126, 31, .18), transparent 38px),
+    linear-gradient(105deg, rgba(255, 247, 207, .96), rgba(232, 207, 143, .96));
+  box-shadow:
+    inset 0 0 0 3px rgba(255, 239, 181, .74),
+    inset 0 0 0 4px rgba(128, 72, 18, .26),
+    inset 0 0 30px rgba(121, 59, 11, .09),
+    0 8px 18px rgba(29, 6, 2, .32);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+html[data-theme="imperial"] .moment-card::before,
+html[data-theme="imperial"] .moment-card::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  width: 7px;
+  height: 7px;
+  border: 1px solid rgba(128, 72, 18, .66);
+  background: rgba(190, 126, 35, .52);
+  box-shadow: inset 0 0 0 1px rgba(255, 235, 163, .62);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+html[data-theme="imperial"] .moment-card::before { top: 8px; left: 9px; }
+html[data-theme="imperial"] .moment-card::after { right: 9px; bottom: 8px; }
+
+html[data-theme="imperial"] .moment-card .moment-header img {
+  border: 2px solid #d2a94e;
+  box-shadow: 0 0 0 2px rgba(110, 57, 13, .48), 0 3px 8px rgba(48, 14, 3, .24);
+}
+
+html[data-theme="imperial"] .moment-card :is(.moment-comments, .moment-comment-input) {
+  border-color: rgba(126, 73, 19, .32);
+}
+
+html[data-theme="imperial"] .moment-card .moment-comment-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #bc8b35;
+  background: radial-gradient(circle at 35% 30%, #fff2bd, #d1aa59 72%, #8b551b);
+  color: #4e1a10;
+  box-shadow: inset 0 0 0 2px rgba(255, 241, 178, .62), 0 3px 7px rgba(48, 12, 3, .25);
+}
+
+html[data-theme="imperial"] .moment-card .moment-delete-btn {
+  padding: 4px 8px;
+  border: 1px solid rgba(130, 71, 18, .32);
+  border-radius: 3px;
+  background: rgba(255, 238, 183, .34);
+}
+
+html[data-theme="imperial"] #momentsFab {
+  right: 24px;
+  width: 49px;
+  height: 49px;
+  border: 2px solid #e5bd59;
+  border-radius: 11px;
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255, 199, 103, .16), transparent 32%),
+    linear-gradient(145deg, #8a2a1d, #4b100c 72%);
+  color: #ffe8a2;
+  box-shadow:
+    0 0 0 2px rgba(80, 25, 11, .88),
+    0 0 0 3px rgba(225, 181, 77, .72),
+    0 7px 15px rgba(27, 5, 2, .42),
+    inset 0 0 9px rgba(255, 204, 93, .12);
+  transform: rotate(45deg);
+}
+
+html[data-theme="imperial"] #momentsFab .material-symbols-outlined {
+  transform: rotate(-45deg);
+}
+
+html[data-theme="imperial"] #momentsFab:active {
+  transform: rotate(45deg) scale(.91);
+}
+
+html[data-theme="imperial"] #momentWriteCard {
+  border: 2px solid #b17927;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: linear-gradient(105deg, #f8ecc4, #e7cd8d);
+  box-shadow: inset 0 0 0 3px rgba(255, 242, 186, .7), 0 -9px 24px rgba(28, 5, 1, .35);
+}
+
+html[data-theme="imperial"] #momentInput {
+  border: 1px solid #9b641f;
+  border-radius: 4px;
+  background: rgba(255, 246, 210, .72);
+  box-shadow: inset 0 0 0 2px rgba(255, 231, 157, .52);
+}
+
+/* 一起听：唱片像玉盘，播放键像御前金钮，进度像一根卷轴轴杆。 */
+html[data-theme="imperial"] #musicPane {
+  color: #f4dda0;
+}
+
+html[data-theme="imperial"] #musicRoomHeader {
+  border-top: 1px solid rgba(235, 194, 91, .52);
+  border-bottom: 2px solid #8f5a1b;
+  background: linear-gradient(90deg, rgba(62, 14, 8, .84), rgba(232, 199, 123, .76) 48%, rgba(62, 14, 8, .84));
+  box-shadow: inset 0 -1px rgba(255, 235, 157, .54), 0 5px 13px rgba(27, 4, 1, .28);
+}
+
+html[data-theme="imperial"] #musicRoomHeader :is(.music-room-kicker, #musicTrackMeta strong, #musicTrackMeta span, #musicRoomStats) {
+  color: #4a2817;
+  text-shadow: 0 1px rgba(255, 236, 171, .58);
+}
+
+html[data-theme="imperial"] :is(#musicParticipantsBtn, #musicLibraryPanel > summary) {
+  border: 2px solid #b8842d;
+  background: radial-gradient(circle at 35% 30%, #fff4c4, #d1aa5e 74%, #875319);
+  color: #4c1c11;
+  box-shadow: inset 0 0 0 2px rgba(255, 239, 176, .62), 0 4px 9px rgba(43, 10, 2, .3);
+}
+
+html[data-theme="imperial"] #musicNowPlaying {
+  border-top: 1px solid rgba(242, 205, 104, .48);
+  border-bottom: 2px solid rgba(144, 87, 24, .72);
+  box-shadow: inset 0 0 42px rgba(38, 8, 3, .2);
+}
+
+html[data-theme="imperial"] #musicRecordSleeve {
+  border: 6px solid #efd78c;
+  background: radial-gradient(circle, #f5e9b8, #b8862f);
+  box-shadow:
+    0 0 0 2px #6f3c11,
+    0 0 0 5px #c99a3c,
+    0 0 0 7px rgba(255, 224, 127, .48),
+    0 14px 28px rgba(30, 5, 2, .38),
+    inset 0 0 0 2px rgba(255, 248, 206, .7);
+}
+
+html[data-theme="imperial"] .music-room-avatar {
+  border-color: #f0dc98;
+  box-shadow: 0 0 0 2px #87521a, 0 6px 13px rgba(39, 8, 2, .32);
+}
+
+html[data-theme="imperial"] #musicProgress {
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+html[data-theme="imperial"] #musicProgress::-webkit-slider-runnable-track {
+  height: 8px;
+  border: 1px solid #6d3a10;
+  border-radius: 999px;
+  background: linear-gradient(#f2d77f, #9b671f 48%, #5f330f 52%, #c08b32);
+  box-shadow: inset 0 1px rgba(255, 244, 186, .76), 0 2px 5px rgba(31, 6, 2, .3);
+}
+
+html[data-theme="imperial"] #musicProgress::-webkit-slider-thumb {
+  width: 22px;
+  height: 22px;
+  margin-top: -8px;
+  border: 2px solid #f1d982;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, #fff9d8, #cab36e 36%, #5c6f45 40%, #263921 100%);
+  box-shadow: 0 0 0 2px #704214, 0 3px 8px rgba(34, 7, 2, .42);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+html[data-theme="imperial"] #musicProgress::-moz-range-track {
+  height: 8px;
+  border: 1px solid #6d3a10;
+  border-radius: 999px;
+  background: linear-gradient(#f2d77f, #9b671f 48%, #5f330f 52%, #c08b32);
+}
+
+html[data-theme="imperial"] #musicProgress::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #f1d982;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, #fff9d8, #cab36e 36%, #5c6f45 40%, #263921 100%);
+  box-shadow: 0 0 0 2px #704214, 0 3px 8px rgba(34, 7, 2, .42);
+}
+
+html[data-theme="imperial"] #musicControls {
+  gap: clamp(34px, 11vw, 52px);
+  margin-top: 10px;
+}
+
+html[data-theme="imperial"] #musicControls button {
+  width: 46px;
+  height: 46px;
+  border: 2px solid #c99b3f;
+  background: radial-gradient(circle at 35% 28%, #fff2b8, #d1ad60 58%, #8a571d);
+  color: #4a170e;
+  box-shadow:
+    inset 0 0 0 2px rgba(255, 240, 178, .64),
+    0 0 0 2px rgba(96, 47, 13, .72),
+    0 5px 10px rgba(32, 6, 2, .34);
+}
+
+html[data-theme="imperial"] #musicPlayBtn {
+  width: 58px !important;
+  height: 58px !important;
+  border-color: #edca6a !important;
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255, 207, 102, .2), transparent 34%),
+    linear-gradient(145deg, #8b2a1e, #4c100c 74%) !important;
+  color: #ffe8a3 !important;
+  box-shadow:
+    inset 0 0 0 2px rgba(255, 201, 82, .18),
+    0 0 0 3px #6b3510,
+    0 0 0 5px rgba(225, 180, 72, .72),
+    0 7px 13px rgba(28, 4, 1, .4) !important;
+}
+
+html[data-theme="imperial"] #musicControls button:active,
+html[data-theme="imperial"] #musicPlaybackModeBtn:active {
+  transform: translateY(2px) scale(.96);
+  box-shadow: inset 0 0 0 2px rgba(255, 240, 178, .5), 0 2px 5px rgba(32, 6, 2, .3);
+}
+
+html[data-theme="imperial"] #musicPlaybackModeBtn {
+  width: 42px;
+  height: 42px;
+  border: 2px solid #b68331;
+  background: radial-gradient(circle at 35% 28%, #fff1b7, #cfab61 65%, #825019);
+  color: #542014;
+  box-shadow: inset 0 0 0 2px rgba(255, 241, 181, .58), 0 0 0 1px #703d12, 0 4px 9px rgba(35, 7, 2, .3);
+}
+
+html[data-theme="imperial"] #musicRoomMessages .music-message-body p {
+  border: 1px solid #a9762b;
+  border-radius: 4px;
+  background: linear-gradient(105deg, rgba(250, 235, 186, .94), rgba(226, 198, 128, .92));
+  color: #3a2115;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 199, .48), 0 6px 13px rgba(37, 8, 2, .25);
+}
+
+html[data-theme="imperial"] #musicRoomConversation {
+  border-top: 2px solid #a66c20;
+  background: linear-gradient(rgba(52, 13, 7, .74), rgba(31, 7, 4, .9));
+  box-shadow: inset 0 1px rgba(255, 218, 124, .24);
+}
+
+html[data-theme="imperial"] #musicMessageForm {
+  padding: 4px;
+  border: 1px solid rgba(225, 179, 72, .72);
+  border-radius: 4px;
+  background: rgba(74, 21, 12, .72);
+  box-shadow: inset 0 0 0 1px rgba(255, 222, 133, .2);
+}
+
+html[data-theme="imperial"] #musicMessageInput {
+  border: 1px solid #b5812f;
+  border-radius: 3px;
+  background: linear-gradient(105deg, #fff1c2, #e5ca86);
+  color: #3a2115;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 198, .52);
+}
+
+html[data-theme="imperial"] #musicMessageForm button {
+  border: 1px solid #e0b64e;
+  background: linear-gradient(145deg, #84261b, #4b100c);
+  color: #ffe6a0;
+  box-shadow: 0 0 0 1px #713c12, 0 3px 7px rgba(31, 5, 2, .38);
+}
+
+/* 内务府：入口统一成金漆牌、玉钮与描金册页。 */
+html[data-theme="imperial"] #moreContent .more-menu {
+  gap: 14px;
+  padding: 18px 18px 28px;
+}
+
+html[data-theme="imperial"] #moreContent .more-menu-row {
+  gap: 12px;
+}
+
+html[data-theme="imperial"] #moreContent .more-icon-btn {
+  width: 54px;
+  height: 54px;
+  border: 2px solid #e1b751;
+  background:
+    radial-gradient(circle at 34% 28%, rgba(255, 214, 112, .2), transparent 32%),
+    linear-gradient(145deg, #7d251b, #43100c 74%);
+  color: #f8dda0;
+  box-shadow:
+    inset 0 0 0 2px rgba(255, 198, 77, .16),
+    0 0 0 2px #6c380f,
+    0 5px 11px rgba(30, 5, 2, .38);
+}
+
+html[data-theme="imperial"] #moreContent .more-pill {
+  position: relative;
+  min-height: 52px;
+  padding: 13px 34px 13px 30px;
+  overflow: hidden;
+  border: 2px solid #9f691f;
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, rgba(132, 72, 17, .12), transparent 14% 86%, rgba(132, 72, 17, .12)),
+    linear-gradient(105deg, #f8eabf, #e3c980);
+  color: #3d2114;
+  box-shadow:
+    inset 0 0 0 3px rgba(255, 240, 181, .68),
+    inset 0 0 0 4px rgba(130, 70, 17, .2),
+    0 6px 13px rgba(30, 6, 2, .3);
+  font-family: "Songti SC", "STSong", serif;
+  font-weight: 650;
+  letter-spacing: .04em;
+}
+
+html[data-theme="imperial"] #moreContent .more-pill::before,
+html[data-theme="imperial"] #moreContent .more-pill::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border: 1px solid rgba(128, 72, 18, .64);
+  background: #c28b2e;
+  box-shadow: inset 0 0 0 1px rgba(255, 232, 153, .62);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+html[data-theme="imperial"] #moreContent .more-pill::before { left: 12px; }
+html[data-theme="imperial"] #moreContent .more-pill::after { right: 12px; }
+
+html[data-theme="imperial"] #moreContent .more-pill:active,
+html[data-theme="imperial"] #moreContent .more-icon-btn:active {
+  opacity: 1;
+  transform: translateY(2px);
+  box-shadow: inset 0 0 0 2px rgba(255, 233, 167, .52), 0 2px 5px rgba(31, 6, 2, .3);
+}
+
+html[data-theme="imperial"] #moreContent .more-pill-logout {
+  border-color: #d3a33e;
+  background: linear-gradient(145deg, #722018, #3f0d0a);
+  color: #f4d78b;
+  text-shadow: 0 1px #260604;
+  box-shadow: inset 0 0 0 3px rgba(231, 179, 66, .16), 0 6px 13px rgba(28, 5, 2, .34);
+}
+
+html[data-theme="imperial"] #moreContent .compress-health-card {
+  border: 2px solid #9d671f;
+  border-radius: 6px;
+  background: linear-gradient(105deg, #f7eabe, #e2c77f);
+  color: #3a2115;
+  box-shadow: inset 0 0 0 3px rgba(255, 241, 185, .65), 0 6px 13px rgba(30, 6, 2, .28);
+}
+
+html[data-theme="imperial"] #usagePanel .usage-platform-card {
+  border: 1px solid #d0a13e;
+  border-radius: 5px;
+  background: linear-gradient(145deg, rgba(111, 31, 22, .94), rgba(62, 13, 9, .96));
+  color: #f5dda0;
+  box-shadow: inset 0 0 0 2px rgba(239, 190, 78, .15), 0 4px 10px rgba(28, 5, 2, .28);
+}
+
+html[data-theme="imperial"] #usagePanel .usage-bar-track {
+  height: 6px;
+  border: 1px solid rgba(122, 69, 18, .64);
+  background: rgba(43, 13, 7, .42);
+  box-shadow: inset 0 1px 2px rgba(21, 4, 1, .48);
+}
+
+html[data-theme="imperial"] #usagePanel .usage-bar-fill {
+  background: linear-gradient(90deg, #8c2d20, #d2a346);
+}
+
+html[data-theme="imperial"] #usagePanel .usage-bar-thumb {
+  border-color: #f0d47a;
+  background: #742117;
+  color: #f7d986;
+  box-shadow: 0 0 0 1px #6c3b11, 0 2px 5px rgba(26, 5, 2, .38);
+}
+
+html[data-theme="imperial"] #moreContent .scheduler-feature-link {
+  position: relative;
+  border: 2px solid #9d671f;
+  border-radius: 6px;
+  background:
+    linear-gradient(90deg, rgba(133, 73, 18, .12), transparent 12% 88%, rgba(133, 73, 18, .12)),
+    linear-gradient(105deg, #f7eabd, #e4c981);
+  color: #4b2816;
+  box-shadow: inset 0 0 0 3px rgba(255, 240, 182, .64), 0 5px 11px rgba(31, 6, 2, .28);
+}
+
+html[data-theme="imperial"] #moreContent :is(
+  .persona-card,
+  .appearance-section,
+  .memory-import-card,
+  .gesture-help-card,
+  .voice-settings-card,
+  .provider-status-list
+) {
+  border: 2px solid #9d671f;
+  border-radius: 6px;
+  background: linear-gradient(105deg, #f7eabd, #e2c67d);
+  box-shadow:
+    inset 0 0 0 3px rgba(255, 241, 185, .64),
+    inset 0 0 24px rgba(120, 61, 12, .07),
+    0 7px 15px rgba(30, 6, 2, .3);
+}
+
 /* 笔墨纸砚玉玺：仍然是原五个视图，只改成宫廷导航语言。 */
 html[data-theme="imperial"] #bottomNav {
   height: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px));
