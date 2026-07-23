@@ -1024,9 +1024,10 @@
     });
   }
 
-  function buildStickerBlock(data, who, time) {
+  function buildStickerBlock(data, who, time, messageId) {
     const block = document.createElement("div");
     block.className = "single-msg-block " + (who === "user" ? "from-user" : "from-ai");
+    if (messageId) block.dataset.messageId = messageId;
     if (who === "ai") {
       const avatarImg = document.createElement("img");
       avatarImg.src = charAvatars[currentChar] || "";
@@ -1037,6 +1038,7 @@
     }
     const bubble = document.createElement("div");
     bubble.className = "sticker-bubble";
+    if (messageId) bubble.dataset.messageId = messageId;
     const img = document.createElement("img");
     const meta = STICKERS_CACHE[data.key];
     img.src = `/static/stickers/${meta ? meta.file : 'placeholder.svg'}`;
@@ -1063,6 +1065,7 @@
   function buildImageBlock(data, who, time, messageId) {
     const block = document.createElement("div");
     block.className = "single-msg-block " + (who === "user" ? "from-user" : "from-ai");
+    if (messageId) block.dataset.messageId = messageId;
     if (who === "ai") {
       const avatarImg = document.createElement("img");
       avatarImg.src = charAvatars[currentChar] || "";
@@ -1103,9 +1106,10 @@
     return block;
   }
 
-  function buildTransferBlock(data, who, time) {
+  function buildTransferBlock(data, who, time, messageId) {
     const block = document.createElement("div");
     block.className = "single-msg-block " + (who === "user" ? "from-user" : "from-ai");
+    if (messageId) block.dataset.messageId = messageId;
     if (who === "ai") {
       const avatarImg = document.createElement("img");
       avatarImg.src = charAvatars[currentChar] || "";
@@ -1116,6 +1120,7 @@
     }
     const bubble = document.createElement("div");
     bubble.className = "transfer-bubble";
+    if (messageId) bubble.dataset.messageId = messageId;
     const icon = document.createElement("span");
     icon.className = "material-symbols-outlined";
     icon.textContent = "payments";
@@ -1373,6 +1378,7 @@
   function buildSingleVoiceBlock(data, time, messageId) {
     const block = document.createElement("div");
     block.className = "single-msg-block from-ai";
+    if (messageId) block.dataset.messageId = messageId;
     const avatarImg = document.createElement("img");
     avatarImg.src = charAvatars[currentChar] || "";
     avatarImg.style.cssText = "width:32px;height:32px;border-radius:50%;object-fit:cover;margin-bottom:4px;";
@@ -1397,14 +1403,14 @@
       try {
         const data = JSON.parse(text.slice(12));
         const resolvedWho = data.from === "char" ? "ai" : "user";
-        return buildTransferBlock(data, resolvedWho, time);
+        return buildTransferBlock(data, resolvedWho, time, messageId);
       } catch (e) { /* fallthrough to normal bubble */ }
     }
     if (text && text.startsWith("__STICKER__")) {
       try {
         const data = JSON.parse(text.slice(11));
         const resolvedWho = data.from === "char" ? "ai" : "user";
-        return buildStickerBlock(data, resolvedWho, time);
+        return buildStickerBlock(data, resolvedWho, time, messageId);
       } catch (e) { /* fallthrough to normal bubble */ }
     }
     if (text && text.startsWith("__IMAGE__")) {
@@ -1416,6 +1422,7 @@
     }
     const block = document.createElement("div");
     block.className = "single-msg-block " + (who === "user" ? "from-user" : "from-ai");
+    if (messageId) block.dataset.messageId = messageId;
     if (who === "ai") {
       const avatarWrap = document.createElement("div");
       avatarWrap.className = "msg-avatar-wrap";
@@ -1948,11 +1955,11 @@
     if (tools.includes("press_hug")) spawnHugRain();
     if (data.transfer) {
       await new Promise(r => setTimeout(r, 400));
-      addTransferBubble({ ...data.transfer, from: "char" }, "ai");
+      addTransferBubble({ ...data.transfer, from: "char" }, "ai", data.transfer.id);
     }
     if (data.sticker) {
       await new Promise(r => setTimeout(r, 400));
-      addStickerBubble({ ...data.sticker, from: "char" }, "ai");
+      addStickerBubble({ ...data.sticker, from: "char" }, "ai", data.sticker.id);
     }
     if (data.voice) {
       await new Promise(r => setTimeout(r, 350));
@@ -1985,14 +1992,21 @@
     });
     updateThinkBlock(thinkBlock, tools, data.metrics);
     if (data.user_msg_id) {
-      aiBlock.previousElementSibling?.querySelector('.bubble.user')
+      const userBlock = aiBlock.previousElementSibling;
+      if (userBlock?.classList.contains("single-msg-block")) {
+        userBlock.dataset.messageId = data.user_msg_id;
+      }
+      userBlock?.querySelector('.bubble.user')
         ?.setAttribute('data-message-id', data.user_msg_id);
       const h = histories[currentChar];
       const userEntry = h[h.length - 2];
       if (userEntry?.who === 'user') userEntry.id = data.user_msg_id;
     }
     thinking.textContent = parts[0];
-    if (data.reply_id) thinking.dataset.messageId = data.reply_id;
+    if (data.reply_id) {
+      aiBlock.dataset.messageId = data.reply_id;
+      thinking.dataset.messageId = data.reply_id;
+    }
     for (let i = 1; i < parts.length; i++) {
       await new Promise(r => setTimeout(r, 600));
       const div = document.createElement("div");
@@ -2266,14 +2280,16 @@
   // ── 单聊气泡长按操作 ──
   let bubblePressTimer = null;
 
+  const singleMessageActionSelector = ".bubble, .transfer-bubble, .sticker-bubble";
+
   messagesEl.addEventListener("pointerdown", e => {
-    const bubble = e.target.closest(".bubble");
-    if (!bubble) return;
-    bubblePressTimer = setTimeout(() => handleBubbleLongPress(bubble), 500);
+    const messageSurface = e.target.closest(singleMessageActionSelector);
+    if (!messageSurface) return;
+    bubblePressTimer = setTimeout(() => handleBubbleLongPress(messageSurface), 500);
   });
   messagesEl.addEventListener("pointerup",   () => clearTimeout(bubblePressTimer));
   messagesEl.addEventListener("pointermove", () => clearTimeout(bubblePressTimer));
-  bindNativeLongPressGuard(messagesEl, ".bubble");
+  bindNativeLongPressGuard(messagesEl, singleMessageActionSelector);
 
   function showConfirmDialog(msg, onConfirm) {
     const dialog = document.getElementById("confirmDialog");
@@ -2288,29 +2304,37 @@
     dialog.addEventListener("click", e => { if (e.target === dialog) close(); }, { once: true });
   }
 
-  function handleBubbleLongPress(bubble) {
+  function handleBubbleLongPress(messageSurface) {
     clearNativeSelection(true);
-    const allBubbles = [...messagesEl.querySelectorAll(".bubble")];
-    const idx = allBubbles.indexOf(bubble);
+    const allBlocks = [...messagesEl.querySelectorAll(".single-msg-block")];
+    const selectedBlock = messageSurface.closest(".single-msg-block");
+    const selectedIndex = allBlocks.indexOf(selectedBlock);
+    if (selectedIndex < 0) return;
 
     let deleteFromId;
-    if (bubble.classList.contains("user")) {
-      deleteFromId = bubble.dataset.messageId;
+    if (selectedBlock.classList.contains("from-user")) {
+      deleteFromId = selectedBlock.dataset.messageId || messageSurface.dataset.messageId;
     } else {
-      let userBubble = null;
-      for (let i = idx - 1; i >= 0; i--) {
-        if (allBubbles[i].classList.contains("user")) { userBubble = allBubbles[i]; break; }
+      let userBlock = null;
+      for (let i = selectedIndex - 1; i >= 0; i--) {
+        if (allBlocks[i].classList.contains("from-user") && allBlocks[i].dataset.messageId) {
+          userBlock = allBlocks[i];
+          break;
+        }
       }
-      deleteFromId = userBubble ? userBubble.dataset.messageId : bubble.dataset.messageId;
+      deleteFromId = userBlock?.dataset.messageId
+        || selectedBlock.dataset.messageId
+        || messageSurface.dataset.messageId;
     }
 
     // 显示操作菜单
     const menu = document.getElementById("bubbleActionMenu");
     const quoteButton = document.getElementById("bubbleQuoteBtn");
     const quoteDivider = document.getElementById("bubbleQuoteDivider");
-    const messageId = Number(bubble.dataset.messageId);
-    quoteButton.classList.toggle("hidden", !messageId);
-    quoteDivider.classList.toggle("hidden", !messageId);
+    const messageId = Number(selectedBlock.dataset.messageId || messageSurface.dataset.messageId);
+    const canQuote = messageSurface.classList.contains("bubble") && Boolean(messageId);
+    quoteButton.classList.toggle("hidden", !canQuote);
+    quoteDivider.classList.toggle("hidden", !canQuote);
     document.getElementById("bubbleDeleteBtn").classList.remove("hidden");
     document.getElementById("bubbleDeleteDivider").classList.remove("hidden");
     menu.classList.remove("hidden");
@@ -2321,18 +2345,18 @@
     // 复制
     document.getElementById("bubbleCopyBtn").onclick = () => {
       closeMenu();
-      const text = bubble.dataset.bubbleText || bubble.textContent || "";
+      const text = messageSurface.dataset.bubbleText || messageSurface.textContent || "";
       navigator.clipboard.writeText(text).then(() => showToast("已复制"));
     };
 
     quoteButton.onclick = () => {
       closeMenu();
-      if (!messageId) return;
+      if (!canQuote) return;
       setSingleReplyTarget({
         message_id: messageId,
-        character_id: bubble.classList.contains("user") ? "user" : currentChar,
-        character_name: bubble.classList.contains("user") ? GROUP_CHAR_NAMES.user : nickName(currentChar),
-        content: bubble.dataset.bubbleText || bubble.textContent || "",
+        character_id: selectedBlock.classList.contains("from-user") ? "user" : currentChar,
+        character_name: selectedBlock.classList.contains("from-user") ? GROUP_CHAR_NAMES.user : nickName(currentChar),
+        content: messageSurface.dataset.bubbleText || messageSurface.textContent || "",
       });
       focusSingleComposer();
     };
@@ -2341,18 +2365,15 @@
     document.getElementById("bubbleDeleteBtn").onclick = () => {
       closeMenu();
       if (!deleteFromId) return;
-      const targetIdx = allBubbles.findIndex(b => b.dataset.messageId == deleteFromId);
-      const count = allBubbles.length - targetIdx;
+      const targetIdx = allBlocks.findIndex(block => block.dataset.messageId == deleteFromId);
+      if (targetIdx < 0) return;
+      const blocksToDelete = allBlocks.slice(targetIdx);
+      const count = blocksToDelete.length;
       showConfirmDialog(`删除这条及之后共 ${count} 条消息？`, () => {
         fetch(`/api/messages/from/${deleteFromId}?character_id=${currentChar}&session_id=default`, {
           method: "DELETE"
         }).then(r => r.json()).then(() => {
-          const blocksToRemove = new Set();
-          for (let i = targetIdx; i < allBubbles.length; i++) {
-            const wrapper = allBubbles[i].closest(".single-msg-block");
-            if (wrapper) blocksToRemove.add(wrapper);
-          }
-          blocksToRemove.forEach(b => b.remove());
+          blocksToDelete.forEach(block => block.remove());
           const h = histories[currentChar];
           const cutIdx = h.findIndex(entry => entry.id >= parseInt(deleteFromId));
           if (cutIdx !== -1) h.splice(cutIdx);
@@ -2640,9 +2661,11 @@
     transferPanel.classList.add("hidden");
   }
 
-  function addTransferBubble(data, who) {
-    histories[currentChar].push({ text: "__TRANSFER__" + JSON.stringify(data), who, time: new Date() });
-    messagesEl.appendChild(buildTransferBlock(data, who, new Date()));
+  function addTransferBubble(data, who, messageId = data?.id) {
+    const payload = { ...data };
+    delete payload.id;
+    histories[currentChar].push({ id: messageId, text: "__TRANSFER__" + JSON.stringify(payload), who, time: new Date() });
+    messagesEl.appendChild(buildTransferBlock(payload, who, new Date(), messageId));
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -2670,7 +2693,8 @@
         body: JSON.stringify({ character_id: currentChar, session_id: "default", amount, note }),
       });
       if (res.ok) {
-        addTransferBubble({ amount, note, from: "user" }, "user");
+        const result = await res.json();
+        addTransferBubble({ amount, note, from: "user" }, "user", result.id);
       } else {
         showToast("🐱 转账失败，再试试？");
       }
@@ -2722,9 +2746,11 @@
     stickerPanel.classList.add("hidden");
   }
 
-  function addStickerBubble(data, who) {
-    histories[currentChar].push({ text: "__STICKER__" + JSON.stringify(data), who, time: new Date() });
-    messagesEl.appendChild(buildStickerBlock(data, who, new Date()));
+  function addStickerBubble(data, who, messageId = data?.id) {
+    const payload = { ...data };
+    delete payload.id;
+    histories[currentChar].push({ id: messageId, text: "__STICKER__" + JSON.stringify(payload), who, time: new Date() });
+    messagesEl.appendChild(buildStickerBlock(payload, who, new Date(), messageId));
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -2749,7 +2775,8 @@
         body: JSON.stringify({ character_id: currentChar, session_id: "default", key }),
       });
       if (res.ok) {
-        addStickerBubble({ key, from: "user" }, "user");
+        const result = await res.json();
+        addStickerBubble({ key, from: "user" }, "user", result.id);
       } else {
         showToast("🐱 表情包发送失败，再试试？");
       }

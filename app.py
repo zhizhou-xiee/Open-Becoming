@@ -6796,25 +6796,29 @@ def _finalize_character_reply(
         queued_during_deleted=queued_during_deleted, drowsy=drowsy,
     )
     save_message_metrics(reply_id, character_id, usage_metrics)
+    transfer_effect = None
     if transfer_to_send:
         tf_payload = json.dumps({
             "amount": transfer_to_send.get("amount"),
             "note": transfer_to_send.get("note", ""),
             "from": "char",
         }, ensure_ascii=False)
-        save_message(
+        transfer_id = save_message(
             session_id, character_id, "model", "__TRANSFER__" + tf_payload,
             queued_during_deleted=queued_during_deleted,
         )
+        transfer_effect = {**transfer_to_send, "id": transfer_id}
+    sticker_effect = None
     if sticker_to_send:
         sk_payload = json.dumps({
             "key": sticker_to_send.get("key"),
             "from": "char",
         }, ensure_ascii=False)
-        save_message(
+        sticker_id = save_message(
             session_id, character_id, "model", "__STICKER__" + sk_payload,
             queued_during_deleted=queued_during_deleted,
         )
+        sticker_effect = {**sticker_to_send, "id": sticker_id}
     voice = _maybe_create_voice_message(
         session_id, character_id, tools_called
     )
@@ -6868,8 +6872,8 @@ def _finalize_character_reply(
     return {
         "reply": reply,
         "replies": replies,
-        "transfer": transfer_to_send,
-        "sticker": sticker_to_send,
+        "transfer": transfer_effect,
+        "sticker": sticker_effect,
         "voice": voice,
         "reply_id": reply_id,
         "tools_called": tools_for_frontend,

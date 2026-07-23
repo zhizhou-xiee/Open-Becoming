@@ -151,7 +151,10 @@ class AppControlsTests(unittest.TestCase):
         self.assertIn("function bindNativeLongPressGuard(element, targetSelector = null)", script)
         self.assertIn("requestAnimationFrame(clear);", script)
         self.assertIn("setTimeout(clear, 80);", script)
-        self.assertIn('bindNativeLongPressGuard(messagesEl, ".bubble");', script)
+        self.assertIn(
+            "bindNativeLongPressGuard(messagesEl, singleMessageActionSelector);",
+            script,
+        )
         self.assertIn('bindNativeLongPressGuard(groupMessagesEl, ".bubble");', script)
         self.assertIn("bindNativeLongPressGuard(sendBtn);", script)
         self.assertIn("bindNativeLongPressGuard(groupSendBtn);", script)
@@ -1854,6 +1857,8 @@ class AppControlsTests(unittest.TestCase):
             payload = response.get_json()
             self.assertEqual(payload["transfer"]["amount"], 66)
             self.assertEqual(payload["sticker"]["key"], "tietie")
+            self.assertIsInstance(payload["transfer"]["id"], int)
+            self.assertIsInstance(payload["sticker"]["id"], int)
             self.assertEqual(
                 payload["tools_called"],
                 ["send_transfer", "send_sticker", "close_window"],
@@ -1874,6 +1879,38 @@ class AppControlsTests(unittest.TestCase):
             ]
             self.assertTrue(any(item.startswith("__TRANSFER__") for item in later))
             self.assertTrue(any(item.startswith("__STICKER__") for item in later))
+
+    def test_single_delete_tracks_and_removes_special_message_blocks(self):
+        script = (
+            Path(app_module.__file__).with_name("static") / "app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'const singleMessageActionSelector = ".bubble, .transfer-bubble, .sticker-bubble";',
+            script,
+        )
+        self.assertIn(
+            'const allBlocks = [...messagesEl.querySelectorAll(".single-msg-block")];',
+            script,
+        )
+        self.assertIn("const blocksToDelete = allBlocks.slice(targetIdx);", script)
+        self.assertIn("blocksToDelete.forEach(block => block.remove());", script)
+        self.assertIn(
+            "function buildTransferBlock(data, who, time, messageId)",
+            script,
+        )
+        self.assertIn(
+            "function buildStickerBlock(data, who, time, messageId)",
+            script,
+        )
+        self.assertIn(
+            'histories[currentChar].push({ id: messageId, text: "__TRANSFER__"',
+            script,
+        )
+        self.assertIn(
+            'histories[currentChar].push({ id: messageId, text: "__STICKER__"',
+            script,
+        )
 
     def test_group_participants_are_persisted_in_fixed_order(self):
         response = self.client.post("/api/group-config", json={
